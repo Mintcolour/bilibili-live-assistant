@@ -6,14 +6,13 @@ from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QColor, QPainter, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSystemTrayIcon,
-    QMenu, QAction, QDialog, QFormLayout, QLineEdit, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QDialogButtonBox, QColorDialog,
-    QPushButton, QApplication, QMessageBox,
+    QMenu, QAction, QDialog, QApplication,
 )
 
-from config import AppConfig, save_config
+from config import AppConfig
 from danmaku_renderer import DanmakuRenderer
 from danmaku_client import DanmakuEvent
+from settings_dialog import SettingsDialog
 
 
 def _make_tray_icon() -> QIcon:
@@ -29,116 +28,6 @@ def _make_tray_icon() -> QIcon:
     painter.drawText(pixmap.rect(), Qt.AlignCenter, "弹")
     painter.end()
     return QIcon(pixmap)
-
-
-class SettingsDialog(QDialog):
-    """设置对话框"""
-
-    def __init__(self, config: AppConfig, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("弹幕设置")
-        self.setMinimumWidth(400)
-        self._config = config
-
-        layout = QFormLayout(self)
-
-        # 房间号
-        self.room_id_edit = QLineEdit(str(config.room_id))
-        self.room_id_edit.setPlaceholderText("输入直播间ID")
-        layout.addRow("直播间ID:", self.room_id_edit)
-
-        # Cookie
-        self.sessdata_edit = QLineEdit(config.cookie.SESSDATA)
-        self.sessdata_edit.setEchoMode(QLineEdit.Password)
-        self.sessdata_edit.setPlaceholderText("B站登录Cookie中的SESSDATA")
-        layout.addRow("SESSDATA:", self.sessdata_edit)
-
-        self.buvid3_edit = QLineEdit(config.cookie.buvid3)
-        self.buvid3_edit.setPlaceholderText("B站Cookie中的buvid3")
-        layout.addRow("buvid3:", self.buvid3_edit)
-
-        self.bili_jct_edit = QLineEdit(config.cookie.bili_jct)
-        self.bili_jct_edit.setEchoMode(QLineEdit.Password)
-        self.bili_jct_edit.setPlaceholderText("B站Cookie中的bili_jct")
-        layout.addRow("bili_jct:", self.bili_jct_edit)
-
-        # 显示参数
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(12, 72)
-        self.font_size_spin.setValue(config.display.font_size)
-        layout.addRow("字体大小:", self.font_size_spin)
-
-        self.speed_spin = QSpinBox()
-        self.speed_spin.setRange(30, 500)
-        self.speed_spin.setValue(config.display.scroll_speed)
-        self.speed_spin.setSuffix(" px/s")
-        layout.addRow("滚动速度:", self.speed_spin)
-
-        self.opacity_spin = QDoubleSpinBox()
-        self.opacity_spin.setRange(0.1, 1.0)
-        self.opacity_spin.setSingleStep(0.05)
-        self.opacity_spin.setValue(config.display.opacity)
-        layout.addRow("不透明度:", self.opacity_spin)
-
-        self.tracks_spin = QSpinBox()
-        self.tracks_spin.setRange(1, 20)
-        self.tracks_spin.setValue(config.display.max_tracks)
-        layout.addRow("弹幕轨道数:", self.tracks_spin)
-
-        # 在线信息轮询间隔
-        self.poll_interval_spin = QSpinBox()
-        self.poll_interval_spin.setRange(5, 600)
-        self.poll_interval_spin.setValue(config.poll_interval)
-        self.poll_interval_spin.setSuffix(" 秒")
-        layout.addRow("在线信息间隔:", self.poll_interval_spin)
-
-        # 显示开关
-        self.show_enter_cb = QCheckBox("显示用户进入通知")
-        self.show_enter_cb.setChecked(config.display.show_enter)
-        layout.addRow(self.show_enter_cb)
-
-        self.show_gift_cb = QCheckBox("显示礼物通知")
-        self.show_gift_cb.setChecked(config.display.show_gift)
-        layout.addRow(self.show_gift_cb)
-
-        self.show_sc_cb = QCheckBox("显示醒目留言(SC)")
-        self.show_sc_cb.setChecked(config.display.show_sc)
-        layout.addRow(self.show_sc_cb)
-
-        self.show_online_cb = QCheckBox("定时显示人气值和高能榜")
-        self.show_online_cb.setChecked(config.display.show_online)
-        layout.addRow(self.show_online_cb)
-
-        # 按钮
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
-
-    def accept(self):
-        """保存配置并关闭"""
-        try:
-            self._config.room_id = int(self.room_id_edit.text().strip())
-        except ValueError:
-            QMessageBox.warning(self, "错误", "直播间ID必须是数字")
-            return
-
-        self._config.cookie.SESSDATA = self.sessdata_edit.text().strip()
-        self._config.cookie.buvid3 = self.buvid3_edit.text().strip()
-        self._config.cookie.bili_jct = self.bili_jct_edit.text().strip()
-
-        self._config.display.font_size = self.font_size_spin.value()
-        self._config.display.scroll_speed = self.speed_spin.value()
-        self._config.display.opacity = self.opacity_spin.value()
-        self._config.display.max_tracks = self.tracks_spin.value()
-        self._config.display.show_enter = self.show_enter_cb.isChecked()
-        self._config.display.show_gift = self.show_gift_cb.isChecked()
-        self._config.display.show_sc = self.show_sc_cb.isChecked()
-        self._config.display.show_online = self.show_online_cb.isChecked()
-        self._config.poll_interval = self.poll_interval_spin.value()
-
-        save_config(self._config)
-        super().accept()
 
 
 class OverlayWindow(QWidget):
