@@ -9,5 +9,9 @@ __pycache__/
 # 内嵌 vendored 库（自带 .git，独立管理）
 blivedm_lib/
 
+# PyInstaller 构建产物
+build/
+dist/
+
 # SDD 工作区
 .superpowers/
