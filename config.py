@@ -4,10 +4,27 @@
 """
 import json
 import os
+import sys
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+def get_config_dir() -> str:
+    """配置目录：打包后为 exe 所在目录（便携式），开发时为主文件目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_config_path() -> str:
+    """配置文件路径；目标目录不可写时回退 %APPDATA%"""
+    base = get_config_dir()
+    if not os.access(base, os.W_OK):
+        appdata = os.environ.get("APPDATA", ".")
+        path = os.path.join(appdata, "BilibiliLiveAssistant", "config.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+    return os.path.join(base, "config.json")
 
 DEFAULT_CONFIG = {
     "room_id": 0,
@@ -89,10 +106,11 @@ def _dict_to_dataclass(cls, data: dict):
 
 def load_config() -> AppConfig:
     """加载配置，不存在则返回默认"""
-    if not os.path.exists(CONFIG_FILE):
+    config_path = get_config_path()
+    if not os.path.exists(config_path):
         return AppConfig()
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         # Merge with defaults so missing keys get default values
         merged = {**DEFAULT_CONFIG, **data}
@@ -130,6 +148,6 @@ def save_config(config: AppConfig):
         "display": asdict(config.display),
         "poll_interval": config.poll_interval,
     }
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+    with open(get_config_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"[Config] 配置已保存到 {CONFIG_FILE}")
+    print(f"[Config] 配置已保存到 {get_config_path()}")
