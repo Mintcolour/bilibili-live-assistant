@@ -2,6 +2,7 @@
 """主控制窗口 - 状态、连接控制、功能开关、显示设置"""
 import asyncio
 
+from PyQt5.QtCore import QSignalBlocker
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QFrame, QSpinBox, QDoubleSpinBox, QApplication,
@@ -245,12 +246,19 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def refresh_from_config(self):
-        """设置变更后刷新主窗口控件"""
+        """设置变更后刷新主窗口控件（抑制信号，避免重复保存/应用）"""
         d = self._controller.config.display
-        self.font_spin.setValue(d.font_size)
-        self.speed_spin.setValue(d.scroll_speed)
-        self.opacity_spin.setValue(d.opacity)
-        self.switches["enter"].setChecked(d.show_enter)
-        self.switches["gift"].setChecked(d.show_gift)
-        self.switches["sc"].setChecked(d.show_sc)
-        self.switches["online"].setChecked(d.show_online)
+        with QSignalBlocker(self.font_spin):
+            self.font_spin.setValue(d.font_size)
+        with QSignalBlocker(self.speed_spin):
+            self.speed_spin.setValue(d.scroll_speed)
+        with QSignalBlocker(self.opacity_spin):
+            self.opacity_spin.setValue(d.opacity)
+        with QSignalBlocker(self.switches["enter"]):
+            self.switches["enter"].setChecked(d.show_enter)
+        with QSignalBlocker(self.switches["gift"]):
+            self.switches["gift"].setChecked(d.show_gift)
+        with QSignalBlocker(self.switches["sc"]):
+            self.switches["sc"].setChecked(d.show_sc)
+        with QSignalBlocker(self.switches["online"]):
+            self.switches["online"].setChecked(d.show_online)
