@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """设置对话框（主窗口与托盘共用）"""
+from dataclasses import asdict
+
 from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox,
     QDialogButtonBox, QMessageBox, QPushButton,
 )
 
 from config import AppConfig, DisplayConfig, DEFAULT_CONFIG, save_config
+from utils import extract_room_id
 
 
 class SettingsDialog(QDialog):
@@ -16,6 +19,9 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("弹幕设置")
         self.setMinimumWidth(400)
         self._config = config
+
+        # 打开时快照，取消时恢复，避免重置后点取消仍改动共享配置
+        self._display_backup = asdict(config.display)
 
         layout = QFormLayout(self)
 
@@ -111,13 +117,18 @@ class SettingsDialog(QDialog):
         self.show_sc_cb.setChecked(self._config.display.show_sc)
         self.show_online_cb.setChecked(self._config.display.show_online)
 
+    def reject(self):
+        """取消：恢复打开时的显示配置快照"""
+        self._config.display = DisplayConfig(**self._display_backup)
+        super().reject()
+
     def accept(self):
         """保存配置并关闭"""
-        try:
-            self._config.room_id = int(self.room_id_edit.text().strip())
-        except ValueError:
-            QMessageBox.warning(self, "错误", "直播间ID必须是数字")
+        rid = extract_room_id(self.room_id_edit.text())
+        if rid is None:
+            QMessageBox.warning(self, "错误", "请输入数字直播间ID或完整直播链接")
             return
+        self._config.room_id = rid
 
         self._config.cookie.SESSDATA = self.sessdata_edit.text().strip()
         self._config.cookie.buvid3 = self.buvid3_edit.text().strip()

@@ -5,7 +5,7 @@
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QColor, QPainter, QIcon, QPixmap
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSystemTrayIcon,
+    QWidget, QVBoxLayout, QSystemTrayIcon,
     QMenu, QAction, QDialog, QApplication,
 )
 

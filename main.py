@@ -36,6 +36,15 @@ def main():
     # 托盘"打开主窗口" → 显示主窗口
     controller.window.open_main_window_requested.connect(main_window.show_and_raise)
 
+    def _rerun_wizard():
+        wizard = FirstRunWizard(controller.config)
+        if wizard.exec_() == QDialog.Accepted:
+            save_config(controller.config)
+            main_window.refresh_from_config()
+            controller.request_restart()
+
+    main_window.rerun_wizard_requested.connect(_rerun_wizard)
+
     async def _run():
         if needs_onboarding(controller.config):
             wizard = FirstRunWizard(controller.config)

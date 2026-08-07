@@ -2,7 +2,7 @@
 """主控制窗口 - 状态、连接控制、功能开关、显示设置"""
 import asyncio
 
-from PyQt5.QtCore import QSignalBlocker
+from PyQt5.QtCore import QSignalBlocker, pyqtSignal
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QFrame, QSpinBox, QDoubleSpinBox, QApplication,
@@ -17,6 +17,8 @@ from utils import extract_room_id
 class MainWindow(QMainWindow):
     """主控制窗口"""
 
+    rerun_wizard_requested = pyqtSignal()  # 请求重新运行向导
+
     def __init__(self, controller):
         super().__init__()
         self._controller = controller
@@ -27,7 +29,6 @@ class MainWindow(QMainWindow):
 
     # ---------- UI 构建 ----------
     def _build_ui(self):
-        cfg = self._controller.config
         central = QWidget(self)
         root = QVBoxLayout(central)
         root.setContentsMargins(16, 16, 16, 16)
@@ -70,6 +71,11 @@ class MainWindow(QMainWindow):
         root.addLayout(bottom)
 
         self.setCentralWidget(central)
+
+        # 菜单栏：帮助 → 重新运行向导
+        menu_help = self.menuBar().addMenu("帮助")
+        action_rerun = menu_help.addAction("重新运行向导")
+        action_rerun.triggered.connect(self.rerun_wizard_requested.emit)
 
     def _card(self, title: str) -> QFrame:
         card = QFrame()
