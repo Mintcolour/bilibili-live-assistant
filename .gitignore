@@ -1,0 +1,13 @@
+# 用户配置（含真实 Cookie，禁止提交）
+config.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# 内嵌 vendored 库（自带 .git，独立管理）
+blivedm_lib/
+
+# SDD 工作区
+.superpowers/
