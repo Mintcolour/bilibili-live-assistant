@@ -151,3 +151,10 @@ def save_config(config: AppConfig):
     with open(get_config_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"[Config] 配置已保存到 {get_config_path()}")
+
+
+def needs_onboarding(config: AppConfig) -> bool:
+    """首次运行判定：房间号未填 且 Cookie 全空"""
+    return config.room_id <= 0 and not (
+        config.cookie.SESSDATA or config.cookie.buvid3 or config.cookie.bili_jct
+    )
