@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from PyQt5.QtCore import Qt, QTimer, QRect, QSize
-from PyQt5.QtGui import QPainter, QPixmap, QFont, QFontMetrics, QColor, QPen, QBrush
+from PyQt5.QtGui import QPainter, QPixmap, QFont, QFontMetrics, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtWidgets import QWidget
 
 from danmaku_client import DanmakuEvent
@@ -174,16 +174,26 @@ class DanmakuRenderer(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setFont(self._font)
 
-        # 描边
-        pen = QPen(QColor(0, 0, 0, 200))
-        pen.setWidth(3)
-        painter.setPen(pen)
-        painter.drawText(pixmap.rect(), Qt.AlignCenter, text)
+        # 将文字转为路径：Qt 的 drawText 以画笔颜色绘制字形、不响应画刷填充，
+        # 也无法通过笔宽形成描边，因此用 drawPath 做"深色描边 + 彩色填充"两遍画法
+        path = QPainterPath()
+        path.addText(0, fm.ascent(), self._font, text)
+        br = path.boundingRect()
+        painter.translate(
+            (text_w - br.width()) / 2 - br.x(),
+            (text_h - br.height()) / 2 - br.y(),
+        )
 
-        # 填充
+        # 第一遍：深色粗描边（笔与刷都用深色，形成轮廓）
+        painter.setPen(QPen(QColor(0, 0, 0, 180), 4))
+        painter.setBrush(QColor(0, 0, 0, 180))
+        painter.drawPath(path)
+
+        # 第二遍：彩色填充，覆盖中心区域，仅留深色描边
         color = QColor(item.event.color)
-        painter.setPen(QPen(color))
-        painter.drawText(pixmap.rect(), Qt.AlignCenter, text)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawPath(path)
 
         painter.end()
         return pixmap
