@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bli
 
 import blivedm
 import blivedm.models.web as web_models
+from blivedm.clients.ws_base import InitError, AuthError
 
 logger = logging.getLogger("danmaku_client")
 
@@ -130,6 +131,18 @@ class BiliDanmakuHandler(blivedm.BaseHandler):
             color=self._cfg.gift_color,
         )
         self._signals.danmaku_received.emit(evt)
+
+    def on_client_stopped(self, client, exception):
+        """客户端停止：将连接失败原因透出到 UI"""
+        if exception is None:
+            return  # 正常停止，不提示
+        if isinstance(exception, InitError):
+            msg = "连接失败：直播间不存在或无法获取弹幕服务器"
+        elif isinstance(exception, AuthError):
+            msg = "连接失败：认证失败（Cookie 可能已过期）"
+        else:
+            msg = f"连接失败：{exception}"
+        self._signals.connection_status.emit(msg)
 
 
 class DanmakuClient:
