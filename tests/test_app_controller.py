@@ -8,7 +8,10 @@ def test_controller_start_without_room_emits_status(qapp):
     ctrl.danmaku_signals.connection_status.connect(msgs.append)
 
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(ctrl.start())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(ctrl.start())
+    loop.close()
 
     assert result is False
     assert msgs and "请先填写直播间ID" in msgs[-1]

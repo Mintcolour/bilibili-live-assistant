@@ -34,6 +34,7 @@ class OverlayWindow(QWidget):
     """桌面弹幕悬浮窗口"""
 
     restart_requested = pyqtSignal()  # 请求重启连接
+    open_main_window_requested = pyqtSignal()  # 请求打开主窗口
 
     def __init__(self, config: AppConfig):
         super().__init__()
@@ -84,6 +85,10 @@ class OverlayWindow(QWidget):
         self.action_settings = QAction("⚙️ 弹幕配置", self)
         self.action_settings.triggered.connect(self._show_settings)
         menu.addAction(self.action_settings)
+
+        action_main = QAction("🏠 打开主窗口", self)
+        action_main.triggered.connect(self.open_main_window_requested.emit)
+        menu.addAction(action_main)
 
         menu.addSeparator()
 
