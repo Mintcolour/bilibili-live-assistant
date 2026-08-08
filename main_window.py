@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
 
         # 标题栏
         header = QHBoxLayout()
-        title = QLabel("🎬 B站直播弹幕助手")
+        title = QLabel("B站直播弹幕助手")
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         header.addWidget(title)
         header.addStretch(1)

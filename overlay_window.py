@@ -2,8 +2,10 @@
 """
 桌面悬浮窗口 - 无边框置顶半透明弹幕窗口 + 系统托盘 + 设置对话框
 """
+import os
+
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint
-from PyQt5.QtGui import QColor, QPainter, QIcon, QPixmap
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QSystemTrayIcon,
     QMenu, QAction, QDialog, QApplication,
@@ -13,21 +15,17 @@ from config import AppConfig
 from danmaku_renderer import DanmakuRenderer
 from danmaku_client import DanmakuEvent
 from settings_dialog import SettingsDialog
+from utils import resource_path
+
+
+def _icon(name: str) -> QIcon:
+    """加载 assets/icons/ 下的图标（Icons8 下载）"""
+    return QIcon(resource_path(os.path.join("assets", "icons", f"{name}.png")))
 
 
 def _make_tray_icon() -> QIcon:
-    """生成系统托盘图标"""
-    pixmap = QPixmap(32, 32)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setBrush(QColor("#00A1D6"))  # B站蓝
-    painter.setPen(Qt.NoPen)
-    painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
-    painter.setPen(QColor("white"))
-    painter.drawText(pixmap.rect(), Qt.AlignCenter, "弹")
-    painter.end()
-    return QIcon(pixmap)
+    """系统托盘图标"""
+    return _icon("app-32")
 
 
 class OverlayWindow(QWidget):
@@ -78,21 +76,21 @@ class OverlayWindow(QWidget):
 
         menu = QMenu()
 
-        self.action_lock = QAction("🔒 锁定并穿透", self)
+        self.action_lock = QAction(_icon("lock"), "锁定并穿透", self)
         self.action_lock.triggered.connect(self._toggle_lock)
         menu.addAction(self.action_lock)
 
-        self.action_settings = QAction("⚙️ 弹幕配置", self)
+        self.action_settings = QAction(_icon("settings"), "弹幕配置", self)
         self.action_settings.triggered.connect(self._show_settings)
         menu.addAction(self.action_settings)
 
-        action_main = QAction("🏠 打开主窗口", self)
+        action_main = QAction(_icon("home"), "打开主窗口", self)
         action_main.triggered.connect(self.open_main_window_requested.emit)
         menu.addAction(action_main)
 
         menu.addSeparator()
 
-        action_quit = QAction("❌ 退出", self)
+        action_quit = QAction(_icon("delete-sign"), "退出", self)
         action_quit.triggered.connect(QApplication.quit)
         menu.addAction(action_quit)
 
@@ -109,14 +107,14 @@ class OverlayWindow(QWidget):
                 Qt.Tool |
                 Qt.WindowTransparentForInput
             )
-            self.action_lock.setText("🔓 解锁编辑")
+            self.action_lock.setText("解锁编辑")
         else:
             self.setWindowFlags(
                 Qt.FramelessWindowHint |
                 Qt.WindowStaysOnTopHint |
                 Qt.Tool
             )
-            self.action_lock.setText("🔒 锁定并穿透")
+            self.action_lock.setText("锁定并穿透")
         self.show()
 
     def _show_settings(self):

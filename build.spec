@@ -4,7 +4,7 @@ a = Analysis(
     ['main.py'],
     pathex=['.', 'blivedm_lib'],
     binaries=[],
-    datas=[],
+    datas=[('assets', 'assets')],  # 图标等资源（frozen 时经 sys._MEIPASS 访问）
     hiddenimports=['qasync', 'aiohttp', 'pure_protobuf', 'blivedm'],
     hookspath=[],
     runtime_hooks=[],

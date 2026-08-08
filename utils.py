@@ -1,10 +1,19 @@
 # -*- coding: utf-8 -*-
 """通用工具函数"""
+import os
 import re
+import sys
 from typing import Optional
 
 # 匹配纯数字房间号，或 live.bilibili.com/xxx 链接中的数字
 _ROOM_ID_RE = re.compile(r"(?:live\.bilibili\.com/)?(\d{2,10})")
+
+
+def resource_path(rel_path: str) -> str:
+    """返回资源文件的绝对路径，兼容 PyInstaller 单文件打包（解压目录 sys._MEIPASS）"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    # normpath 统一路径分隔符（Windows 下混合 / \ 会导致比较与文件访问不一致）
+    return os.path.normpath(os.path.join(base, rel_path))
 
 
 def extract_room_id(text: str) -> Optional[int]:

@@ -145,19 +145,19 @@ class DanmakuRenderer(QWidget):
         self._queue = remaining
 
     def _format_text(self, event: DanmakuEvent) -> str:
-        """格式化显示文本"""
+        """格式化显示文本（类型用颜色区分，不用 emoji 图标）"""
         if event.event_type == DanmakuEvent.TYPE_DANMAKU:
             return f"{event.username}: {event.content}"
         elif event.event_type == DanmakuEvent.TYPE_ENTER:
-            return f"🎉 {event.username} {event.content}"
+            return f"{event.username} {event.content}"
         elif event.event_type == DanmakuEvent.TYPE_GIFT:
-            return f"🎁 {event.username} {event.content}"
+            return f"{event.username} {event.content}"
         elif event.event_type == DanmakuEvent.TYPE_SC:
-            return f"💰 {event.username}: {event.content}"
+            return f"{event.username}: {event.content}"
         elif event.event_type == DanmakuEvent.TYPE_GUARD:
-            return f"⚓ {event.username} {event.content}"
+            return f"{event.username} {event.content}"
         elif event.event_type == DanmakuEvent.TYPE_ONLINE:
-            return f"📊 {event.content}"
+            return f"{event.content}"
         return f"{event.username}: {event.content}"
 
     def _render_to_pixmap(self, item: DanmakuItem) -> QPixmap:

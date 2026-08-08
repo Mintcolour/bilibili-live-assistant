@@ -7,12 +7,14 @@ import asyncio
 import logging
 import sys
 
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication, QDialog
 from qasync import QEventLoop
 
 from app_controller import AppController
 from config import needs_onboarding, save_config
 from main_window import MainWindow
+from utils import resource_path
 from wizard import FirstRunWizard
 import styles
 
@@ -27,6 +29,8 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     styles.apply(app)
+    # 应用图标（Icons8 下载，所有窗口继承）
+    app.setWindowIcon(QIcon(resource_path("assets/icons/app-64.png")))
 
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
