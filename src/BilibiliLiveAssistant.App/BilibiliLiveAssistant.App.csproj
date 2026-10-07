@@ -18,6 +18,7 @@
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <WindowsAppSDKBootstrapInitialize>true</WindowsAppSDKBootstrapInitialize>
+    <IncludeProjectPriFile>true</IncludeProjectPriFile>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -27,5 +28,12 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.3.0" />
   </ItemGroup>
+
+  <Target Name="CopyPriFilesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <PriFiles Include="$(TargetDir)*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PriFiles)" DestinationFolder="$(PublishDir)" />
+  </Target>
 
 </Project>

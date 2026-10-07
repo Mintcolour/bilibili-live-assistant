@@ -13,7 +13,8 @@ WinUI 3 版本使用 C#/.NET、Windows App SDK 和 Fluent Design，数据链路�
 dotnet restore BilibiliLiveAssistant.sln
 dotnet test tests/BilibiliLiveAssistant.Tests/BilibiliLiveAssistant.Tests.csproj
 # 在 Visual Studio 或带 Windows App SDK 构建组件的 MSBuild 中构建 WinUI 项目
-dotnet publish src/BilibiliLiveAssistant.App/BilibiliLiveAssistant.App.csproj -c Release -r win-x64 --self-contained true -p:WindowsAppSDKSelfContained=false
+$msbuild = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe"
+& $msbuild src/BilibiliLiveAssistant.App/BilibiliLiveAssistant.App.csproj /t:Publish /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64 /p:SelfContained=false /p:WindowsAppSDKSelfContained=false
 ```
 
 当前 WinUI 应用使用 Windows App SDK 的框架依赖模式，发布前需要在目标机器安装
