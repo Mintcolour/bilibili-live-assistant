@@ -15,3 +15,10 @@ dist/
 
 # SDD 工作区
 .superpowers/
+
+# WinUI/.NET build outputs and user settings
+bin/
+obj/
+**/bin/
+**/obj/
+settings.json

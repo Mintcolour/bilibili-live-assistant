@@ -1,5 +1,24 @@
 # B站直播弹幕助手
 
+## WinUI 3 版本（迁移分支）
+
+项目当前保留原 Python/PyQt5 版本，并新增 `BilibiliLiveAssistant.sln`。
+WinUI 3 版本使用 C#/.NET、Windows App SDK 和 Fluent Design，数据链路在
+`src/BilibiliLiveAssistant.Infrastructure/` 中重新实现，用户配置写入 exe 目录的
+`settings.json`。
+
+开发环境需要 Visual Studio 2022（Windows App SDK/Windows 10 SDK）和 .NET SDK。
+
+```powershell
+dotnet restore BilibiliLiveAssistant.sln
+dotnet test tests/BilibiliLiveAssistant.Tests/BilibiliLiveAssistant.Tests.csproj
+# 在 Visual Studio 或带 Windows App SDK 构建组件的 MSBuild 中构建 WinUI 项目
+dotnet publish src/BilibiliLiveAssistant.App/BilibiliLiveAssistant.App.csproj -c Release -r win-x64 --self-contained true
+```
+
+WinUI 3 应用首次启动后在“直播间”页面填写房间号，在“账号设置”填写可选 Cookie，
+再从“概览”页面打开弹幕悬浮窗。
+
 基于 Python + PyQt5 的 B站直播弹幕桌面悬浮工具，实时显示弹幕、用户进入、在线人数变化等信息。
 
 ## 功能
