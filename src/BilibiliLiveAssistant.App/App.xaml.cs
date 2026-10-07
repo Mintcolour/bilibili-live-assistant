@@ -23,9 +23,7 @@ public partial class App : Application
     {
         _window = new MainWindow(ViewModel);
         _window.Activate();
-        // TrayService can be enabled once the target machine has the WinUI tray host available.
-        // Keep the service constructed by the app layer, but avoid creating a native tray icon
-        // during the initial window smoke test.
+        _tray = new TrayService(_window);
         if (ViewModel.RoomId <= 0)
             _ = _window.ShowFirstRunDialogAsync();
     }
