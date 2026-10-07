@@ -16,11 +16,8 @@
     <UseWinUI>true</UseWinUI>
     <EnableDefaultApplicationDefinition>true</EnableDefaultApplicationDefinition>
     <WindowsPackageType>None</WindowsPackageType>
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <WindowsAppSDKBootstrapInitialize>true</WindowsAppSDKBootstrapInitialize>
-    <EnablePriGenTooling>false</EnablePriGenTooling>
-    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
-    <IncludeProjectPriFile>false</IncludeProjectPriFile>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>

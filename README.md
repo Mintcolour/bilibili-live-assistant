@@ -13,8 +13,11 @@ WinUI 3 版本使用 C#/.NET、Windows App SDK 和 Fluent Design，数据链路�
 dotnet restore BilibiliLiveAssistant.sln
 dotnet test tests/BilibiliLiveAssistant.Tests/BilibiliLiveAssistant.Tests.csproj
 # 在 Visual Studio 或带 Windows App SDK 构建组件的 MSBuild 中构建 WinUI 项目
-dotnet publish src/BilibiliLiveAssistant.App/BilibiliLiveAssistant.App.csproj -c Release -r win-x64 --self-contained true
+dotnet publish src/BilibiliLiveAssistant.App/BilibiliLiveAssistant.App.csproj -c Release -r win-x64 --self-contained true -p:WindowsAppSDKSelfContained=false
 ```
+
+当前 WinUI 应用使用 Windows App SDK 的框架依赖模式，发布前需要在目标机器安装
+Windows App Runtime 1.7（x64）。发布目录可以直接压缩分发，`settings.json` 会在首次运行时生成。
 
 WinUI 3 应用首次启动后在“直播间”页面填写房间号，在“账号设置”填写可选 Cookie，
 再从“概览”页面打开弹幕悬浮窗。
