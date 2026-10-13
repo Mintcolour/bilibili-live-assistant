@@ -16,6 +16,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private int _flushScheduled;
     private long _receivedEvents;
     private long _overlayDropped;
+    private int _overlayMediaCount;
     private volatile bool _disposed;
     private AppSettings _settings;
 
@@ -51,6 +52,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public long BufferedDroppedCount => _pendingEvents.DroppedCount;
     public long OverlayDroppedCount => Interlocked.Read(ref _overlayDropped);
     internal double EventBatchIntervalSeconds => _eventTimer.Interval.TotalSeconds;
+    internal bool CanShowOverlayMedia => _settings.MediaPreview.OverlayEnabled && _overlayMediaCount < _settings.MediaPreview.OverlayMaxVisible;
+    internal bool AcquireOverlayMedia() { if (!CanShowOverlayMedia) return false; _overlayMediaCount++; return true; }
+    internal void ReleaseOverlayMedia() => _overlayMediaCount = Math.Max(0, _overlayMediaCount - 1);
     public void RecordOverlayDropped(int count)
     {
         if (count <= 0) return;

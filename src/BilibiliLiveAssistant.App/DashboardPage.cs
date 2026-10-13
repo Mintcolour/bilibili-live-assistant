@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 
 namespace BilibiliLiveAssistant.App;
@@ -45,6 +46,8 @@ internal sealed class DashboardPage : Page
     private readonly ToggleSwitch _anonymous = new() { Header = "匿名读取", OnContent = "无需登录", OffContent = "使用账号", MinWidth = 160 };
     private bool _connectionBusy, _loadingLayout;
     private readonly DashboardList _danmaku;
+    private readonly DanmakuCardPanel _cardPanel;
+    private readonly Button _cardMode = new() { Content = "卡片", Padding = new(7, 3, 7, 3), MinHeight = 28 };
     private readonly DashboardList _gifts;
     private readonly DashboardList _sc;
     private readonly DashboardList _interactions;
@@ -73,7 +76,17 @@ internal sealed class DashboardPage : Page
         _animations = new MessageAnimationClock(isWindowVisible);
         _rankPanel = new(vm, _animations, _visible);
         _anchor = new(vm, _animations, _visible);
-        _danmaku = new("弹幕", "\uE8BD", vm, _animations, _visible, false);
+        _danmaku = new("弹幕", "\uE8BD", vm, _animations, () => _visible() && !_vm.Settings.Cards.Enabled, false, _cardMode);
+        _cardPanel = new(vm, _animations, _visible);
+        _cardMode.Click += async (_, _) => await ToggleCardModeAsync();
+        _cardPanel.ToggleRequested += async () => await ToggleCardModeAsync();
+        var shortcut = new KeyboardAccelerator { Key = Windows.System.VirtualKey.C, Modifiers = Windows.System.VirtualKeyModifiers.Menu };
+        shortcut.Invoked += async (_, args) =>
+        {
+            if (FocusManager.GetFocusedElement(XamlRoot) is TextBox or PasswordBox or NumberBox) return;
+            args.Handled = true; await ToggleCardModeAsync();
+        };
+        KeyboardAccelerators.Add(shortcut);
         _gifts = new("礼物 / 上舰", "\uF133", vm, _animations, _visible, true);
         _sc = new("SC", "\uE8F2", vm, _animations, _visible, true);
         _interactions = new("互动", "\uE716", vm, _animations, _visible, false);
@@ -150,7 +163,7 @@ internal sealed class DashboardPage : Page
         _left.RowDefinitions.Add(new() { Height = new(1 - _style.InteractionPanelRatio, GridUnitType.Star), MinHeight = 100 });
         _left.RowDefinitions.Add(new() { Height = new(8) });
         _left.RowDefinitions.Add(new() { Height = new(_style.InteractionPanelRatio, GridUnitType.Star), MinHeight = 60 });
-        _left.Children.Add(_danmaku); Grid.SetRow(_interactions, 2); _left.Children.Add(_interactions);
+        _left.Children.Add(_danmaku); _left.Children.Add(_cardPanel); Grid.SetRow(_interactions, 2); _left.Children.Add(_interactions);
         AddInteractionSplitter(); _columns.Children.Add(_left);
         _middle.RowDefinitions.Add(new() { Height = new(1 - _style.RankPanelRatio, GridUnitType.Star), MinHeight = 100 });
         _middle.RowDefinitions.Add(new() { Height = new(6) });
@@ -195,7 +208,7 @@ internal sealed class DashboardPage : Page
             _audienceInfo.Visibility = e.NewSize.Width < 920 ? Visibility.Collapsed : Visibility.Visible;
             _roomInput.Width = e.NewSize.Width < 720 ? 125 : 175;
         };
-        vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty;
+        vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty; vm.CardBoard.Changed += Dirty;
         vm.RoomHistoryReset += ResetRank;
         Unloaded += OnUnloaded;
         RefreshIfNeeded();
@@ -320,6 +333,11 @@ internal sealed class DashboardPage : Page
         _dirty = true;
         if (!_unloaded && _visible() && !_refresh.IsRunning) _refresh.Start();
     }
+    private async Task ToggleCardModeAsync()
+    {
+        try { await _vm.SaveAsync(_vm.Settings with { Cards = _vm.Settings.Cards with { Enabled = !_vm.Settings.Cards.Enabled } }); }
+        catch (Exception ex) { _vm.ReportSettingsError($"保存卡片模式失败：{ex.Message}"); }
+    }
     private void OnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(LiveAssistantViewModel.Settings)) { _settingsDirty = true; _refresh.Interval = TimeSpan.FromMilliseconds(_vm.Settings.Dashboard.RefreshIntervalMs); }
@@ -345,19 +363,25 @@ internal sealed class DashboardPage : Page
             _loadingLayout = true; _rankExpanded.IsChecked = !_style.RankPanelCollapsed; _loadingLayout = false;
             ApplyRankLayout(); _rankPanel.SettingsChanged();
         }
-        _danmaku.Sync(history.Danmaku, _settingsDirty); _gifts.Sync(history.Gifts, _settingsDirty);
+        var cards = _vm.Settings.Cards.Enabled;
+        _danmaku.Visibility = cards ? Visibility.Collapsed : Visibility.Visible;
+        _cardPanel.Visibility = cards ? Visibility.Visible : Visibility.Collapsed;
+        _cardPanel.SetActive(cards);
+        if (cards) { _danmaku.Suspend(); _cardPanel.Sync(_settingsDirty); }
+        else _danmaku.Sync(history.Danmaku, _settingsDirty);
+        _gifts.Sync(history.Gifts, _settingsDirty);
         _sc.Sync(history.SuperChats, _settingsDirty); _interactions.Sync(history.Interactions, _settingsDirty);
         _dirty = false; _settingsDirty = false;
     }
-    internal void SuspendVisuals() { _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); }
-    internal void ResumeVisuals() { if (!_unloaded) { _dirty = true; RefreshIfNeeded(); } }
+    internal void SuspendVisuals() { _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); _cardPanel.SetActive(false); _danmaku.Suspend(); _gifts.Suspend(); _sc.Suspend(); _interactions.Suspend(); }
+    internal void ResumeVisuals() { if (!_unloaded) { _dirty = true; RefreshIfNeeded(); if (!_vm.Settings.Cards.Enabled) _danmaku.Resume(); _gifts.Resume(); _sc.Resume(); _interactions.Resume(); } }
     private void StopStress() { _stress.Stop(); _stressClock.Stop(); _stressItem.Text = "手动高流量示例：100 条/秒，30 秒"; }
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _unloaded = true; _refresh.Stop(); StopStress(); _animations.Dispose();
-        _vm.PropertyChanged -= OnPropertyChanged; _vm.Dashboard.Changed -= Dirty;
+        _vm.PropertyChanged -= OnPropertyChanged; _vm.Dashboard.Changed -= Dirty; _vm.CardBoard.Changed -= Dirty;
         _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose();
-        _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose();
+        _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose(); _cardPanel.Dispose();
         Unloaded -= OnUnloaded;
     }
 }
@@ -390,7 +414,7 @@ internal sealed class DashboardList : Grid, IDisposable
     private ScrollViewer? _scrollViewer;
     public event Action? MarkAllRequested;
     public event Action? FilterChanged;
-    public DashboardList(string title, string glyph, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important)
+    public DashboardList(string title, string glyph, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, UIElement? extraAction = null)
     {
         _title = title; _vm = vm; _animations = animations; _visible = visible; _important = important;
         RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -420,6 +444,7 @@ internal sealed class DashboardList : Grid, IDisposable
             actions.Children.Add(_unread); actions.Children.Add(_readAll);
         }
         actions.Children.Add(_latest);
+        if (extraAction is not null) actions.Children.Add(extraAction);
         UpdateActions(0, 0);
         Children.Add(header);
         _list.ItemsSource = _items;
@@ -542,7 +567,7 @@ internal sealed class DashboardList : Grid, IDisposable
     {
         if (host.Content is MessageCard old)
         {
-            if (!old.IsDisposed && old.RecordId == record.Id && old.RecordRevision == record.Revision && old.MessageStyle.HasSameMessageStyle(_vm.Settings.Dashboard) && old.Read == record.IsRead && old.Thanked == record.IsThanked)
+            if (!old.IsDisposed && old.RecordId == record.Id && old.RecordRevision == record.Revision && old.MediaStyle == _vm.Settings.MediaPreview && old.MessageStyle.HasSameMessageStyle(_vm.Settings.Dashboard) && old.Read == record.IsRead && old.Thanked == record.IsThanked)
             {
                 old.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
                 return;
@@ -557,6 +582,8 @@ internal sealed class DashboardList : Grid, IDisposable
     {
         card.Dispose(); _cards.Remove(card);
     }
+    public void Suspend() { foreach (var card in _cards) card.Deactivate(); }
+    public void Resume() { foreach (var card in _cards) card.Activate(_list.XamlRoot?.RasterizationScale ?? 1); }
     public void Dispose()
     {
         _list.ContainerContentChanging -= RenderContainer;

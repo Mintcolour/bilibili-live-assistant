@@ -12,17 +12,19 @@ namespace BilibiliLiveAssistant.App;
 internal sealed class MessageCard : ContentControl, IDisposable
 {
     private readonly List<BiliImageView> _images = new();
+    private MediaPreviewGroup? _media;
     private bool _disposed;
     internal Guid RecordId { get; }
     internal long RecordRevision { get; }
     internal DashboardSettings MessageStyle { get; }
     internal bool Read { get; }
     internal bool Thanked { get; }
+    internal MediaPreviewSettings MediaStyle { get; }
     public MessageCard(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, DashboardSettings? previewStyle = null)
     {
         var message = record.Event;
         var style = previewStyle ?? vm.Settings.Dashboard;
-        RecordId = record.Id; RecordRevision = record.Revision; MessageStyle = style; Read = record.IsRead; Thanked = record.IsThanked;
+        RecordId = record.Id; RecordRevision = record.Revision; MessageStyle = style; MediaStyle = vm.Settings.MediaPreview; Read = record.IsRead; Thanked = record.IsThanked;
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -34,6 +36,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
         if (style.CompactMessages)
         {
             Content = BuildCompact(record, vm, animations, visible, important, style);
+            AttachMedia(message, vm, animations, visible, previewStyle is not null);
             return;
         }
         var border = new Border { Padding = new(style.Padding), CornerRadius = new(style.CornerRadius) };
@@ -88,6 +91,15 @@ internal sealed class MessageCard : ContentControl, IDisposable
             content.Children.Add(actions);
         }
         Grid.SetColumn(content, 1); layout.Children.Add(content); border.Child = layout; Content = border;
+        AttachMedia(message, vm, animations, visible, previewStyle is not null);
+    }
+    private void AttachMedia(LiveEvent message, LiveAssistantViewModel vm, MessageAnimationClock clock, Func<bool> visible, bool preview)
+    {
+        if (preview || !vm.Settings.MediaPreview.DashboardEnabled || message.MediaReferences.Count == 0) return;
+        var body = Content as UIElement; Content = null;
+        var stack = new StackPanel { Spacing = 5 };
+        if (body is not null) stack.Children.Add(body);
+        _media = new(message, vm, clock, visible); stack.Children.Add(_media); Content = stack;
     }
 
     private Border BuildInteraction(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, DashboardSettings style)
@@ -358,20 +370,23 @@ internal sealed class MessageCard : ContentControl, IDisposable
     {
         if (_disposed) return;
         foreach (var image in _images) image.Activate(XamlRoot?.RasterizationScale ?? rasterizationScale);
+        _media?.SetActive(true);
     }
+    internal void Deactivate() { foreach (var image in _images) image.Deactivate(); _media?.SetActive(false); }
     private void OnLoaded(object sender, RoutedEventArgs e) => Activate();
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         DispatcherQueue.TryEnqueue(() =>
         {
             if (_disposed || IsLoaded) return;
-            foreach (var image in _images) image.Deactivate();
+            Deactivate();
         });
     }
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
         foreach (var image in _images) image.Dispose(); _images.Clear();
+        _media?.Dispose(); _media = null;
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;
         Content = null;

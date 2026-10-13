@@ -17,11 +17,13 @@ public sealed class OverlayWindow : OverlaySurface
     private bool _overlayVisible;
     private bool _cleaned;
     private DashboardSettings _messageStyle;
+    private MediaPreviewSettings _mediaStyle;
 
     public OverlayWindow(LiveAssistantViewModel vm) : base(vm, OverlayRegionKind.Danmaku)
     {
         _vm = vm;
         _messageStyle = vm.Settings.Dashboard;
+        _mediaStyle = vm.Settings.MediaPreview;
         _fixedRegions = new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status }
             .Select(kind => new FixedOverlayWindow(vm, kind, _frames)).ToArray();
         _vm.EventBatchReceived += OnEventBatch;
@@ -64,6 +66,7 @@ public sealed class OverlayWindow : OverlaySurface
         if (e.PropertyName == nameof(LiveAssistantViewModel.Settings))
         {
             if (_messageStyle != _vm.Settings.Dashboard) { _messageStyle = _vm.Settings.Dashboard; ClearItems(); }
+            if (_mediaStyle != _vm.Settings.MediaPreview) { _mediaStyle = _vm.Settings.MediaPreview; ClearItems(); }
             SyncRegionVisibility();
             ConfigureFrameRate();
         }
@@ -116,7 +119,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     private int TrackHeight => Math.Max(_vm.Settings.Display.TrackHeight,
         Math.Max(RegionSettings.FontSize * 2 + 8, Math.Max(RegionSettings.EmoteSize, RegionSettings.LargeEmoteHeight) + 8));
-    private int FindFreeTrack()
+    private int FindFreeTrack(int span = 1)
     {
         var count = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, Math.Min(24, (ClientSize.Height - ContentTop) / TrackHeight)));
         var start = _nextTrack;
@@ -124,7 +127,7 @@ public sealed class OverlayWindow : OverlaySurface
         for (var offset = 0; offset < count; offset++)
         {
             var candidate = (start + offset) % count;
-            if (_items.All(item => item.Track != candidate || item.X + item.Image.Width < ClientSize.Width - 24)) return candidate;
+            if (candidate + span <= count && _items.All(item => item.Track + item.TrackSpan <= candidate || item.Track >= candidate + span || item.X + item.Image.Width < ClientSize.Width - 24)) return candidate;
         }
         return -1;
     }
@@ -158,9 +161,23 @@ public sealed class OverlayWindow : OverlaySurface
                 // otherwise selecting a 2-second update interval drops every message.
                 var maxAge = 2 + RegionSettings.UpdateIntervalMs / 1000d + _vm.EventBatchIntervalSeconds;
                 if ((DateTimeOffset.Now - next!.OccurredAt).TotalSeconds > maxAge) { dropped++; continue; }
-                var item = new OverlayItem(next, RegionSettings, _vm.Settings.Dashboard, _vm.Images, ClientSize.Width + 20, track, ContentTop + track * TrackHeight, TrackHeight);
+                OverlayMediaAttachment? media = null; var span = 1;
+                if (next.MediaReferences.Count > 0 && _vm.CanShowOverlayMedia)
+                {
+                    var height = OverlayMediaAttachment.RequiredHeight(TrackHeight, _vm.Settings.MediaPreview, RegionSettings);
+                    var wanted = (int)Math.Ceiling(height / (double)TrackHeight);
+                    var mediaTrack = FindFreeTrack(wanted);
+                    if (mediaTrack >= 0 && _vm.AcquireOverlayMedia())
+                    { track = mediaTrack; span = wanted; media = new(_vm, next.MediaReferences[0], TrackHeight, RegionSettings); }
+                }
+                var item = new OverlayItem(next, RegionSettings, _vm.Settings.Dashboard, _vm.Images, ClientSize.Width + 20, track, ContentTop + track * TrackHeight, TrackHeight, span, media);
                 _items.Add(item);
                 _ = LoadImagesAsync(item);
+                if (media is not null) _ = media.LoadAsync(() =>
+                {
+                    if (_cleaned || !Visible || !_items.Contains(item)) return;
+                    var before = item.Bounds; item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight); RequestRender(Rectangle.Union(before, item.Bounds));
+                });
                 break;
             }
         _vm.RecordOverlayDropped(dropped);
@@ -215,7 +232,7 @@ public sealed class OverlayWindow : OverlaySurface
         var tracks = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, (ClientSize.Height - ContentTop) / TrackHeight));
         for (var i = _items.Count - 1; i >= 0; i--)
         {
-            if (i >= RegionSettings.MaxVisible || _items[i].Track >= tracks) { _items[i].Dispose(); _items.RemoveAt(i); }
+            if (i >= RegionSettings.MaxVisible || _items[i].Track + _items[i].TrackSpan > tracks) { _items[i].Dispose(); _items.RemoveAt(i); }
             else _items[i].SetY(ContentTop + _items[i].Track * TrackHeight);
         }
         _intakeTimer.Interval = RegionSettings.UpdateIntervalMs;
@@ -251,16 +268,22 @@ public sealed class OverlayWindow : OverlaySurface
 
     private sealed class OverlayItem : IDisposable
     {
-        public OverlayItem(LiveEvent value, OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, double x, int track, int y, int height)
+        public OverlayItem(LiveEvent value, OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, double x, int track, int y, int height, int span = 1, OverlayMediaAttachment? media = null)
         {
-            Event = value; X = x; Track = track; Y = y;
-            Image = OverlayMessageRenderer.Render(value, settings, style, cache, maxHeight: height);
+            Event = value; X = x; Track = track; TrackSpan = span; Y = y; Media = media;
+            var body = OverlayMessageRenderer.Render(value, settings, style, cache, maxHeight: height);
+            Image = media is null ? body : media.Compose(body, settings);
+            if (media is not null) body.Dispose();
         }
+        public OverlayMediaAttachment? Media { get; }
+        public int TrackSpan { get; }
         public LiveEvent Event { get; }
         public CancellationTokenSource Cancellation { get; } = new();
         public void RefreshImage(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
         {
-            var replacement = OverlayMessageRenderer.Render(Event, settings, style, cache, maxHeight: height);
+            var body = OverlayMessageRenderer.Render(Event, settings, style, cache, maxHeight: height);
+            var replacement = Media is null ? body : Media.Compose(body, settings);
+            if (Media is not null) body.Dispose();
             Image.Dispose(); Image = replacement;
         }
         public Bitmap Image { get; private set; }
@@ -268,7 +291,7 @@ public sealed class OverlayWindow : OverlaySurface
         public int Track { get; }
         public int Y { get; private set; }
         public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);
-        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); }
+        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Media?.Dispose(); Image.Dispose(); }
         public void SetY(int y) => Y = y;
     }
 }

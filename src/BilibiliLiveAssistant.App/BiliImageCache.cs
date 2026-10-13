@@ -19,6 +19,13 @@ internal sealed class BiliImageCache : IDisposable
     private readonly object _gate = new();
     private readonly Dictionary<string, (BiliImageAsset Asset, long Used)> _memory = new();
     private readonly Dictionary<string, Task<BiliImageAsset?>> _inflight = new();
+    private readonly Dictionary<string, DownloadLease> _leases = new();
+    private sealed class DownloadLease(CancellationToken shutdown)
+    {
+        public CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
+        public int Consumers;
+        public bool Completed;
+    }
     private readonly Dictionary<string, DateTimeOffset> _failures = new();
     private TaskCompletionSource<bool> _capacityChanged = NewCapacitySignal();
     private readonly SemaphoreSlim _downloads = new(2, 2);
@@ -42,12 +49,7 @@ internal sealed class BiliImageCache : IDisposable
     private static TaskCompletionSource<bool> NewCapacitySignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public Task<BiliImageAsset?> GetAsync(string url, bool animate = false)
-    {
-        if (NormalizeUrl(url) is not { } uri) return Task.FromResult<BiliImageAsset?>(null);
-        var key = uri.AbsoluteUri + (animate ? "|animated" : "|static");
-        lock (_gate)
-            return GetOrStart(key, uri, animate) ?? Task.FromResult<BiliImageAsset?>(null);
-    }
+        => GetForViewAsync(url, animate, CancellationToken.None);
 
     // Visible views wait for admission instead of mistaking a full queue for a
     // failed image. Unloading cancels only that view's wait, never a shared load.
@@ -59,13 +61,26 @@ internal sealed class BiliImageCache : IDisposable
         {
             cancellation.ThrowIfCancellationRequested();
             Task<BiliImageAsset?>? pending;
+            DownloadLease? lease;
             Task capacityChanged;
             lock (_gate)
             {
                 pending = GetOrStart(key, uri, animate);
+                lease = pending is not null && _leases.TryGetValue(key, out var shared) ? shared : null;
+                if (lease is not null) lease.Consumers++;
                 capacityChanged = _capacityChanged.Task;
             }
-            if (pending is not null) return await pending.WaitAsync(cancellation).ConfigureAwait(false);
+            if (pending is not null)
+            {
+                try { return await pending.WaitAsync(cancellation).ConfigureAwait(false); }
+                finally
+                {
+                    if (lease is not null)
+                        lock (_gate)
+                            if (--lease.Consumers == 0)
+                            { if (lease.Completed) lease.Cancellation.Dispose(); else lease.Cancellation.Cancel(); }
+                }
+            }
             await capacityChanged.WaitAsync(cancellation).ConfigureAwait(false);
         }
     }
@@ -77,11 +92,12 @@ internal sealed class BiliImageCache : IDisposable
         if (_disposed) return Task.FromResult<BiliImageAsset?>(null);
         if (_memory.TryGetValue(key, out var entry))
         { _memory[key] = (entry.Asset, ++_useSequence); return Task.FromResult<BiliImageAsset?>(entry.Asset); }
-        if (_inflight.TryGetValue(key, out var pending)) return pending;
+        if (_inflight.TryGetValue(key, out var pending)) return _leases[key].Cancellation.IsCancellationRequested ? null : pending;
         if (_failures.TryGetValue(key, out var failed) && failed > DateTimeOffset.UtcNow)
             return Task.FromResult<BiliImageAsset?>(null);
         if (_inflight.Count >= 32) return null;
-        var task = Task.Run(() => LoadAsync(key, uri, animate, _shutdown.Token));
+        var lease = new DownloadLease(_shutdown.Token); _leases.Add(key, lease);
+        var task = Task.Run(() => LoadAsync(key, uri, animate, lease.Cancellation.Token));
         _inflight.Add(key, task);
         return task;
     }
@@ -147,7 +163,7 @@ internal sealed class BiliImageCache : IDisposable
             lock (_gate)
             {
                 if (_failures.Count >= 256) _failures.Remove(_failures.MinBy(x => x.Value).Key);
-                _failures[key] = DateTimeOffset.UtcNow.AddMinutes(5);
+                if (ex is not OperationCanceledException || !token.IsCancellationRequested) _failures[key] = DateTimeOffset.UtcNow.AddMinutes(5);
             }
             return null;
         }
@@ -157,6 +173,7 @@ internal sealed class BiliImageCache : IDisposable
             lock (_gate)
             {
                 _inflight.Remove(key);
+                if (_leases.Remove(key, out var lease)) { lease.Completed = true; if (lease.Consumers == 0) lease.Cancellation.Dispose(); }
                 var signal = _capacityChanged;
                 _capacityChanged = NewCapacitySignal();
                 signal.TrySetResult(true);
