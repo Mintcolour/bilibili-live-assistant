@@ -45,6 +45,7 @@ public sealed class MediaDetailsService : IDisposable
                 _cache.Remove(reference.Key);
                 var existing = _inflight.TryGetValue(reference.Key, out pending);
                 if (existing && pending!.Cancellation.IsCancellationRequested) pending = null;
+                if (!existing && _inflight.Count >= 18) return new(reference, reference.Id, Error: "媒体请求繁忙，暂不加载");
                 if (!existing && _inflight.Count < 18)
                 {
                     pending = new(); _inflight.Add(reference.Key, pending);

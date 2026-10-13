@@ -15,11 +15,13 @@ internal sealed class OverlayMediaAttachment : IDisposable
     private MediaDetails? _details;
     private bool _disposed;
     private bool _started, _finished;
+    private readonly bool _admitted;
     public int BodyHeight { get; }
     public int Height { get; }
-    public OverlayMediaAttachment(LiveAssistantViewModel vm, MediaReference reference, int bodyHeight, OverlayRegionSettings region)
+    public OverlayMediaAttachment(LiveAssistantViewModel vm, MediaReference reference, int bodyHeight, OverlayRegionSettings region,
+        MediaPreviewSettings? settings = null, MediaDetails? sample = null, bool admitted = true)
     {
-        _vm = vm; _reference = reference; _settings = vm.Settings.MediaPreview;
+        _vm = vm; _reference = reference; _settings = settings ?? vm.Settings.MediaPreview; _details = sample; _admitted = admitted;
         BodyHeight = bodyHeight; Height = RequiredHeight(bodyHeight, _settings, region);
     }
     public static int RequiredHeight(int bodyHeight, MediaPreviewSettings settings, OverlayRegionSettings region)
@@ -107,7 +109,7 @@ internal sealed class OverlayMediaAttachment : IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true; _cancel.Cancel();
-        _vm.ReleaseOverlayMedia();
+        if (_admitted) _vm.ReleaseOverlayMedia();
         if (!_started || _finished) _cancel.Dispose();
     }
 }

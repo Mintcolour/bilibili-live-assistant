@@ -108,7 +108,8 @@ public sealed class DanmakuCardBoard
         var signature = new StringBuilder(content);
         if (message.Appearance?.FullEmote is { } full) signature.Append('\0').Append(full.Url);
         if (message.Appearance is { } appearance)
-            foreach (var emote in appearance.Emotes.Where(e => e.Token.Length > 0 && content.Contains(e.Token, StringComparison.Ordinal)))
+            foreach (var emote in appearance.Emotes.Where(e => e.Token.Length > 0 && content.Contains(e.Token, StringComparison.Ordinal))
+                .OrderBy(e => e.Token, StringComparer.Ordinal).ThenBy(e => e.Url, StringComparer.Ordinal))
                 signature.Append('\0').Append(emote.Token).Append('\0').Append(emote.Url);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(signature.ToString())));
     }

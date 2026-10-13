@@ -14,6 +14,10 @@ internal sealed class DisplayPage : Page
     private readonly VisualRegionEditor _editor = new();
     private readonly DashboardSettingsEditor _dashboard;
     private readonly DisplayPreview _preview;
+    private readonly FeaturePreview _featurePreview;
+    private readonly MediaSettingsEditor _mediaEditor = new();
+    private readonly CardSettingsEditor _cardEditor = new();
+    private readonly TextBlock _layoutLabel = new() { Text = "桌面布局 · 拖动区域，右下角缩放", FontSize = 14 };
     private readonly VisualLayoutEditor _layout = new();
     private readonly ToggleSwitch _enabled = new() { Header = "显示这一类悬浮内容" };
     private readonly ToggleSwitch _locked = new() { Header = "锁定实际窗口位置（鼠标穿透）" };
@@ -27,27 +31,33 @@ internal sealed class DisplayPage : Page
     private readonly Grid _columns = new() { ColumnSpacing = 18 };
     private DashboardSettings _dashboardDraft;
     private DisplaySettings _displayDraft;
+    private MediaPreviewSettings _mediaDraft = new();
+    private DanmakuCardSettings _cardDraft = new();
+    private string? _feature;
+    private bool _cardModeDirty, _savedCardEnabled;
     private OverlayRegionKind? _selected;
     private bool _loading, _disposed, _saving;
     public DisplayPage(LiveAssistantViewModel vm, Action openOverlay, Func<bool> isVisible)
     {
         _vm = vm; _visible = isVisible; _dashboardDraft = vm.Settings.Dashboard; _displayDraft = vm.Settings.Display;
-        _dashboard = new(_dashboardDraft); _preview = new(vm, isVisible);
+        _dashboard = new(_dashboardDraft); _preview = new(vm, isVisible); _featurePreview = new(vm, isVisible);
         var root = new Grid { Padding = new Thickness(20, 12, 20, 12), RowSpacing = 12 };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var header = new Grid { ColumnSpacing = 14 }; header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         header.Children.Add(new TextBlock { Text = "可视化设置", FontSize = 22, VerticalAlignment = VerticalAlignment.Center });
         _selector.Items.Add(new ComboBoxItem { Content = "概览消息", Tag = "dashboard" });
         foreach (var kind in Enum.GetValues<OverlayRegionKind>()) _selector.Items.Add(new ComboBoxItem { Content = OverlayRegions.Title(kind), Tag = kind });
+        _selector.Items.Add(new ComboBoxItem { Content = "媒体预览", Tag = "media" });
+        _selector.Items.Add(new ComboBoxItem { Content = "概览卡片", Tag = "cards" });
         Grid.SetColumn(_selector, 1); header.Children.Add(_selector); root.Children.Add(header);
         _columns.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 280 }); _columns.ColumnDefinitions.Add(new() { Width = new(330), MinWidth = 270 });
         var previewContent = new StackPanel { Spacing = 12, Children = { new TextBlock { Text = "实时预览", FontSize = 16 }, _preview,
-            new TextBlock { Text = "桌面布局 · 拖动区域，右下角缩放", FontSize = 14 }, _layout } };
+            _featurePreview, _layoutLabel, _layout } };
         _columns.Children.Add(new ScrollViewer { Content = previewContent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         _shared.Children.Add(new TextBlock { Text = "共享图文元素", FontSize = 13 });
         _shared.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _avatars, _medals, _identity } });
         foreach (var (label, rate) in new[] { ("30 FPS · 省电", 30), ("60 FPS · 平衡", 60), ("120 FPS", 120), ("跟随屏幕", 0) }) _frameRate.Items.Add(new ComboBoxItem { Content = label, Tag = rate });
-        var properties = new StackPanel { Spacing = 12, Children = { _dashboard, _enabled, _shared, _editor, _tracks, _frameRate, _locked, _poll } };
+        var properties = new StackPanel { Spacing = 12, Children = { _dashboard, _mediaEditor, _cardEditor, _enabled, _shared, _editor, _tracks, _frameRate, _locked, _poll } };
         var propertiesScroll = new ScrollViewer { Content = properties, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; Grid.SetColumn(propertiesScroll, 1); _columns.Children.Add(propertiesScroll);
         Grid.SetRow(_columns, 1); root.Children.Add(_columns);
         var footer = new StackPanel { Spacing = 6 }; var buttons = new Grid { ColumnSpacing = 8 };
@@ -89,9 +99,11 @@ internal sealed class DisplayPage : Page
         _selector.SelectionChanged += (_, _) =>
         {
             if (_loading) return; Capture(); _selected = (_selector.SelectedItem as ComboBoxItem)?.Tag is OverlayRegionKind kind ? kind : null;
+            _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" ? tag : null;
             LoadSelection(); RefreshPreview();
         };
         _editor.Changed += OnEdited; _dashboard.Changed += OnEdited;
+        _mediaEditor.Changed += OnEdited; _cardEditor.Changed += OnEdited;
         foreach (var control in new DependencyObject[] { _enabled, _shared, _tracks, _frameRate, _locked, _poll }) SettingEvents.Watch(control, OnEdited);
         _layout.Selected += kind => { _selector.SelectedItem = _selector.Items.OfType<ComboBoxItem>().First(item => item.Tag is OverlayRegionKind value && value == kind); };
         _layout.Changed += (kind, region) =>
@@ -110,37 +122,47 @@ internal sealed class DisplayPage : Page
             _columns.RowDefinitions[1].Height = new(narrow ? 1 : 0, GridUnitType.Star); Grid.SetColumn(propertiesScroll, narrow ? 0 : 1); Grid.SetRow(propertiesScroll, narrow ? 1 : 0);
         };
         vm.PropertyChanged += OnSettingsChanged;
-        Loaded += (_, _) => ResumeVisuals(); Unloaded += (_, _) => { _disposed = true; vm.PropertyChanged -= OnSettingsChanged; _preview.Dispose(); };
+        Loaded += (_, _) => ResumeVisuals(); Unloaded += (_, _) => { _disposed = true; vm.PropertyChanged -= OnSettingsChanged; _preview.Dispose(); _featurePreview.Dispose(); };
         LoadStored();
     }
     private void LoadStored()
     {
         _loading = true; _layoutDirty.Clear(); _displayDraft = _vm.Settings.Display; _dashboardDraft = _vm.Settings.Dashboard;
+        _mediaDraft = _vm.Settings.MediaPreview; _cardDraft = _vm.Settings.Cards; _cardModeDirty = false; _savedCardEnabled = _cardDraft.Enabled;
         foreach (var kind in Enum.GetValues<OverlayRegionKind>()) _drafts[kind] = OverlayRegions.Get(_displayDraft, kind);
         _dashboard.Load(_dashboardDraft); _tracks.Value = _displayDraft.MaxTracks; _poll.Value = _vm.Settings.PollIntervalSeconds;
         _frameRate.SelectedItem = _frameRate.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (int)item.Tag == _displayDraft.AnimationFrameRate) ?? _frameRate.Items[1];
         _locked.IsOn = _displayDraft.LayoutLocked;
         if (_selector.SelectedIndex < 0) _selector.SelectedIndex = 0;
         _selected = (_selector.SelectedItem as ComboBoxItem)?.Tag is OverlayRegionKind selected ? selected : null;
+        _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" ? tag : null;
         _loading = false; LoadSelection(); RefreshPreview();
     }
     private void LoadSelection()
     {
-        _loading = true; var overview = _selected is null;
+        _loading = true; var overview = _selected is null && _feature is null;
         _dashboard.Visibility = _poll.Visibility = overview ? Visibility.Visible : Visibility.Collapsed;
-        _editor.Visibility = _shared.Visibility = overview ? Visibility.Collapsed : Visibility.Visible;
+        _mediaEditor.Visibility = _feature == "media" ? Visibility.Visible : Visibility.Collapsed;
+        _cardEditor.Visibility = _feature == "cards" ? Visibility.Visible : Visibility.Collapsed;
+        _preview.Visibility = _layout.Visibility = _layoutLabel.Visibility = _feature is null ? Visibility.Visible : Visibility.Collapsed;
+        _featurePreview.Visibility = _feature is null ? Visibility.Collapsed : Visibility.Visible;
+        _editor.Visibility = _shared.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
         _enabled.Visibility = _selected is null or OverlayRegionKind.Danmaku ? Visibility.Collapsed : Visibility.Visible;
         _tracks.Visibility = _selected == OverlayRegionKind.Danmaku ? Visibility.Visible : Visibility.Collapsed;
         _frameRate.Visibility = _selected is not null and not OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
-        _locked.Visibility = overview ? Visibility.Collapsed : Visibility.Visible;
+        _locked.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
         _avatars.IsChecked = _dashboardDraft.ShowAvatars; _medals.IsChecked = _dashboardDraft.ShowMedals; _identity.IsChecked = _dashboardDraft.ShowIdentity;
         if (_selected is { } kind) { _editor.Load(kind, _drafts[kind]); _enabled.IsOn = OverlayRegions.Enabled(_displayDraft, kind); }
+        else if (_feature == "media") _mediaEditor.Load(_mediaDraft);
+        else if (_feature == "cards") _cardEditor.Load(_cardDraft);
         else _dashboard.Load(_dashboardDraft);
         _loading = false;
     }
     private void Capture()
     {
         if (_loading) return;
+        if (_feature == "media") { _mediaDraft = _mediaEditor.Read(); return; }
+        if (_feature == "cards") { _cardDraft = _cardEditor.Read(); _cardModeDirty = _cardDraft.Enabled != _savedCardEnabled; return; }
         if (_selected is { } kind)
         {
             var previous = _drafts[kind]; var next = _editor.Read(previous); _drafts[kind] = next;
@@ -156,6 +178,10 @@ internal sealed class DisplayPage : Page
     private void OnEdited() { if (_loading || _disposed) return; Capture(); RefreshPreview(); _feedback.Text = "预览已更新 · 尚未应用到实际窗口"; }
     private void RefreshPreview()
     {
+        _preview.SetActive(_feature is null && _visible());
+        if (_feature is { } feature) _featurePreview.Update(feature, _mediaDraft, _cardDraft, _dashboardDraft);
+        _featurePreview.SetActive(_feature is not null && _visible());
+        if (_feature is not null) return;
         _preview.Update(_selected, _selected is { } kind ? _drafts[kind] : new(), _dashboardDraft, _displayDraft.AnimationFrameRate,
             _selected is not { } selected || OverlayRegions.Enabled(_displayDraft, selected), _displayDraft.MaxTracks);
         _layout.Update(_displayDraft, _drafts, _selected);
@@ -171,7 +197,11 @@ internal sealed class DisplayPage : Page
             var current = _vm.Settings.Dashboard;
             var dashboard = _dashboardDraft with { DanmakuColumnWidth = current.DanmakuColumnWidth, GiftColumnWidth = current.GiftColumnWidth, SuperChatColumnWidth = current.SuperChatColumnWidth,
                 InteractionPanelRatio = current.InteractionPanelRatio, RankPanelRatio = current.RankPanelRatio, RankPanelCollapsed = current.RankPanelCollapsed, RankKind = current.RankKind };
-            _saving = true; await _vm.SaveAsync(_vm.Settings with { Display = display, Dashboard = dashboard.Normalize(), PollIntervalSeconds = (int)_poll.Value });
+            var cards = _cardModeDirty ? _cardDraft : _cardDraft with { Enabled = _vm.Settings.Cards.Enabled };
+            _saving = true; await _vm.SaveAsync(_vm.Settings with { Display = display, Dashboard = dashboard.Normalize(), PollIntervalSeconds = (int)_poll.Value,
+                MediaPreview = _mediaDraft.Normalize(), Cards = cards.Normalize() });
+            _cardDraft = _vm.Settings.Cards; _savedCardEnabled = _cardDraft.Enabled; _cardModeDirty = false;
+            if (_feature == "cards") { _loading = true; _cardEditor.Load(_cardDraft); _loading = false; }
             _layoutDirty.Clear();
             _feedback.Text = "已保存并应用。"; return true;
         }
@@ -182,6 +212,11 @@ internal sealed class DisplayPage : Page
     {
         if (_disposed || _saving || args.PropertyName != nameof(LiveAssistantViewModel.Settings)) return;
         Capture();
+        if (!_cardModeDirty)
+        {
+            _cardDraft = _cardDraft with { Enabled = _vm.Settings.Cards.Enabled }; _savedCardEnabled = _cardDraft.Enabled;
+            if (_feature == "cards") { _loading = true; _cardEditor.Load(_cardDraft); _loading = false; }
+        }
         foreach (var kind in Enum.GetValues<OverlayRegionKind>())
         {
             if (_layoutDirty.Contains(kind)) continue;
@@ -191,8 +226,8 @@ internal sealed class DisplayPage : Page
         }
         RefreshPreview();
     }
-    internal void SuspendVisuals() => _preview.SetActive(false);
-    internal void ResumeVisuals() { if (!_disposed) _preview.SetActive(_visible()); }
+    internal void SuspendVisuals() { _preview.SetActive(false); _featurePreview.SetActive(false); }
+    internal void ResumeVisuals() { if (!_disposed) RefreshPreview(); }
     internal static NumberBox Number(string label, double value, double min, double max) => new()
     { Header = label, Value = value, Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
     internal static int Value(NumberBox box, int fallback) => double.IsFinite(box.Value) ? (int)Math.Clamp(Math.Round(box.Value), box.Minimum, box.Maximum) : fallback;

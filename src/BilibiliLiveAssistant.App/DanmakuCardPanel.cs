@@ -42,9 +42,9 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
     {
         if (_disposed || !_active || !_visible() || _slots.ActualWidth <= 0 || _slots.ActualHeight <= 0) return;
         var settings = _vm.Settings.Cards;
-        var columns = Math.Min(settings.Columns, Math.Max(1, (int)(_slots.ActualWidth / 200)));
+        var columns = Math.Min(settings.Columns, Math.Max(1, (int)((_slots.ActualWidth + 6) / 206)));
         var height = Math.Min(settings.Height, Math.Max(80, _slots.ActualHeight));
-        var rows = Math.Clamp((int)((_slots.ActualHeight + 6) / (height + 6)), 1, Math.Min(8, 32 / columns));
+        var rows = Math.Clamp((int)((_slots.ActualHeight + 6) / (height + 6)), 1, 32 / columns);
         if (_columns != columns || _rows != rows || styleChanged)
         {
             _columns = columns; _rows = rows;
@@ -79,6 +79,9 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
         private readonly Grid _root = new() { RowSpacing = 4 };
         private DanmakuCardEntry? _entry;
         private MessageCard? _card;
+        private bool _hovered;
+        private long _count = -1;
+        private DateTimeOffset _time;
         public SlotView(LiveAssistantViewModel vm, MessageAnimationClock clock, Func<bool> visible, Action<string> feedback)
         {
             _vm = vm; _clock = clock; _visible = visible; _feedback = feedback;
@@ -90,8 +93,8 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
             hide.Click += (_, _) => { if (_entry is { } entry && !vm.CardBoard.Hide(entry)) _feedback("隐藏清单已满，请先清除隐藏清单"); };
             SetColumn(hide, 2); header.Children.Add(hide); _root.Children.Add(header); SetRow(_body, 1); _root.Children.Add(_body); Children.Add(_root);
             _repeat.Click += ShowSenders;
-            PointerEntered += (_, _) => { if (_entry is not null) _entry.Protected = true; };
-            PointerExited += (_, _) => { if (_entry is not null) _entry.Protected = false; };
+            PointerEntered += (_, _) => { _hovered = true; if (_entry is not null) _entry.Protected = true; };
+            PointerExited += (_, _) => { _hovered = false; if (_entry is not null) _entry.Protected = false; };
         }
         public void Bind(DanmakuCardEntry? entry, bool styleChanged)
         {
@@ -99,11 +102,13 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
             {
                 if (_entry is not null) _entry.Protected = false;
                 _card?.Dispose(); _card = null; _body.Content = null; _entry = entry;
+                _count = -1;
                 if (entry is not null)
-                { _card = new(entry.Record, _vm, _clock, _visible, false); _body.Content = _card; _card.Activate(XamlRoot?.RasterizationScale ?? 1); }
+                { entry.Protected = _hovered; _card = new(entry.Record, _vm, _clock, _visible, false); _body.Content = _card; _card.Activate(XamlRoot?.RasterizationScale ?? 1); }
                 _root.Visibility = entry is null ? Visibility.Collapsed : Visibility.Visible;
             }
-            if (entry is null) return;
+            if (entry is null || (_count == entry.Count && _time == entry.LastSeen)) return;
+            _count = entry.Count; _time = entry.LastSeen;
             _repeat.Content = $"×{entry.Count}"; _last.Text = entry.LastSeen.ToString("HH:mm:ss");
         }
         private void ShowSenders(object sender, RoutedEventArgs e)
@@ -117,7 +122,7 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
             var flyout = new Flyout { Content = new ScrollViewer { Content = list, MaxHeight = 320 } };
             flyout.ShowAt(_repeat);
         }
-        public void SetActive(bool active) { if (active) _card?.Activate(XamlRoot?.RasterizationScale ?? 1); else { if (_entry is not null) _entry.Protected = false; _card?.Deactivate(); } }
+        public void SetActive(bool active) { if (active) _card?.Activate(XamlRoot?.RasterizationScale ?? 1); else { _hovered = false; if (_entry is not null) _entry.Protected = false; _card?.Deactivate(); } }
         public void Dispose() { if (_entry is not null) _entry.Protected = false; _card?.Dispose(); _body.Content = null; _entry = null; }
     }
 }
