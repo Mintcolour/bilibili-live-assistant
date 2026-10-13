@@ -213,6 +213,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         var small = new LiveEmote("[热]", "https://i0.hdslb.com/bfs/live/6df760280b17a6cbac8c1874d357298f982ba4cf.png", 20, 20);
         var appearance = new LiveMessageAppearance { MedalName = "示例牌", MedalLevel = 21, MedalColor = "#4388BC", GuardLevel = 3, IsAdmin = true, Emotes = new[] { small } };
         Example(new LiveEvent(LiveEventType.Danmaku, "图文示例用户", "这是一条带 B站图片表情的弹幕 [热]，也支持普通 emoji 😊", "#FFFFFF", 5, Appearance: appearance));
+        Example(new LiveEvent(LiveEventType.Danmaku, "媒体接口示例", "BV1xx411c7mD · steam 730 · app/730（相同游戏去重，点击原页面才打开浏览器）", "#FFFFFF", 11));
+        foreach (var uid in new long[] { 12, 13, 0 })
+            Example(new LiveEvent(LiveEventType.Danmaku, uid > 0 ? $"重复示例用户{uid}" : "匿名示例", "同一句话原位更新计数 [热]", "#FFFFFF", uid, Appearance: appearance));
         Example(new LiveEvent(LiveEventType.Danmaku, "大表情示例", "[B站图片表情]", "#FFFFFF", 6,
             Appearance: new LiveMessageAppearance { MedalName = "示例牌", MedalLevel = 30,
                 FullEmote = new("[B站图片表情]", "https://i0.hdslb.com/bfs/live/a98e35996545509188fe4d24bd1a56518ea5af48.png", 183, 60, true) }));
@@ -222,7 +225,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             Metadata: new Dictionary<string, object?> { ["gift_id"] = 1L, ["num"] = 2L, ["total_coin"] = 0L, ["coin_type"] = "silver" }));
         Example(new LiveEvent(LiveEventType.Guard, "示例舰长", "开通了舰长！", "#FF69B4", 2));
         Example(new LiveEvent(LiveEventType.SuperChat, "示例留言", "¥30 这是一条醒目留言示例，可以单独调整滚动速度、字号和表情尺寸。", "#FFD700", 3));
-        Example(new LiveEvent(LiveEventType.SuperChat, "长留言示例", "¥50 " + string.Concat(Enumerable.Repeat("长 SC 会连续分段滚动，同一条的各段不会插入其他留言 [热] 😊。", 8)), "#FFD700", 10,
+        Example(new LiveEvent(LiveEventType.SuperChat, "长留言示例", "¥50 BV1xx411c7mD " + string.Concat(Enumerable.Repeat("长 SC 会连续分段滚动，同一条的各段不会插入其他留言 [热] 😊。", 8)), "#FFD700", 10,
             Appearance: appearance));
         var entryAvatar = "https://i0.hdslb.com/bfs/face/109b787c5f113c4a3c7415bb9bf6b82bc33bc4e2.jpg";
         Example(new LiveEvent(LiveEventType.Enter, "普通进房示例", "进入了直播间", "#4CAF50", 4,

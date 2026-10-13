@@ -213,18 +213,24 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         if (Kind == OverlayRegionKind.SuperChat && firstPart && value.MediaReferences.Count > 0 && ViewModel.CanShowOverlayMedia
             && OverlayMediaAttachment.RequiredHeight(RowHeight, ViewModel.Settings.MediaPreview, RegionSettings) <= ClientSize.Height - ContentTop
             && ViewModel.AcquireOverlayMedia()) media = new(ViewModel, value.MediaReferences[0], RowHeight, RegionSettings);
-        var body = OverlayMessageRenderer.Render(value, RegionSettings, _style, ViewModel.Images,
-            width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
-        var sprite = new Sprite(value, lane, x, ContentTop + lane * RowHeight,
-            media is null ? body : media.Compose(body, RegionSettings), media);
-        if (media is not null) body.Dispose();
+        Bitmap image;
+        try
+        {
+            var body = OverlayMessageRenderer.Render(value, RegionSettings, _style, ViewModel.Images,
+                width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
+            if (media is null) image = body;
+            else using (body) image = media.Compose(body, RegionSettings);
+        }
+        catch { media?.Dispose(); throw; }
+        var sprite = new Sprite(value, lane, x, ContentTop + lane * RowHeight, image, media);
         _sprites.Add(sprite); _ = LoadImagesAsync(sprite);
         if (media is not null) _ = media.LoadAsync(() =>
         {
             if (_cleaned || !Visible || !_sprites.Contains(sprite)) return;
             var before = sprite.Bounds;
             using var updated = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images, maxHeight: RowHeight);
-            sprite.Image.Dispose(); sprite.Image = media.Compose(updated, RegionSettings); RequestRender(Rectangle.Union(before, sprite.Bounds));
+            var replacement = media.Compose(updated, RegionSettings);
+            sprite.Image.Dispose(); sprite.Image = replacement; RequestRender(Rectangle.Union(before, sprite.Bounds));
         });
         RequestRender(sprite.Bounds); return sprite;
     }
@@ -249,7 +255,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
                 var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
                     width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
                 var image = body;
-                if (sprite.Media is { } media) { image = media.Compose(body, RegionSettings); body.Dispose(); }
+                if (sprite.Media is { } media) { using (body) image = media.Compose(body, RegionSettings); }
                 sprite.Image.Dispose(); sprite.Image = image;
                 RequestRender(Rectangle.Union(before, sprite.Bounds));
             }
@@ -300,7 +306,15 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     {
         for (var i = _sprites.Count - 1; i >= 0; i--)
             if (_sprites[i].Lane >= Lanes) { _sprites[i].Dispose(); _sprites.RemoveAt(i); }
-            else _sprites[i].Y = ContentTop + _sprites[i].Lane * RowHeight;
+            else
+            {
+                var sprite = _sprites[i]; sprite.Y = ContentTop + sprite.Lane * RowHeight;
+                if (sprite.Media is not null && sprite.Y + sprite.Image.Height > ClientSize.Height)
+                {
+                    var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images, maxHeight: RowHeight);
+                    sprite.Media.Dispose(); sprite.Media = null; sprite.Image.Dispose(); sprite.Image = body;
+                }
+            }
     }
 
     private void RefreshEntries()
@@ -371,7 +385,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         public long CreatedAt, ExpiresAt;
         public Bitmap Image;
         public bool ImagesLoading;
-        public OverlayMediaAttachment? Media { get; }
+        public OverlayMediaAttachment? Media { get; set; }
         public CancellationTokenSource Cancellation { get; } = new();
         public Sprite(LiveEvent value, int lane, double x, int y, Bitmap image, OverlayMediaAttachment? media = null) { Event = value; Lane = lane; X = x; Y = y; Image = image; Media = media; }
         public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);

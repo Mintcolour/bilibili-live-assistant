@@ -17,6 +17,7 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
     private readonly MessageAnimationClock _clock;
     private readonly List<MessageCard> _cards = new();
     private readonly DispatcherQueueTimer _renderTimer;
+    private readonly ComboBox _provider = new() { ItemsSource = new[] { "B站视频示例", "Steam 游戏示例" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Left };
     private MediaPreviewTile? _tile;
     private bool _active, _disposed;
     private int _generation;
@@ -29,6 +30,7 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
         _vm = vm; _visible = visible; _clock = new(() => _active && _visible()); Spacing = 12;
         _renderTimer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _renderTimer.Interval = TimeSpan.FromMilliseconds(100); _renderTimer.IsRepeating = false;
         _renderTimer.Tick += (_, _) => Render();
+        _provider.SelectionChanged += (_, _) => Schedule();
         SizeChanged += (_, e) => { if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) > 1) Schedule(); };
     }
     public void Update(string kind, MediaPreviewSettings media, DanmakuCardSettings settings, DashboardSettings style)
@@ -45,9 +47,17 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
         {
             if (_kind == "cards")
             {
+                if (!_settings.Enabled)
+                {
+                    Children.Add(new TextBlock { Text = "列表模式示例", FontSize = 14 });
+                    for (var i = 0; i < 3; i++)
+                    { var card = new MessageCard(new(Sample(i)), _vm, _clock, () => _active && _visible(), false, _style); _cards.Add(card); Children.Add(card); }
+                    Children.Add(new TextBlock { Text = "打开右侧卡片模式开关，预览固定网格。", FontSize = 12, Opacity = 0.65 });
+                    return;
+                }
                 Children.Add(new TextBlock { Text = $"固定槽位示例 · {_settings.Columns} 列 · {_settings.Height} px", FontSize = 14 });
                 var grid = new Grid { RowSpacing = 6, ColumnSpacing = 6 };
-                var columns = Math.Min(_settings.Columns, Math.Max(1, (int)(Math.Max(200, ActualWidth) / 200)));
+                var columns = Math.Min(_settings.Columns, Math.Max(1, (int)((Math.Max(200, ActualWidth) + 6) / 206)));
                 for (var i = 0; i < columns; i++) grid.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
                 for (var i = 0; i < 2; i++) grid.RowDefinitions.Add(new() { Height = new(_settings.Height) });
                 for (var i = 0; i < columns * 2; i++)
@@ -58,16 +68,18 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
                     var frame = new Border { Background = MessageCard.Brush("#252B36"), CornerRadius = new(7), Padding = new(6), Child = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } };
                     Grid.SetRow(frame, i / columns); Grid.SetColumn(frame, i % columns); grid.Children.Add(frame);
                 }
-                Children.Add(grid); Children.Add(new TextBlock { Text = "重复只更新次数 · 悬停保护 · 这组本地示例不会写入实际卡片", FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.65 });
+                Children.Add(grid); Children.Add(new TextBlock { Text = "重复只更新次数 · 悬停保护 · " + (_settings.AutoHide ? $"累计 {_settings.RepeatThreshold} 次后隐藏 {_settings.HideSeconds} 秒" : "自动隐藏已关闭") + "\n这组本地示例不会写入实际卡片", FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.65 });
                 return;
             }
-            var reference = new MediaReference(MediaKind.Bilibili, "BV1fkPazmENy");
-            var details = new MediaDetails(reference, "本地视频标题示例：带封面、作者和播放量", Creator: "示例作者", Summary: "播放 12,345");
+            Children.Add(_provider);
+            var reference = _provider.SelectedIndex == 1 ? new MediaReference(MediaKind.Steam, "730") : new(MediaKind.Bilibili, "BV1xx411c7mD");
+            var details = reference.Kind == MediaKind.Steam ? new MediaDetails(reference, "本地游戏示例", Creator: "示例开发商", Summary: "¥ 68.00（示例价格）")
+                : new(reference, "本地视频标题示例：带封面、作者和播放量", Creator: "示例作者", Summary: "播放 12,345");
             Children.Add(new TextBlock { Text = "概览媒体示例", FontSize = 14 });
             if (_media.DashboardEnabled)
             {
                 _tile = new(reference, _vm, _clock, () => _active && _visible(), _media, _style, details);
-                if (_media.Mode == MediaPreviewMode.OnClick) Children.Add(new Expander { Header = $"视频 · {reference.Id}", Content = _tile, HorizontalAlignment = HorizontalAlignment.Stretch });
+                if (_media.Mode == MediaPreviewMode.OnClick) Children.Add(new Expander { Header = $"{(reference.Kind == MediaKind.Bilibili ? "视频" : "Steam")} · {reference.Id}", Content = _tile, HorizontalAlignment = HorizontalAlignment.Stretch });
                 else Children.Add(_tile);
             }
             else Children.Add(new TextBlock { Text = "概览媒体已关闭", Opacity = 0.65 });

@@ -192,6 +192,22 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void ConfigureFrameRate() => _frames.Configure(_vm.Settings.Display.AnimationFrameRate, Forms.Screen.FromRectangle(Bounds).DeviceName);
 
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        // Base construction can resize before derived fields are initialized.
+        if (_items is null || _vm is null) return;
+        var tracks = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, (ClientSize.Height - ContentTop) / TrackHeight));
+        for (var i = _items.Count - 1; i >= 0; i--)
+        {
+            var item = _items[i];
+            if (item.Media is not null && item.Track + item.TrackSpan > tracks) item.DropMedia(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
+            if (item.Track >= tracks) { item.Dispose(); _items.RemoveAt(i); }
+            else item.SetY(ContentTop + item.Track * TrackHeight);
+        }
+        RequestRender();
+    }
+
     protected override void OnLocationChanged(EventArgs e)
     {
         base.OnLocationChanged(e);
@@ -271,20 +287,28 @@ public sealed class OverlayWindow : OverlaySurface
         public OverlayItem(LiveEvent value, OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, double x, int track, int y, int height, int span = 1, OverlayMediaAttachment? media = null)
         {
             Event = value; X = x; Track = track; TrackSpan = span; Y = y; Media = media;
-            var body = OverlayMessageRenderer.Render(value, settings, style, cache, maxHeight: height);
-            Image = media is null ? body : media.Compose(body, settings);
-            if (media is not null) body.Dispose();
+            try { Image = CreateImage(value, settings, style, cache, height, media); }
+            catch { media?.Dispose(); Cancellation.Dispose(); throw; }
         }
-        public OverlayMediaAttachment? Media { get; }
-        public int TrackSpan { get; }
+        public OverlayMediaAttachment? Media { get; private set; }
+        public int TrackSpan { get; private set; }
         public LiveEvent Event { get; }
         public CancellationTokenSource Cancellation { get; } = new();
         public void RefreshImage(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
         {
-            var body = OverlayMessageRenderer.Render(Event, settings, style, cache, maxHeight: height);
-            var replacement = Media is null ? body : Media.Compose(body, settings);
-            if (Media is not null) body.Dispose();
+            var replacement = CreateImage(Event, settings, style, cache, height, Media);
             Image.Dispose(); Image = replacement;
+        }
+        private static Bitmap CreateImage(LiveEvent value, OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height, OverlayMediaAttachment? media)
+        {
+            var body = OverlayMessageRenderer.Render(value, settings, style, cache, maxHeight: height);
+            if (media is null) return body;
+            using (body) return media.Compose(body, settings);
+        }
+        public void DropMedia(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
+        {
+            var replacement = CreateImage(Event, settings, style, cache, height, null);
+            Media?.Dispose(); Media = null; TrackSpan = 1; Image.Dispose(); Image = replacement;
         }
         public Bitmap Image { get; private set; }
         public double X { get; set; }

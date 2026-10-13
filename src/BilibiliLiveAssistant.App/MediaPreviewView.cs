@@ -59,8 +59,12 @@ internal sealed class MediaPreviewTile : Grid, IDisposable
             Child = new TextBlock { Text = sample is null ? "封面" : "本地封面示例", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.6 } };
         _title.FontFamily = new(style.FontFamily); _title.FontSize = Math.Min(18, style.FontSize); _title.Text = reference.Id;
         _title.MinHeight = _title.FontSize * 2.5;
+        _creatorLine.MinHeight = 22; _summary.MinHeight = 18;
         _creatorLine.Children.Add(_creator); _summary.Text = sample is null ? "等待加载资料" : sample.Summary;
+        if (sample is not null && reference.Kind == MediaKind.Bilibili && style.ShowAvatars)
+            _creatorLine.Children.Insert(0, new PersonPicture { DisplayName = sample.Creator, Width = 22, Height = 22 });
         var open = new HyperlinkButton { Content = "打开原页面", Padding = new(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Left };
+        open.IsEnabled = sample is null;
         open.Click += async (_, _) => { try { await Windows.System.Launcher.LaunchUriAsync(reference.Page); } catch { _summary.Text = "无法打开浏览器"; } };
         var controls = new FrameworkElement[] { _cover, _title, _creatorLine, _summary, open };
         for (var i = 0; i < controls.Length; i++) { SetRow(controls[i], i); Children.Add(controls[i]); }
