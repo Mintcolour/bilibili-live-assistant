@@ -1,28 +1,48 @@
-using H.NotifyIcon;
-using Microsoft.UI.Xaml.Controls;
 using System.Drawing;
+using Forms = System.Windows.Forms;
 
 namespace BilibiliLiveAssistant.App;
 
 public sealed class TrayService : IDisposable
 {
-    private readonly TaskbarIcon _icon = new();
+    private readonly Icon _applicationIcon;
+    private readonly Forms.ContextMenuStrip _menu = new();
+    private readonly Forms.NotifyIcon _icon;
+    private bool _disposed;
 
-    public TrayService(MainWindow window)
+    public TrayService(MainWindow window, Func<Task> exitAsync)
     {
-        _icon.Icon = SystemIcons.Application;
-        _icon.ToolTipText = "B站直播弹幕助手";
-        var popup = new StackPanel { Spacing = 4, Padding = new Microsoft.UI.Xaml.Thickness(8) };
-        var open = new Button { Content = "打开主窗口" };
-        open.Click += (_, _) => window.Activate();
-        var overlay = new Button { Content = "打开弹幕悬浮窗" };
-        overlay.Click += (_, _) => window.OpenOverlay();
-        var quit = new Button { Content = "退出" };
-        quit.Click += (_, _) => Microsoft.UI.Xaml.Application.Current.Exit();
-        popup.Children.Add(open); popup.Children.Add(overlay); popup.Children.Add(quit);
-        _icon.TrayPopup = popup;
-        _icon.ForceCreate(true);
+        _applicationIcon = new Icon(MainWindow.IconPath);
+        // The native tray menu also works while the WinUI window is hidden.
+        _menu.Items.Add("打开主窗口", null, (_, _) => window.ShowMainWindow());
+        _menu.Items.Add("打开弹幕悬浮窗", null, (_, _) => window.OpenOverlay());
+        _menu.Items.Add(new Forms.ToolStripSeparator());
+        var quit = _menu.Items.Add("退出软件");
+        quit.Click += async (_, _) =>
+        {
+            quit.Enabled = false;
+            await exitAsync();
+        };
+        _icon = new Forms.NotifyIcon
+        {
+            Icon = _applicationIcon,
+            Text = "B站直播弹幕助手",
+            ContextMenuStrip = _menu,
+            Visible = true,
+        };
+        _icon.MouseDoubleClick += (_, args) =>
+        {
+            if (args.Button == Forms.MouseButtons.Left) window.ShowMainWindow();
+        };
     }
 
-    public void Dispose() => _icon.Dispose();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _icon.Visible = false;
+        _icon.Dispose();
+        _menu.Dispose();
+        _applicationIcon.Dispose();
+    }
 }

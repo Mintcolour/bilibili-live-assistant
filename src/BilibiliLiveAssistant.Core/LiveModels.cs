@@ -18,11 +18,13 @@ public sealed record LiveEvent(
     string Color,
     long Uid = 0,
     DateTimeOffset? Timestamp = null,
-    IReadOnlyDictionary<string, object?>? Metadata = null)
+    IReadOnlyDictionary<string, object?>? Metadata = null,
+    LiveMessageAppearance? Appearance = null)
 {
+    private static readonly IReadOnlyDictionary<string, object?> EmptyMetadata =
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, object?>(new Dictionary<string, object?>());
     public DateTimeOffset OccurredAt { get; } = Timestamp ?? DateTimeOffset.Now;
-    public IReadOnlyDictionary<string, object?> Extra { get; } = Metadata ??
-        new Dictionary<string, object?>();
+    public IReadOnlyDictionary<string, object?> Extra => Metadata ?? EmptyMetadata;
 }
 
 public sealed record CookieOptions(string Buvid3 = "", string Sessdata = "", string BiliJct = "");
@@ -33,6 +35,8 @@ public sealed record DisplaySettings
 {
     public int FontSize { get; init; } = 28;
     public int ScrollSpeed { get; init; } = 120;
+    // 0 follows the display containing the ordinary danmaku region (up to 240 Hz).
+    public int AnimationFrameRate { get; init; } = 60;
     public double Opacity { get; init; } = 0.85;
     public int MaxTracks { get; init; } = 8;
     public int TrackHeight { get; init; } = 36;
@@ -46,6 +50,12 @@ public sealed record DisplaySettings
     public string GiftColor { get; init; } = "#FF69B4";
     public string SuperChatColor { get; init; } = "#FFD700";
     public string OnlineColor { get; init; } = "#2196F3";
+    public bool LayoutLocked { get; init; } = true;
+    public OverlayRegionSettings? DanmakuRegion { get; init; }
+    public OverlayRegionSettings? GiftRegion { get; init; }
+    public OverlayRegionSettings? SuperChatRegion { get; init; }
+    public OverlayRegionSettings? InteractionRegion { get; init; }
+    public OverlayRegionSettings? StatusRegion { get; init; }
 }
 
 public sealed record AppSettings
@@ -53,7 +63,9 @@ public sealed record AppSettings
     public int SchemaVersion { get; init; } = 1;
     public int RoomId { get; init; }
     public CookieOptions Cookies { get; init; } = new();
+    public bool AnonymousReading { get; init; }
     public DisplaySettings Display { get; init; } = new();
+    public DashboardSettings Dashboard { get; init; } = new();
     public int PollIntervalSeconds { get; init; } = 30;
 }
 

@@ -9,6 +9,7 @@ public partial class App : Application
     public static LiveAssistantViewModel ViewModel { get; private set; } = null!;
     private MainWindow? _window;
     private TrayService? _tray;
+    private bool _isExiting;
 
     public App()
     {
@@ -22,9 +23,30 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         _window = new MainWindow(ViewModel);
+        _window.ExitRequested += async () => await ExitAsync();
         _window.Activate();
-        _tray = new TrayService(_window);
+        _tray = new TrayService(_window, ExitAsync);
         if (ViewModel.RoomId <= 0)
             _ = _window.ShowFirstRunDialogAsync();
+    }
+
+    private async Task ExitAsync()
+    {
+        if (_isExiting) return;
+        _isExiting = true;
+        try
+        {
+            _window?.AllowClose();
+            await ViewModel.DisposeAsync();
+        }
+        finally
+        {
+            try
+            {
+                _tray?.Dispose();
+                _window?.Close();
+            }
+            finally { Exit(); }
+        }
     }
 }

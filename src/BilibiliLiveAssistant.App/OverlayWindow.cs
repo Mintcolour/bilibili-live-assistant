@@ -1,120 +1,274 @@
-using System.Collections.ObjectModel;
-using System.Collections.Specialized;
-using System.Runtime.InteropServices;
-using Microsoft.UI;
-using Microsoft.UI.Dispatching;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
+using System.Drawing;
 using BilibiliLiveAssistant.Core;
-using WinRT.Interop;
+using Forms = System.Windows.Forms;
 
 namespace BilibiliLiveAssistant.App;
 
-public sealed class OverlayWindow : Window
+public sealed class OverlayWindow : OverlaySurface
 {
     private readonly LiveAssistantViewModel _vm;
-    private readonly Canvas _canvas = new();
+    private readonly OverlayFrameClock _frames = new();
+    private readonly Forms.Timer _intakeTimer = new();
     private readonly List<OverlayItem> _items = new();
-    private readonly DispatcherQueueTimer _timer;
-    private readonly nint _hwnd;
-    private bool _clickThrough;
+    private readonly LiveEventBuffer _incoming = new(64);
+    private readonly LiveEventBuffer _pendingItems = new(64);
+    private readonly FixedOverlayWindow[] _fixedRegions;
+    private int _nextTrack;
+    private bool _overlayVisible;
+    private bool _cleaned;
+    private DashboardSettings _messageStyle;
 
-    public OverlayWindow(LiveAssistantViewModel vm)
+    public OverlayWindow(LiveAssistantViewModel vm) : base(vm, OverlayRegionKind.Danmaku)
     {
         _vm = vm;
-        Title = "B站弹幕";
-        _canvas.Background = new SolidColorBrush(ColorHelper.FromArgb(155, 12, 16, 24));
-        Content = _canvas;
-        _hwnd = WindowNative.GetWindowHandle(this);
-        _timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
-        _timer.Interval = TimeSpan.FromMilliseconds(16);
-        _timer.Tick += (_, _) => Tick();
-        _vm.Events.CollectionChanged += OnEventsChanged;
-        Closed += (_, _) => { _vm.Events.CollectionChanged -= OnEventsChanged; _timer.Stop(); };
-        ConfigureWindow();
+        _messageStyle = vm.Settings.Dashboard;
+        _fixedRegions = new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status }
+            .Select(kind => new FixedOverlayWindow(vm, kind, _frames)).ToArray();
+        _vm.EventBatchReceived += OnEventBatch;
+        _vm.RoomHistoryReset += ResetContent;
+        _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _intakeTimer.Tick += (_, _) => FlushIncoming();
     }
 
     public void ActivateOverlay()
     {
-        Activate();
-        _timer.Start();
+        _overlayVisible = true;
+        ConfigureFrameRate();
+        ShowSurface();
+        SyncRegionVisibility();
+        if (_items.Count > 0) StartAnimation();
     }
 
-    private void ConfigureWindow()
+    public void HideOverlay()
     {
-        var id = Win32Interop.GetWindowIdFromWindow(_hwnd);
-        var appWindow = AppWindow.GetFromWindowId(id);
-        var area = DisplayArea.GetFromWindowId(id, DisplayAreaFallback.Primary);
-        var height = (int)(area.WorkArea.Height * _vm.Settings.Display.WindowHeightRatio);
-        appWindow.MoveAndResize(new Windows.Graphics.RectInt32(area.WorkArea.X, area.WorkArea.Y, area.WorkArea.Width, height));
-        SetWindowLongPtr(_hwnd, -20, GetWindowLongPtr(_hwnd, -20) | 0x00000080); // WS_EX_TOOLWINDOW
-        SetWindowPos(_hwnd, new nint(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // TOPMOST + NOMOVE/NOSIZE/SHOW
+        _overlayVisible = false;
+        _frames.Stop(OnFrame);
+        _intakeTimer.Stop();
+        ClearItems();
+        _incoming.Clear();
+        _pendingItems.Clear();
+        foreach (var region in _fixedRegions) region.HideRegion();
+        Hide();
     }
 
-    private void OnEventsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void SyncRegionVisibility()
     {
-        if (e.Action != NotifyCollectionChangedAction.Add || e.NewItems is null) return;
-        foreach (LiveEvent item in e.NewItems)
+        if (!_overlayVisible) return;
+        foreach (var region in _fixedRegions)
+            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
+            else region.HideRegion();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(LiveAssistantViewModel.Settings))
         {
-            var text = new TextBlock
-            {
-                Text = Format(item),
-                FontSize = _vm.Settings.Display.FontSize,
-                FontWeight = new Windows.UI.Text.FontWeight(600),
-                Foreground = new SolidColorBrush(ParseColor(item.Color)),
-            };
-            var overlay = new OverlayItem(text, _canvas.ActualWidth + 20, _items.Count % Math.Max(1, _vm.Settings.Display.MaxTracks));
-            _items.Add(overlay);
-            _canvas.Children.Add(text);
-            Canvas.SetLeft(text, overlay.X);
-            Canvas.SetTop(text, overlay.Track * _vm.Settings.Display.TrackHeight);
+            if (_messageStyle != _vm.Settings.Dashboard) { _messageStyle = _vm.Settings.Dashboard; ClearItems(); }
+            SyncRegionVisibility();
+            ConfigureFrameRate();
         }
     }
 
-    private void Tick()
+    protected override void DrawContent(Graphics graphics, Rectangle clip)
     {
-        var speed = _vm.Settings.Display.ScrollSpeed * 0.016;
-        foreach (var item in _items.ToArray())
+        foreach (var item in _items)
+            if (clip.IntersectsWith(item.Bounds)) graphics.DrawImage(item.Image,
+                new RectangleF((float)item.X, item.Y, item.Image.Width, item.Image.Height),
+                new RectangleF(0, 0, item.Image.Width, item.Image.Height), GraphicsUnit.Pixel);
+    }
+
+    private void OnEventBatch(IReadOnlyList<LiveEvent> batch)
+    {
+        if (!Visible || IsDisposed) return;
+        var before = _incoming.DroppedCount;
+        foreach (var item in batch)
         {
-            item.X -= speed;
-            Canvas.SetLeft(item.Text, item.X);
-            if (item.X + item.Text.ActualWidth < -50)
+            if (item.Type == LiveEventType.Danmaku) _incoming.Enqueue(item);
+            else
             {
-                _canvas.Children.Remove(item.Text);
-                _items.Remove(item);
+                var kind = item.Type switch
+                {
+                    LiveEventType.Gift or LiveEventType.Guard => OverlayRegionKind.Gift,
+                    LiveEventType.SuperChat => OverlayRegionKind.SuperChat,
+                    LiveEventType.Enter => OverlayRegionKind.Interaction,
+                    _ => OverlayRegionKind.Status,
+                };
+                foreach (var region in _fixedRegions)
+                    if (region.RegionKind == kind && region.Visible) { region.Enqueue(item); break; }
             }
         }
+        _vm.RecordOverlayDropped((int)(_incoming.DroppedCount - before));
+        if (_incoming.Count > 0 && !_intakeTimer.Enabled)
+        {
+            _intakeTimer.Interval = RegionSettings.UpdateIntervalMs;
+            _intakeTimer.Start();
+        }
     }
 
-    private static string Format(LiveEvent item) => item.Type == LiveEventType.Online || item.Type == LiveEventType.Rank
-        ? item.Content
-        : $"{item.Username} {item.Content}";
-
-    private static Windows.UI.Color ParseColor(string value)
+    private void FlushIncoming()
     {
-        try { return Microsoft.UI.ColorHelper.FromArgb(255, Convert.ToByte(value[1..3], 16), Convert.ToByte(value[3..5], 16), Convert.ToByte(value[5..7], 16)); }
-        catch { return Colors.White; }
+        _intakeTimer.Stop();
+        var before = _pendingItems.DroppedCount;
+        foreach (var item in _incoming.Drain()) _pendingItems.Enqueue(item);
+        _vm.RecordOverlayDropped((int)(_pendingItems.DroppedCount - before));
+        StartAnimation();
     }
 
-    public void SetClickThrough(bool enabled)
+    private int TrackHeight => Math.Max(_vm.Settings.Display.TrackHeight,
+        Math.Max(RegionSettings.FontSize * 2 + 8, Math.Max(RegionSettings.EmoteSize, RegionSettings.LargeEmoteHeight) + 8));
+    private int FindFreeTrack()
     {
-        _clickThrough = enabled;
-        var style = GetWindowLongPtr(_hwnd, -20);
-        style = enabled ? style | 0x00000020 : style & ~0x00000020; // WS_EX_TRANSPARENT
-        SetWindowLongPtr(_hwnd, -20, style);
+        var count = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, Math.Min(24, (ClientSize.Height - ContentTop) / TrackHeight)));
+        var start = _nextTrack;
+        _nextTrack = (_nextTrack + 1) % count;
+        for (var offset = 0; offset < count; offset++)
+        {
+            var candidate = (start + offset) % count;
+            if (_items.All(item => item.Track != candidate || item.X + item.Image.Width < ClientSize.Width - 24)) return candidate;
+        }
+        return -1;
     }
 
-    private sealed class OverlayItem
+    private void OnFrame(double elapsed)
     {
-        public OverlayItem(TextBlock text, double x, int track) { Text = text; X = x; Track = track; }
-        public TextBlock Text { get; }
+        if (_cleaned || !Visible) { _frames.Stop(OnFrame); return; }
+        BeginAnimationFrame();
+        try { AdvanceFrame(elapsed); }
+        finally { EndAnimationFrame(); }
+    }
+
+    private void AdvanceFrame(double elapsed)
+    {
+        var distance = RegionSettings.ScrollSpeed * elapsed;
+        for (var index = _items.Count - 1; index >= 0; index--)
+        {
+            var item = _items[index];
+            var oldBounds = item.Bounds;
+            item.X -= distance;
+            var dirty = Rectangle.Intersect(ClientRectangle, Rectangle.Union(oldBounds, item.Bounds));
+            if (!dirty.IsEmpty) RequestRender(dirty);
+            if (item.X + item.Image.Width < 0) { item.Dispose(); _items.RemoveAt(index); }
+        }
+        var track = _items.Count < RegionSettings.MaxVisible ? FindFreeTrack() : -1;
+        var dropped = 0;
+        if (track >= 0)
+            while (_pendingItems.TryDequeue(out var next))
+            {
+                // Exclude the deliberate batching delays from stale-message age,
+                // otherwise selecting a 2-second update interval drops every message.
+                var maxAge = 2 + RegionSettings.UpdateIntervalMs / 1000d + _vm.EventBatchIntervalSeconds;
+                if ((DateTimeOffset.Now - next!.OccurredAt).TotalSeconds > maxAge) { dropped++; continue; }
+                var item = new OverlayItem(next, RegionSettings, _vm.Settings.Dashboard, _vm.Images, ClientSize.Width + 20, track, ContentTop + track * TrackHeight, TrackHeight);
+                _items.Add(item);
+                _ = LoadImagesAsync(item);
+                break;
+            }
+        _vm.RecordOverlayDropped(dropped);
+        if (_items.Count == 0 && _pendingItems.Count == 0) _frames.Stop(OnFrame);
+    }
+
+    private void StartAnimation()
+    {
+        if (_items.Count == 0 && _pendingItems.Count == 0) return;
+        _frames.Start(OnFrame);
+    }
+
+    private void ConfigureFrameRate() => _frames.Configure(_vm.Settings.Display.AnimationFrameRate, Forms.Screen.FromRectangle(Bounds).DeviceName);
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        if (_frames is not null && _vm is not null) ConfigureFrameRate();
+    }
+
+    protected override void WndProc(ref Forms.Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg == 0x007E && _frames is not null && _vm is not null) ConfigureFrameRate();
+    }
+
+    private async Task LoadImagesAsync(OverlayItem item)
+    {
+        var urls = OverlayMessageRenderer.ImageUrls(item.Event, _vm.Settings.Dashboard).Distinct().Take(16)
+            .Where(url => _vm.Images.TryGetFrame(url) is null).ToArray();
+        if (urls.Length == 0) return;
+        var cancellation = item.Cancellation.Token;
+        try { await Task.WhenAll(urls.Select(LoadOneAsync)); }
+        catch (OperationCanceledException) { return; }
+        async Task LoadOneAsync(string url)
+        {
+            if (await _vm.Images.GetForViewAsync(url, false, cancellation) is null
+                || _cleaned || !Visible || !_items.Contains(item)) return;
+            var before = item.Bounds;
+            item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
+            RequestRender(Rectangle.Union(before, item.Bounds));
+        }
+    }
+
+    protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
+    {
+        if (previous.FontFamily != RegionSettings.FontFamily || previous.FontSize != RegionSettings.FontSize
+            || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
+            || previous.Bold != RegionSettings.Bold || previous.Italic != RegionSettings.Italic
+            || previous.Outline != RegionSettings.Outline || previous.Color != RegionSettings.Color)
+            ClearItems(); // Wider replacement text must not overlap preceding sprites in the same lane.
+        var tracks = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, (ClientSize.Height - ContentTop) / TrackHeight));
+        for (var i = _items.Count - 1; i >= 0; i--)
+        {
+            if (i >= RegionSettings.MaxVisible || _items[i].Track >= tracks) { _items[i].Dispose(); _items.RemoveAt(i); }
+            else _items[i].SetY(ContentTop + _items[i].Track * TrackHeight);
+        }
+        _intakeTimer.Interval = RegionSettings.UpdateIntervalMs;
+    }
+
+    private void ClearItems()
+    {
+        foreach (var item in _items) item.Dispose();
+        _items.Clear();
+    }
+
+    private void ResetContent()
+    {
+        _frames.Stop(OnFrame); _intakeTimer.Stop();
+        ClearItems(); _incoming.Clear(); _pendingItems.Clear(); RequestRender();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_cleaned)
+        {
+            _cleaned = true;
+            _vm.EventBatchReceived -= OnEventBatch;
+            _vm.RoomHistoryReset -= ResetContent;
+            _vm.PropertyChanged -= OnViewModelPropertyChanged;
+            _frames.Stop(OnFrame); _intakeTimer.Dispose();
+            ClearItems();
+            foreach (var region in _fixedRegions) region.Dispose();
+            _frames.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private sealed class OverlayItem : IDisposable
+    {
+        public OverlayItem(LiveEvent value, OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, double x, int track, int y, int height)
+        {
+            Event = value; X = x; Track = track; Y = y;
+            Image = OverlayMessageRenderer.Render(value, settings, style, cache, maxHeight: height);
+        }
+        public LiveEvent Event { get; }
+        public CancellationTokenSource Cancellation { get; } = new();
+        public void RefreshImage(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
+        {
+            var replacement = OverlayMessageRenderer.Render(Event, settings, style, cache, maxHeight: height);
+            Image.Dispose(); Image = replacement;
+        }
+        public Bitmap Image { get; private set; }
         public double X { get; set; }
         public int Track { get; }
+        public int Y { get; private set; }
+        public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);
+        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); }
+        public void SetY(int y) => Y = y;
     }
-
-    [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
-    [DllImport("user32.dll", SetLastError = true)] private static extern nint GetWindowLongPtr(nint hWnd, int nIndex);
-    [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 }

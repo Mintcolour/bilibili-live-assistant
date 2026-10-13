@@ -1,0 +1,359 @@
+using System.Diagnostics;
+using System.Drawing;
+using BilibiliLiveAssistant.Core;
+using Forms = System.Windows.Forms;
+
+namespace BilibiliLiveAssistant.App;
+
+// Independent bounded playback. Only entry notifications remain stationary.
+internal sealed class FixedOverlayWindow : OverlaySurface
+{
+    private const int QueueLimit = 64;
+    private readonly Forms.Timer _wake = new();
+    private readonly OverlayFrameClock _frames;
+    private readonly List<Pending> _waiting = new();
+    private readonly List<Sprite> _sprites = new();
+    private Queue<LiveEvent>? _scParts;
+    private Queue<LiveEvent>? _bulletinParts;
+    private LiveEvent? _currentSc;
+    private LiveEvent? _online, _rank;
+    private long _broadcastAt;
+    private bool _cleaned;
+    private DashboardSettings _style;
+    public OverlayRegionKind RegionKind => Kind;
+
+    public FixedOverlayWindow(LiveAssistantViewModel vm, OverlayRegionKind kind, OverlayFrameClock frames) : base(vm, kind)
+    {
+        _frames = frames;
+        _style = vm.Settings.Dashboard;
+        _wake.Tick += (_, _) => Process();
+        vm.RoomHistoryReset += ResetContent;
+    }
+
+    private static long Now => Stopwatch.GetTimestamp();
+    private static long After(long now, double seconds) => now + (long)(seconds * Stopwatch.Frequency);
+    private static double Age(long stamp, long now) => (now - stamp) / (double)Stopwatch.Frequency;
+    private int RowHeight => Math.Max(RegionSettings.FontSize * 2 + 12,
+        Kind is OverlayRegionKind.SuperChat ? Math.Max(RegionSettings.EmoteSize, RegionSettings.LargeEmoteHeight) + 8 : RegionSettings.EmoteSize + 8);
+    private int Lanes => Kind is OverlayRegionKind.SuperChat or OverlayRegionKind.Status ? 1
+        : Math.Clamp((ClientSize.Height - ContentTop) / RowHeight, 1,
+            Kind == OverlayRegionKind.Interaction ? Math.Min(3, RegionSettings.MaxVisible) : Math.Min(10, RegionSettings.MaxVisible));
+
+    public void ShowRegion()
+    {
+        if (Visible) return;
+        ShowSurface();
+        if (Kind == OverlayRegionKind.Status)
+        {
+            _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank;
+            Process();
+        }
+    }
+
+    public void HideRegion() { ResetContent(); Hide(); }
+
+    private void ResetContent()
+    {
+        _wake.Stop(); _frames.Stop(OnFrame);
+        _waiting.Clear(); _scParts = null; _bulletinParts = null; _currentSc = null; _online = null; _rank = null; _broadcastAt = 0;
+        ClearSprites(); RequestRender();
+    }
+
+    public void Enqueue(LiveEvent value)
+    {
+        if (!Visible || IsDisposed) return;
+        var now = Now;
+        if (Kind == OverlayRegionKind.Status)
+        {
+            if (value.Type == LiveEventType.Online) _online = value.Extra.TryGetValue("sample", out var sample) && sample is true
+                ? value : ViewModel.LatestOnline ?? value;
+            else if (value.Type == LiveEventType.Rank) _rank = value;
+            if (_broadcastAt == 0) _broadcastAt = After(now, RegionSettings.UpdateIntervalMs / 1000d);
+            ScheduleWake(); return;
+        }
+        if (Kind == OverlayRegionKind.Interaction)
+        {
+            ExpireEntries(now);
+            while (_sprites.Count >= Lanes) { _sprites[0].Dispose(); _sprites.RemoveAt(0); }
+            var sprite = AddSprite(value, 0, 8);
+            sprite.CreatedAt = now;
+            sprite.ExpiresAt = After(now, RegionSettings.DurationSeconds);
+            PositionEntries(); RequestRender(); ScheduleWake(); return;
+        }
+        if (Kind == OverlayRegionKind.Gift && RegionSettings.MergeSeconds > 0)
+        {
+            // The deadline is anchored to the first receipt, never extended by later gifts.
+            var match = _waiting.Find(p => p.MergeUntil > now && GiftAggregation.CanMerge(p.Event, value));
+            if (match is not null) { match.Merge(value); ScheduleWake(); return; }
+        }
+        if (_waiting.Count == QueueLimit)
+        {
+            // SC keeps receipt order; reject excess arrivals instead of evicting earlier SC.
+            if (Kind == OverlayRegionKind.SuperChat) { ViewModel.RecordOverlayDropped(1); return; }
+            _waiting.RemoveAt(0); ViewModel.RecordOverlayDropped(1);
+        }
+        var delay = Kind == OverlayRegionKind.Gift ? RegionSettings.MergeSeconds : 0;
+        _waiting.Add(new Pending(value, now, After(now, Math.Max(delay, RegionSettings.UpdateIntervalMs / 1000d)), After(now, delay)));
+        ScheduleWake();
+    }
+
+    private void Process()
+    {
+        _wake.Stop();
+        if (!Visible || _cleaned) return;
+        var now = Now;
+        if (Kind == OverlayRegionKind.Interaction)
+        {
+            if (ExpireEntries(now)) { PositionEntries(); RequestRender(); }
+        }
+        else if (Kind == OverlayRegionKind.Status)
+        {
+            if ((_online is not null || _rank is not null) && (_broadcastAt == 0 || now >= _broadcastAt))
+            {
+                _broadcastAt = After(now, RegionSettings.BroadcastIntervalSeconds);
+                // Skip the tick if the previous bulletin is still crossing this region.
+                if (_sprites.Count == 0 && _bulletinParts is not { Count: > 0 })
+                    _bulletinParts = new Queue<LiveEvent>(CreateBulletinParts());
+            }
+            if (_sprites.Count == 0 && _bulletinParts is { Count: > 0 }) AddSprite(_bulletinParts.Dequeue(), 0, ClientSize.Width + 12);
+        }
+        else
+        {
+            var maxAge = Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, RegionSettings.MergeSeconds + 10);
+            var expired = _waiting.RemoveAll(p => Age(p.CreatedAt, now) >= maxAge);
+            ViewModel.RecordOverlayDropped(expired);
+            while (_sprites.Count < Lanes)
+            {
+                LiveEvent next;
+                if (_scParts is { Count: > 0 }) next = _scParts.Dequeue();
+                else
+                {
+                    _scParts = null;
+                    _currentSc = null;
+                    var index = Kind == OverlayRegionKind.Gift ? _waiting.FindLastIndex(p => p.ReadyAt <= now)
+                        : _waiting.FindIndex(p => p.ReadyAt <= now);
+                    if (index < 0) break;
+                    var pending = _waiting[index]; _waiting.RemoveAt(index);
+                    next = pending.Combined();
+                    if (Kind == OverlayRegionKind.SuperChat)
+                    {
+                        _currentSc = next;
+                        _scParts = new Queue<LiveEvent>(OverlayMessageRenderer.ScrollParts(next, RegionSettings, _style, ViewModel.Images));
+                        next = _scParts.Dequeue();
+                    }
+                }
+                var lane = Enumerable.Range(0, Lanes).First(i => _sprites.All(s => s.Lane != i));
+                AddSprite(next, lane, ClientSize.Width + 12);
+            }
+        }
+        if (Kind != OverlayRegionKind.Interaction && _sprites.Count > 0) _frames.Start(OnFrame);
+        ScheduleWake();
+    }
+
+    private IReadOnlyList<LiveEvent> CreateBulletinParts()
+    {
+        var metrics = new List<LiveAudienceMetric>(2);
+        if (RegionSettings.ShowAudienceStats && _online is not null)
+        {
+            if (_online.Extra.TryGetValue("popularity", out var popularity) && popularity is string { Length: > 0 } p)
+                metrics.Add(new(LiveAudienceMetricKind.Popularity, p));
+            if (_online.Extra.TryGetValue("watched", out var watched) && watched is string { Length: > 0 } w)
+                metrics.Add(new(LiveAudienceMetricKind.Watched, w.Replace("人看过", "", StringComparison.Ordinal).Trim()));
+            if (metrics.Count == 0)
+                foreach (var text in _online.Content.Split('·', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(2))
+                {
+                    var normalized = text.Replace('：', ':'); var colon = normalized.IndexOf(':');
+                    var value = (colon >= 0 ? normalized[(colon + 1)..] : normalized).Replace("人看过", "", StringComparison.Ordinal).Trim();
+                    metrics.Add(new(text.Contains("看过", StringComparison.Ordinal) ? LiveAudienceMetricKind.Watched : LiveAudienceMetricKind.Popularity, value));
+                }
+        }
+        var members = _rank is null ? Array.Empty<LiveRankMember>() : ViewModel.GetRankMembers(_rank, RegionSettings.RankCount);
+        return OverlayBulletinRenderer.CreateParts(metrics, members, _rank is not null, RegionSettings, _style, ViewModel.Images, RowHeight);
+    }
+
+    private void OnFrame(double elapsed)
+    {
+        if (_cleaned || !Visible) { _frames.Stop(OnFrame); return; }
+        BeginAnimationFrame();
+        try { AdvanceFrame(elapsed); }
+        finally { EndAnimationFrame(); }
+    }
+
+    private void AdvanceFrame(double elapsed)
+    {
+        var distance = RegionSettings.ScrollSpeed * elapsed;
+        var removed = false;
+        for (var i = _sprites.Count - 1; i >= 0; i--)
+        {
+            var sprite = _sprites[i]; var before = sprite.Bounds; sprite.X -= distance;
+            RequestRender(Rectangle.Union(before, sprite.Bounds));
+            if (sprite.X + sprite.Image.Width < 0) { sprite.Dispose(); _sprites.RemoveAt(i); removed = true; }
+        }
+        if (_sprites.Count == 0) _frames.Stop(OnFrame);
+        if (removed) Process();
+    }
+
+    private bool ExpireEntries(long now)
+    {
+        var changed = false;
+        for (var i = _sprites.Count - 1; i >= 0; i--)
+            if (_sprites[i].ExpiresAt <= now) { _sprites[i].Dispose(); _sprites.RemoveAt(i); changed = true; }
+        return changed;
+    }
+
+    private void PositionEntries()
+    { for (var i = 0; i < _sprites.Count; i++) _sprites[i].Y = ContentTop + i * RowHeight; }
+
+    private Sprite AddSprite(LiveEvent value, int lane, double x)
+    {
+        var sprite = new Sprite(value, lane, x, ContentTop + lane * RowHeight,
+            OverlayMessageRenderer.Render(value, RegionSettings, _style, ViewModel.Images,
+                width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight));
+        _sprites.Add(sprite); _ = LoadImagesAsync(sprite); RequestRender(sprite.Bounds); return sprite;
+    }
+
+    private async Task LoadImagesAsync(Sprite sprite)
+    {
+        if (sprite.ImagesLoading) return;
+        sprite.ImagesLoading = true;
+        try
+        {
+            var cancellation = sprite.Cancellation.Token;
+            var urls = OverlayMessageRenderer.ImageUrls(sprite.Event, _style).Distinct().Take(Kind == OverlayRegionKind.Status ? 32 : 16)
+                .Where(url => ViewModel.Images.TryGetFrame(url) is null).ToArray();
+            if (urls.Length == 0) return;
+            await Task.WhenAll(urls.Select(LoadOneAsync));
+            async Task LoadOneAsync(string url)
+            {
+                if (await ViewModel.Images.GetForViewAsync(url, false, cancellation) is null
+                    || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
+                // A slow avatar must not hold back an emote that is already available.
+                var before = sprite.Bounds;
+                var image = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
+                    width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
+                sprite.Image.Dispose(); sprite.Image = image;
+                RequestRender(Rectangle.Union(before, sprite.Bounds));
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally { sprite.ImagesLoading = false; }
+    }
+
+    private void ScheduleWake()
+    {
+        _wake.Stop();
+        if (!Visible || _cleaned) return;
+        var now = Now; var due = long.MaxValue;
+        if (Kind == OverlayRegionKind.Status && (_online is not null || _rank is not null)) due = _broadcastAt;
+        if (Kind == OverlayRegionKind.Interaction)
+            foreach (var sprite in _sprites) due = Math.Min(due, sprite.ExpiresAt);
+        foreach (var pending in _waiting)
+        {
+            if (_sprites.Count < Lanes) due = Math.Min(due, pending.ReadyAt);
+            due = Math.Min(due, After(pending.CreatedAt, Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, RegionSettings.MergeSeconds + 10)));
+        }
+        if (due == long.MaxValue) return;
+        _wake.Interval = (int)Math.Clamp(Math.Ceiling(Age(now, due) * 1000), 1, int.MaxValue); _wake.Start();
+    }
+
+    protected override void DrawContent(Graphics graphics, Rectangle clip)
+    {
+        foreach (var sprite in _sprites)
+        {
+            if (!clip.IntersectsWith(sprite.Bounds)) continue;
+            if (Kind == OverlayRegionKind.Interaction) graphics.DrawImageUnscaled(sprite.Image, (int)sprite.X, sprite.Y);
+            else graphics.DrawImage(sprite.Image, new RectangleF((float)sprite.X, sprite.Y, sprite.Image.Width, sprite.Image.Height),
+                new RectangleF(0, 0, sprite.Image.Width, sprite.Image.Height), GraphicsUnit.Pixel);
+        }
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        // Base construction can resize before derived fields have been initialized.
+        if (_sprites is null) return;
+        if (Kind == OverlayRegionKind.Interaction) RefreshEntries();
+        else PositionScrolling();
+        RequestRender();
+    }
+
+    private void PositionScrolling()
+    {
+        for (var i = _sprites.Count - 1; i >= 0; i--)
+            if (_sprites[i].Lane >= Lanes) { _sprites[i].Dispose(); _sprites.RemoveAt(i); }
+            else _sprites[i].Y = ContentTop + _sprites[i].Lane * RowHeight;
+    }
+
+    private void RefreshEntries()
+    {
+        while (_sprites.Count > Lanes) { _sprites[0].Dispose(); _sprites.RemoveAt(0); }
+        PositionEntries();
+        foreach (var sprite in _sprites)
+        {
+            var image = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
+                width: ClientSize.Width - 16, maxHeight: RowHeight);
+            sprite.Image.Dispose(); sprite.Image = image;
+            _ = LoadImagesAsync(sprite);
+        }
+    }
+
+    protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
+    {
+        var appearanceChanged = previous.FontFamily != RegionSettings.FontFamily || previous.FontSize != RegionSettings.FontSize
+            || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
+            || previous.Color != RegionSettings.Color || previous.Bold != RegionSettings.Bold || previous.Italic != RegionSettings.Italic
+            || previous.Outline != RegionSettings.Outline || _style != ViewModel.Settings.Dashboard;
+        _style = ViewModel.Settings.Dashboard;
+        if (Kind != OverlayRegionKind.Interaction) PositionScrolling();
+        if (Kind == OverlayRegionKind.Interaction)
+        {
+            foreach (var sprite in _sprites) sprite.ExpiresAt = After(sprite.CreatedAt, RegionSettings.DurationSeconds);
+            RefreshEntries();
+        }
+        else if (appearanceChanged)
+        {
+            ClearSprites();
+            if (Kind == OverlayRegionKind.SuperChat && _currentSc is not null)
+                _scParts = new Queue<LiveEvent>(OverlayMessageRenderer.ScrollParts(_currentSc, RegionSettings, _style, ViewModel.Images));
+            if (Kind == OverlayRegionKind.Status) { _bulletinParts = null; _broadcastAt = 0; }
+        }
+        if (Kind == OverlayRegionKind.Status && previous.BroadcastIntervalSeconds != RegionSettings.BroadcastIntervalSeconds)
+            _broadcastAt = After(Now, RegionSettings.BroadcastIntervalSeconds);
+        if (Visible) Process();
+    }
+
+    private void ClearSprites() { foreach (var sprite in _sprites) sprite.Dispose(); _sprites.Clear(); }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_cleaned)
+        { _cleaned = true; ViewModel.RoomHistoryReset -= ResetContent; ResetContent(); _wake.Dispose(); }
+        base.Dispose(disposing);
+    }
+
+    private sealed class Pending
+    {
+        public LiveEvent Event { get; private set; }
+        public long CreatedAt { get; }
+        public long ReadyAt { get; }
+        public long MergeUntil { get; }
+        public Pending(LiveEvent value, long now, long ready, long mergeUntil)
+        { Event = value; CreatedAt = now; ReadyAt = ready; MergeUntil = mergeUntil; }
+        public void Merge(LiveEvent value)
+        { Event = GiftAggregation.Combine(Event, value); }
+        public LiveEvent Combined() => Event;
+    }
+    private sealed class Sprite : IDisposable
+    {
+        public LiveEvent Event { get; }
+        public int Lane { get; }
+        public double X;
+        public int Y;
+        public long CreatedAt, ExpiresAt;
+        public Bitmap Image;
+        public bool ImagesLoading;
+        public CancellationTokenSource Cancellation { get; } = new();
+        public Sprite(LiveEvent value, int lane, double x, int y, Bitmap image) { Event = value; Lane = lane; X = x; Y = y; Image = image; }
+        public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);
+        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); }
+    }
+}
