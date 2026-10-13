@@ -103,7 +103,8 @@ internal sealed class BiliImageCache : IDisposable
         if (value.StartsWith("//", StringComparison.Ordinal)) value = "https:" + value;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(uri.UserInfo)) return null;
         var host = uri.DnsSafeHost;
-        if (!new[] { "hdslb.com", "biliimg.com", "bilivideo.com" }.Any(domain => host.Equals(domain, StringComparison.OrdinalIgnoreCase) || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase))) return null;
+        if (!new[] { "hdslb.com", "biliimg.com", "bilivideo.com", "steamstatic.com", "steamusercontent.com" }.Any(domain => host.Equals(domain, StringComparison.OrdinalIgnoreCase) || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase))
+            && !host.Equals("steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase)) return null;
         return new UriBuilder(uri) { Scheme = "https", Port = -1, Fragment = "" }.Uri;
     }
 
@@ -178,7 +179,11 @@ internal sealed class BiliImageCache : IDisposable
         var current = uri;
         for (var redirect = 0; redirect < 4; redirect++)
         {
-            using var response = await _http.GetAsync(current, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            if (current.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase) || current.Host.EndsWith(".steamusercontent.com", StringComparison.OrdinalIgnoreCase)
+                || current.Host is "steamstatic.com" or "steamusercontent.com" or "steamcdn-a.akamaihd.net")
+                request.Headers.Referrer = new Uri("https://store.steampowered.com/");
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location)
             {
                 current = NormalizeUrl(new Uri(current, location).AbsoluteUri) ?? throw new InvalidDataException("图片跳转地址无效");

@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Dispatching;
 using BilibiliLiveAssistant.Core;
+using BilibiliLiveAssistant.Infrastructure;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -36,6 +37,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public LiveEventHistory Events { get; } = new();
     public DashboardHistory Dashboard { get; } = new();
+    public DanmakuCardBoard CardBoard { get; } = new();
+    internal MediaDetailsService Media { get; } = new();
     internal BiliImageCache Images { get; } = new();
     public event Action<IReadOnlyList<LiveEvent>>? EventBatchReceived;
     public event Action? RoomHistoryReset;
@@ -64,7 +67,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info)
     {
-        _settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize() };
+        _settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize(),
+            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
+        Dashboard.Cleared += CardBoard.Clear;
         _store = store;
         _client = client;
         _info = info;
@@ -112,7 +117,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         var previous = _settings;
         var wasRunning = _client.IsRunning;
         if (wasRunning && previous.RoomId != settings.RoomId) await StopAsync();
-        settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize() };
+        settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize(),
+            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         _settings = settings;
         if (previous.RoomId != settings.RoomId) ResetRoomHistory();
         Dashboard.Trim(settings.Dashboard);
@@ -252,6 +258,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private void OnEvent(object? sender, LiveEvent value)
     {
         if (_disposed) return;
+        if (value.Type is LiveEventType.Danmaku or LiveEventType.SuperChat && value.MediaReferences.Count == 0)
+            value = value with { MediaReferences = MediaDetector.Detect(value.Content) };
         Interlocked.Increment(ref _receivedEvents);
         _pendingEvents.Enqueue(value);
         ScheduleFlush();
@@ -306,6 +314,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 }
             }
             Dashboard.AddBatch(batch, _settings.Dashboard, OverlayRegions.Get(_settings.Display, OverlayRegionKind.Gift).MergeSeconds);
+            CardBoard.AddBatch(batch, _settings.Cards);
             Events.PrependBatch(batch);
             EventBatchReceived?.Invoke(batch);
             OnPropertyChanged(nameof(ReceivedEventCount));
@@ -337,6 +346,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _info.EventReceived -= OnEvent;
         _pendingEvents.Clear();
         Images.Dispose();
+        Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
         await StopAsync();
         if (_client is IDisposable disposable) disposable.Dispose();
         if (_info is IDisposable info) info.Dispose();

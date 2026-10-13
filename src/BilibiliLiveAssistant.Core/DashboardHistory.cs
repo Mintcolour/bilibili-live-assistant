@@ -30,6 +30,7 @@ public sealed class DashboardHistory
     public long Version { get; private set; }
     public long EvictedUnread { get; private set; }
     public event Action? Changed;
+    public event Action? Cleared;
 
     public void AddBatch(IReadOnlyList<LiveEvent> batch, DashboardSettings settings, double giftMergeSeconds = 3)
     {
@@ -102,7 +103,7 @@ public sealed class DashboardHistory
     }
     public void Clear()
     {
-        Danmaku.Clear(); Gifts.Clear(); SuperChats.Clear(); Interactions.Clear(); EvictedUnread = 0; Notify();
+        Danmaku.Clear(); Gifts.Clear(); SuperChats.Clear(); Interactions.Clear(); EvictedUnread = 0; Cleared?.Invoke(); Notify();
     }
     private void Notify() { Version++; Changed?.Invoke(); }
 }
