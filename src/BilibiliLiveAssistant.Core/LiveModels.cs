@@ -28,7 +28,10 @@ public sealed record LiveEvent(
     public IReadOnlyList<MediaReference> MediaReferences { get; init; } = Array.Empty<MediaReference>();
 }
 
-public sealed record CookieOptions(string Buvid3 = "", string Sessdata = "", string BiliJct = "");
+public sealed record CookieOptions(string Buvid3 = "", string Sessdata = "", string BiliJct = "")
+{
+    public override string ToString() => "CookieOptions [已隐藏]";
+}
 
 public sealed record LiveSnapshot(int Online, string WatchedText, string RankText);
 
@@ -63,7 +66,9 @@ public sealed record AppSettings
 {
     public int SchemaVersion { get; init; } = 1;
     public int RoomId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
     public CookieOptions Cookies { get; init; } = new();
+    public BrowserSyncSettings BrowserSync { get; init; } = new();
     public bool AnonymousReading { get; init; }
     public DisplaySettings Display { get; init; } = new();
     public DashboardSettings Dashboard { get; init; } = new();

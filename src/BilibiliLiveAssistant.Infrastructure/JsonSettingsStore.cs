@@ -6,6 +6,8 @@ namespace BilibiliLiveAssistant.Infrastructure;
 
 public sealed class JsonSettingsStore : ISettingsStore
 {
+    public string LoadWarning { get; private set; } = "";
+    private bool _migrationBlocked;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -29,7 +31,29 @@ public sealed class JsonSettingsStore : ISettingsStore
         try
         {
             using var stream = File.OpenRead(Path);
-            return JsonSerializer.Deserialize<AppSettings>(stream, JsonOptions) ?? new AppSettings();
+            using var document = JsonDocument.Parse(stream);
+            var settings = document.RootElement.Deserialize<AppSettings>(JsonOptions) ?? new AppSettings();
+            if (!OperatingSystem.IsWindows()) return settings;
+            try
+            {
+                var vault = new BrowserAuthVault(); var state = vault.Read();
+                var legacy = document.RootElement.TryGetProperty("cookies", out var value) ? value.Deserialize<CookieOptions>(JsonOptions) : null;
+                if (legacy is not null && legacy != new CookieOptions())
+                {
+                    if (state.Version == 0)
+                    {
+                        vault.Update(previous => previous.Version == 0 ? previous with { Source = CredentialSource.Manual, Cookies = legacy, AccountState = AccountState.Pending } : previous);
+                        if (vault.Read().Cookies != legacy) throw new IOException("凭据迁移回读失败");
+                    }
+                    // No sensitive properties are serialized, even for other settings entry points.
+                    var temporary = Path + ".tmp";
+                    File.WriteAllText(temporary, JsonSerializer.Serialize(settings, JsonOptions));
+                    File.Move(temporary, Path, true);
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            { _migrationBlocked = true; LoadWarning = "账号迁移未完成，原设置已保留。请修复本机账号存储后重启。"; }
+            return settings;
         }
         catch (JsonException)
         {
@@ -47,6 +71,7 @@ public sealed class JsonSettingsStore : ISettingsStore
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
     {
+        if (_migrationBlocked) throw new IOException(LoadWarning);
         await _saveGate.WaitAsync(cancellationToken);
         try { await SaveCoreAsync(settings, cancellationToken); }
         finally { _saveGate.Release(); }
