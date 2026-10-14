@@ -35,6 +35,7 @@ public sealed record SyncMessage
     public string RequestId { get; init; } = "";
     public string SourceId { get; init; } = "";
     public string Browser { get; init; } = "";
+    public string Origin { get; init; } = "";
     public string Name { get; init; } = "";
     public string Token { get; init; } = "";
     public string BindingGeneration { get; init; } = "";
