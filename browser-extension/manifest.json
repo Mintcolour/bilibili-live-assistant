@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "host_permissions": [
-    "https://*.bilibili.com/*"
+    "https://api.bilibili.com/*",
+    "https://api.live.bilibili.com/*"
   ],
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAppaFd/zME1s/YROfqbuMdhwqUEe6kVQM88J4fzRI0YanHNoAluxWad/HAdpeqLdFyxhqOQgtpbChxXzjG1kp3KmtocjA0TgjufOxibfF2XGOioV6IYgS7MlxcLGQ35NHPRdKz3tG5h4RPuv4cFbqqii1uq7SNsxNMdX0Mfmo7vuRcbdqI4xmQd3KdpchQ7Tckhk+/YxjOgnsUz+irCIhopjAMJxzkppYmiDc6QnwF2bkxnxWT8tufGGjpUtNIx9CPgTXBZr0LzYTUClQtb0WdIY0d2pKJKZRhgBMu4VqJvXMpETB73rx9mZvxS67kKEfYUdEQvKDMYYwGG3sHFE9QQIDAQAB",
@@ -12,8 +13,11 @@
     "alarms"
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": { "32": "icons/app-32.png", "64": "icons/app-64.png" }
   },
+  "icons": { "32": "icons/app-32.png", "64": "icons/app-64.png" },
+  "description": "将当前普通浏览器配置的 B站登录状态同步到本机直播助手，无云端上传。",
   "name": "B站直播助手 · 本机登录同步",
   "version": "1.0.0",
   "background": {

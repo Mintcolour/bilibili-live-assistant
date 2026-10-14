@@ -34,13 +34,16 @@ function applicable(cookie, target) {
   return domainMatch && (url.pathname === path || url.pathname.startsWith(path.endsWith('/') ? path : path + '/'));
 }
 async function snapshot() {
+  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: ['https://api.bilibili.com/*', 'https://api.live.bilibili.com/*'] }))
+    throw new Error('B站站点权限不可用，请在扩展管理页恢复权限后立即同步');
   const values = {}, expirations = {};
   for (const name of NAMES) {
     // Omitting storeId selects this ordinary extension context's Cookie Store.
-    const candidates = (await chrome.cookies.getAll({ domain: 'bilibili.com', name })).filter(c => !c.partitionKey);
+    const perTarget = await Promise.all(TARGETS.map(url => chrome.cookies.getAll({ url, name })));
+    const candidates = perTarget.flat().filter(c => !c.partitionKey);
     if (new Set(candidates.map(c => c.storeId)).size > 1) throw new Error('浏览器 Cookie 来源冲突，请使用普通配置重新连接');
-    const picked = TARGETS.map(target => {
-      const matches = candidates.filter(c => applicable(c, target));
+    const picked = TARGETS.map((target, index) => {
+      const matches = perTarget[index].filter(c => !c.partitionKey && applicable(c, target));
       matches.sort((a, b) => b.path.length - a.path.length || b.domain.length - a.domain.length);
       if (matches.length > 1 && matches[0].path.length === matches[1].path.length && matches[0].domain.length === matches[1].domain.length && matches[0].value !== matches[1].value)
         throw new Error('存在冲突的登录状态，请重新登录 B站');
@@ -52,6 +55,8 @@ async function snapshot() {
     if (new TextEncoder().encode(value).length > 8192 || /[\x00-\x1f\x7f;]/.test(value)) throw new Error('登录字段格式无效');
     values[name] = value; expirations[name] = cookie?.expirationDate ?? null;
   }
+  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: ['https://api.bilibili.com/*', 'https://api.live.bilibili.com/*'] }))
+    throw new Error('B站站点权限已改变，请恢复权限后立即同步');
   return { cookies: { sessdata: values.SESSDATA, biliJct: values.bili_jct, buvid3: values.buvid3 }, expirations };
 }
 async function digest(value) {
@@ -89,11 +94,18 @@ async function run(manual) {
     if (!manual && state.retryAt > Date.now()) { await schedule(); return { ok: true, message: '等待重试' }; }
     if (state.configurePending) {
       const reply = await checkReply(await native('sync.configure', { follow: state.followRequested }));
+      if (!reply.notified) throw new Error('自动跟随设置已保存，但助手尚未确认；请打开助手后重试');
       await update(s => { s.follow = reply.follow; s.configurePending = false; s.error = ''; s.retryAt = 0; s.failures = 0; s.stopped = false; });
       state = await read();
     }
     if (!manual && !state.follow && !state.pending) return { ok: true, message: '自动跟随已关闭' };
     const capturedDirty = state.dirtyRevision;
+    // Reserve a revision before reading. Retry an identical pending payload with its original ID.
+    state = await update(s => {
+      if (s.revision >= Number.MAX_SAFE_INTEGER - 1) throw new Error('同步序号已满，请重新安装并连接扩展');
+      s.revision++;
+    });
+    const attempt = { revision: state.revision, requestId: crypto.randomUUID() };
     const payload = await snapshot();
     const fingerprint = await digest(payload);
     if (fingerprint === state.fingerprint && !state.pending) {
@@ -103,9 +115,7 @@ async function run(manual) {
     }
     state = await update(s => {
       if (!s.pending || s.pending.fingerprint !== fingerprint) {
-        if (s.revision >= Number.MAX_SAFE_INTEGER - 1) throw new Error('同步序号已满，请重新安装并连接扩展');
-        s.revision++;
-        s.pending = { revision: s.revision, requestId: crypto.randomUUID(), fingerprint };
+        s.pending = { ...attempt, fingerprint };
       }
       s.sentAt = Date.now();
     });
@@ -146,7 +156,9 @@ async function action(request) {
     return { ok: true, bound: !!s.binding, follow: s.follow, pending: !!s.pairRequestId, configurePending: !!s.configurePending,
       name: s.name || '', lastSync: s.lastSync, error: s.error || '', stopped: s.stopped };
   }
+  if (sending) return { ok: false, message: '正在同步，请等待本次操作结束再修改连接' };
   if (request.type === 'pair') {
+    if ((await read()).binding) return { ok: false, message: '请先断开已有绑定，再连接新来源' };
     const name = String(request.name || '').trim().slice(0, 60);
     if (!name) return { ok: false, message: '请为这个浏览器配置命名' };
     const id = crypto.randomUUID(), browser = navigator.userAgent.includes('Edg/') ? 'Edge' : 'Chrome';
@@ -166,6 +178,10 @@ async function action(request) {
     await update(s => { s.followRequested = request.enabled === true; s.configurePending = true; s.stopped = false; s.failures = 0; s.retryAt = 0; });
     return await run(true);
   }
-  if (request.type === 'disconnect') { const reply = await checkReply(await native('sync.disconnect')); await forgetBinding(); return { ok: true, message: reply.message }; }
+  if (request.type === 'disconnect') {
+    sending = true;
+    try { const reply = await checkReply(await native('sync.disconnect')); await forgetBinding(); return { ok: true, message: reply.message }; }
+    finally { sending = false; await schedule(); }
+  }
   return { ok: false, message: '不支持的操作' };
 }
