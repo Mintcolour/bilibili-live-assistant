@@ -48,6 +48,8 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
             Execute(connection, """
                 CREATE TABLE anchors(uid INTEGER PRIMARY KEY CHECK(uid>0),name TEXT NOT NULL,avatar TEXT NOT NULL);
                 CREATE TABLE room_aliases(room INTEGER NOT NULL,uid INTEGER NOT NULL REFERENCES anchors(uid),PRIMARY KEY(room,uid));
+                CREATE INDEX ix_rooms_uid ON room_aliases(uid,room);
+                CREATE TABLE anchor_names(uid INTEGER NOT NULL REFERENCES anchors(uid),name TEXT NOT NULL,first_seen INTEGER NOT NULL,PRIMARY KEY(uid,name));
                 CREATE TABLE sessions(id TEXT PRIMARY KEY,room INTEGER NOT NULL,anchor_uid INTEGER REFERENCES anchors(uid),started INTEGER NOT NULL,
                     ended INTEGER,status TEXT NOT NULL,first_day TEXT NOT NULL,last_day TEXT NOT NULL,heartbeat INTEGER NOT NULL);
                 CREATE INDEX ix_sessions_anchor ON sessions(anchor_uid,started);
@@ -126,6 +128,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
             {
                 Execute(connection, "INSERT INTO anchors VALUES($uid,$name,$avatar) ON CONFLICT(uid) DO UPDATE SET name=excluded.name,avatar=excluded.avatar",
                     ("$uid", profile.Uid), ("$name", profile.Name), ("$avatar", profile.AvatarUrl));
+                Execute(connection, "INSERT OR IGNORE INTO anchor_names VALUES($uid,$name,$at)", ("$uid", profile.Uid), ("$name", profile.Name), ("$at", Millis(item.ReceivedAt)));
                 foreach (var room in new[] { item.Context.RoomId, profile.RoomId }.Distinct().Where(r => r > 0))
                 {
                     Execute(connection, "INSERT OR IGNORE INTO room_aliases VALUES($room,$uid)", ("$room", room), ("$uid", profile.Uid));
@@ -181,12 +184,15 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         if (filter.SessionId is { Length: > 0 }) { where += " AND s.id=$session"; command.Parameters.AddWithValue("$session", filter.SessionId); }
         return where;
     }
-    public Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token) => ReadAsync<IReadOnlyList<HistoryAnchor>>(connection =>
+    public Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "") => ReadAsync<IReadOnlyList<HistoryAnchor>>(connection =>
     {
         using var command = Command(connection, """
             SELECT s.anchor_uid,MIN(s.room),COALESCE(a.name,''),COALESCE(a.avatar,'') FROM sessions s LEFT JOIN anchors a ON a.uid=s.anchor_uid
+            WHERE $search='' OR CAST(a.uid AS TEXT)=$search OR CAST(s.room AS TEXT)=$search OR instr(COALESCE(a.name,''),$search)>0
+                OR EXISTS(SELECT 1 FROM anchor_names n WHERE n.uid=a.uid AND instr(n.name,$search)>0)
+                OR EXISTS(SELECT 1 FROM room_aliases r WHERE r.uid=a.uid AND CAST(r.room AS TEXT)=$search)
             GROUP BY COALESCE('u:'||s.anchor_uid,'r:'||s.room) ORDER BY MAX(s.started) DESC LIMIT 2000;
-            """);
+            """, ("$search", search));
         using var reader = command.ExecuteReader(); var rows = new List<HistoryAnchor>();
         while (reader.Read()) rows.Add(new(reader.IsDBNull(0) ? null : reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2), reader.GetString(3)));
         return rows;

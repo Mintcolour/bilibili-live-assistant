@@ -13,6 +13,7 @@ internal sealed class HistoryPage : Page
     private readonly ILocalHistory _history;
     private readonly Func<bool> _visible;
     private readonly ListView _anchors = new() { SelectionMode = ListViewSelectionMode.Single, DisplayMemberPath = nameof(HistoryAnchor.Label) };
+    private readonly TextBox _anchorSearch = new() { PlaceholderText = "昵称 / 曾用名 / UID / 房间号", MaxLength = 128 };
     private readonly CalendarDatePicker _from = new() { Header = "开始日期", Date = DateTimeOffset.Now.AddDays(-6), DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
     private readonly CalendarDatePicker _to = new() { Header = "结束日期", Date = DateTimeOffset.Now, DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
     private readonly ComboBox _sessions = new() { Header = "监视记录", HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 190 };
@@ -47,7 +48,11 @@ internal sealed class HistoryPage : Page
         Grid.SetColumn(_newRecords, 1); heading.Children.Add(_newRecords); root.Children.Add(heading);
         var body = new Grid { ColumnSpacing = 16 }; body.ColumnDefinitions.Add(new() { Width = new(210), MinWidth = 130 }); body.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         var left = new Grid { RowSpacing = 8 }; left.RowDefinitions.Add(new() { Height = GridLength.Auto }); left.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        left.Children.Add(new TextBlock { Text = "主播 / 待识别房间", FontSize = 14 }); Grid.SetRow(_anchors, 1); left.Children.Add(_anchors);
+        var anchorHeader = new StackPanel { Spacing = 6, Children = { new TextBlock { Text = "主播 / 待识别房间", FontSize = 14 }, _anchorSearch } };
+        var findAnchor = UiFactory.Button("查询主播"); findAnchor.Click += async (_, _) => await RefreshAsync(true); anchorHeader.Children.Add(findAnchor);
+        ToolTipService.SetToolTip(_anchorSearch, "默认显示最近 2000 个主播；搜索可以查找更早的存档。");
+        _anchorSearch.TextChanged += (_, _) => { if (!_loading) _query?.Cancel(); };
+        left.Children.Add(anchorHeader); Grid.SetRow(_anchors, 1); left.Children.Add(_anchors);
         Grid.SetRow(_storage, 2); left.Children.Add(_storage); body.Children.Add(left);
         var right = new Grid { RowSpacing = 10 };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) right.RowDefinitions.Add(new() { Height = height });
@@ -131,7 +136,7 @@ internal sealed class HistoryPage : Page
             if (anchors)
             {
                 var selected = _anchors.SelectedItem as HistoryAnchor;
-                var values = await _history.AnchorsAsync(run.Token); if (!Current(run)) return;
+                var values = await _history.AnchorsAsync(run.Token, _anchorSearch.Text.Trim()); if (!Current(run)) return;
                 _loading = true;
                 _anchors.ItemsSource = values;
                 _anchors.SelectedItem = selected is null ? values.FirstOrDefault() : values.FirstOrDefault(a => a.Uid == selected.Uid && (a.Uid is > 0 || a.RoomId == selected.RoomId)) ?? values.FirstOrDefault();

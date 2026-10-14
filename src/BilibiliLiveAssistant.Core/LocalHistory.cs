@@ -53,7 +53,7 @@ public interface ILocalHistory : IAsyncDisposable
     HistoryContext Begin(int roomId);
     void End(HistoryContext context);
     void Capture(HistoryContext context, LiveEvent value, DateTimeOffset receivedAt);
-    Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token);
+    Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "");
     Task<IReadOnlyList<HistorySession>> SessionsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryRow>> QueryAsync(HistoryFilter filter, CancellationToken token);
     Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token);

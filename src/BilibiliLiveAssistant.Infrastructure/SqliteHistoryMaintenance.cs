@@ -76,6 +76,11 @@ public sealed partial class SqliteLocalHistory
             AND NOT EXISTS(SELECT 1 FROM summaries WHERE session_id=s.id)
             """;
         cleanup.ExecuteNonQuery();
+        using var catalogue = new HistoryTransaction(connection);
+        Execute(connection, "DELETE FROM room_aliases WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=room_aliases.uid);");
+        Execute(connection, "DELETE FROM anchor_names WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=anchor_names.uid);");
+        Execute(connection, "DELETE FROM anchors WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=anchors.uid);");
+        catalogue.Commit();
     }, token);
     public Task CompactAsync(CancellationToken token)
     {
