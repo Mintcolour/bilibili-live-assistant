@@ -114,6 +114,10 @@ public sealed partial class SqliteLocalHistory
     {
         var value = item.Event; var a = value.Appearance;
         long bytes = 2048L + 2L * (value.Username.Length + value.Content.Length + value.Color.Length);
+        var fields = item.Fields;
+        bytes += 2L * ((fields.RawBody?.Length ?? 0) + (fields.TransactionId?.Length ?? 0) + (fields.GiftName?.Length ?? 0) + (fields.UniqueId?.Length ?? 0));
+        if (value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile profile)
+            bytes += 2L * (profile.Name.Length + profile.Title.Length + profile.AvatarUrl.Length + profile.MedalName.Length);
         if (a is not null)
         {
             bytes += 2L * (a.AvatarUrl.Length + a.AvatarFrameUrl.Length + a.MedalName.Length + a.InteractionIconUrl.Length + a.InteractionHint.Length);
@@ -121,7 +125,9 @@ public sealed partial class SqliteLocalHistory
             if (a.FullEmote is { } full) bytes += 160 + 2L * (full.Token.Length + full.Url.Length);
             if (a.EntryEffect is { } effect) bytes += 256 + 2L * (effect.BackgroundUrl.Length + effect.BadgeUrl.Length);
         }
-        bytes += 512L * (value.Extra.GetValueOrDefault("rank_members") is IReadOnlyList<LiveRankMember> members ? members.Count : 0);
+        if (value.Extra.GetValueOrDefault("rank_members") is IReadOnlyList<LiveRankMember> members)
+            foreach (var member in members)
+                bytes += 512L + 2L * (member.Username.Length + member.Appearance.AvatarUrl.Length + member.Appearance.AvatarFrameUrl.Length + member.Appearance.MedalName.Length);
         return (int)Math.Min(int.MaxValue, bytes);
     }
     private void EnqueueLocked(HistoryEnvelope item)
