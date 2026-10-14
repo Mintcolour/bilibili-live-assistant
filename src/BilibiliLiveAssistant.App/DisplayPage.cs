@@ -17,6 +17,9 @@ internal sealed class DisplayPage : Page
     private readonly FeaturePreview _featurePreview;
     private readonly MediaSettingsEditor _mediaEditor = new();
     private readonly CardSettingsEditor _cardEditor = new();
+    private readonly HistorySettingsEditor _historyEditor = new();
+    private readonly TextBlock _historyPreview = new() { TextWrapping = TextWrapping.Wrap, FontSize = 15, Margin = new Thickness(12) };
+    private HistorySettings _historyDraft = new();
     private readonly TextBlock _layoutLabel = new() { Text = "桌面布局 · 拖动区域，右下角缩放", FontSize = 14 };
     private readonly VisualLayoutEditor _layout = new();
     private readonly ToggleSwitch _enabled = new() { Header = "显示这一类悬浮内容" };
@@ -49,15 +52,16 @@ internal sealed class DisplayPage : Page
         foreach (var kind in Enum.GetValues<OverlayRegionKind>()) _selector.Items.Add(new ComboBoxItem { Content = OverlayRegions.Title(kind), Tag = kind });
         _selector.Items.Add(new ComboBoxItem { Content = "媒体预览", Tag = "media" });
         _selector.Items.Add(new ComboBoxItem { Content = "概览卡片", Tag = "cards" });
+        _selector.Items.Add(new ComboBoxItem { Content = "本地历史存档", Tag = "history" });
         Grid.SetColumn(_selector, 1); header.Children.Add(_selector); root.Children.Add(header);
         _columns.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 280 }); _columns.ColumnDefinitions.Add(new() { Width = new(330), MinWidth = 270 });
         var previewContent = new StackPanel { Spacing = 12, Children = { new TextBlock { Text = "实时预览", FontSize = 16 }, _preview,
-            _featurePreview, _layoutLabel, _layout } };
+            _featurePreview, _historyPreview, _layoutLabel, _layout } };
         _columns.Children.Add(new ScrollViewer { Content = previewContent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         _shared.Children.Add(new TextBlock { Text = "共享图文元素", FontSize = 13 });
         _shared.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _avatars, _medals, _identity } });
         foreach (var (label, rate) in new[] { ("30 FPS · 省电", 30), ("60 FPS · 平衡", 60), ("120 FPS", 120), ("跟随屏幕", 0) }) _frameRate.Items.Add(new ComboBoxItem { Content = label, Tag = rate });
-        var properties = new StackPanel { Spacing = 12, Children = { _dashboard, _mediaEditor, _cardEditor, _enabled, _shared, _editor, _tracks, _frameRate, _locked, _poll } };
+        var properties = new StackPanel { Spacing = 12, Children = { _dashboard, _mediaEditor, _cardEditor, _historyEditor, _enabled, _shared, _editor, _tracks, _frameRate, _locked, _poll } };
         var propertiesScroll = new ScrollViewer { Content = properties, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; Grid.SetColumn(propertiesScroll, 1); _columns.Children.Add(propertiesScroll);
         Grid.SetRow(_columns, 1); root.Children.Add(_columns);
         var footer = new StackPanel { Spacing = 6 }; var buttons = new Grid { ColumnSpacing = 8 };
@@ -99,11 +103,12 @@ internal sealed class DisplayPage : Page
         _selector.SelectionChanged += (_, _) =>
         {
             if (_loading) return; Capture(); _selected = (_selector.SelectedItem as ComboBoxItem)?.Tag is OverlayRegionKind kind ? kind : null;
-            _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" ? tag : null;
+            _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" or "history" ? tag : null;
             LoadSelection(); RefreshPreview();
         };
         _editor.Changed += OnEdited; _dashboard.Changed += OnEdited;
         _mediaEditor.Changed += OnEdited; _cardEditor.Changed += OnEdited;
+        _historyEditor.Changed += OnEdited;
         foreach (var control in new DependencyObject[] { _enabled, _shared, _tracks, _frameRate, _locked, _poll }) SettingEvents.Watch(control, OnEdited);
         _layout.Selected += kind => { _selector.SelectedItem = _selector.Items.OfType<ComboBoxItem>().First(item => item.Tag is OverlayRegionKind value && value == kind); };
         _layout.Changed += (kind, region) =>
@@ -129,13 +134,14 @@ internal sealed class DisplayPage : Page
     {
         _loading = true; _layoutDirty.Clear(); _displayDraft = _vm.Settings.Display; _dashboardDraft = _vm.Settings.Dashboard;
         _mediaDraft = _vm.Settings.MediaPreview; _cardDraft = _vm.Settings.Cards; _cardModeDirty = false; _savedCardEnabled = _cardDraft.Enabled;
+        _historyDraft = _vm.Settings.History;
         foreach (var kind in Enum.GetValues<OverlayRegionKind>()) _drafts[kind] = OverlayRegions.Get(_displayDraft, kind);
         _dashboard.Load(_dashboardDraft); _tracks.Value = _displayDraft.MaxTracks; _poll.Value = _vm.Settings.PollIntervalSeconds;
         _frameRate.SelectedItem = _frameRate.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (int)item.Tag == _displayDraft.AnimationFrameRate) ?? _frameRate.Items[1];
         _locked.IsOn = _displayDraft.LayoutLocked;
         if (_selector.SelectedIndex < 0) _selector.SelectedIndex = 0;
         _selected = (_selector.SelectedItem as ComboBoxItem)?.Tag is OverlayRegionKind selected ? selected : null;
-        _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" ? tag : null;
+        _feature = (_selector.SelectedItem as ComboBoxItem)?.Tag is string tag && tag is "media" or "cards" or "history" ? tag : null;
         _loading = false; LoadSelection(); RefreshPreview();
     }
     private void LoadSelection()
@@ -144,8 +150,10 @@ internal sealed class DisplayPage : Page
         _dashboard.Visibility = _poll.Visibility = overview ? Visibility.Visible : Visibility.Collapsed;
         _mediaEditor.Visibility = _feature == "media" ? Visibility.Visible : Visibility.Collapsed;
         _cardEditor.Visibility = _feature == "cards" ? Visibility.Visible : Visibility.Collapsed;
+        _historyEditor.Visibility = _feature == "history" ? Visibility.Visible : Visibility.Collapsed;
+        _historyPreview.Visibility = _feature == "history" ? Visibility.Visible : Visibility.Collapsed;
         _preview.Visibility = _layout.Visibility = _layoutLabel.Visibility = _feature is null ? Visibility.Visible : Visibility.Collapsed;
-        _featurePreview.Visibility = _feature is null ? Visibility.Collapsed : Visibility.Visible;
+        _featurePreview.Visibility = _feature is "media" or "cards" ? Visibility.Visible : Visibility.Collapsed;
         _editor.Visibility = _shared.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
         _enabled.Visibility = _selected is null or OverlayRegionKind.Danmaku ? Visibility.Collapsed : Visibility.Visible;
         _tracks.Visibility = _selected == OverlayRegionKind.Danmaku ? Visibility.Visible : Visibility.Collapsed;
@@ -155,6 +163,7 @@ internal sealed class DisplayPage : Page
         if (_selected is { } kind) { _editor.Load(kind, _drafts[kind]); _enabled.IsOn = OverlayRegions.Enabled(_displayDraft, kind); }
         else if (_feature == "media") _mediaEditor.Load(_mediaDraft);
         else if (_feature == "cards") _cardEditor.Load(_cardDraft);
+        else if (_feature == "history") _historyEditor.Load(_historyDraft, _vm.History.Status);
         else _dashboard.Load(_dashboardDraft);
         _loading = false;
     }
@@ -163,6 +172,7 @@ internal sealed class DisplayPage : Page
         if (_loading) return;
         if (_feature == "media") { _mediaDraft = _mediaEditor.Read(); return; }
         if (_feature == "cards") { _cardDraft = _cardEditor.Read(); _cardModeDirty = _cardDraft.Enabled != _savedCardEnabled; return; }
+        if (_feature == "history") { _historyDraft = _historyEditor.Read(); return; }
         if (_selected is { } kind)
         {
             var previous = _drafts[kind]; var next = _editor.Read(previous); _drafts[kind] = next;
@@ -179,8 +189,13 @@ internal sealed class DisplayPage : Page
     private void RefreshPreview()
     {
         _preview.SetActive(_feature is null && _visible());
-        if (_feature is { } feature) _featurePreview.Update(feature, _mediaDraft, _cardDraft, _dashboardDraft);
-        _featurePreview.SetActive(_feature is not null && _visible());
+        if (_feature is "media" or "cards") _featurePreview.Update(_feature, _mediaDraft, _cardDraft, _dashboardDraft);
+        _featurePreview.SetActive(_feature is "media" or "cards" && _visible());
+        if (_feature == "history")
+        {
+            try { _historyPreview.Text = HistorySettingsEditor.Preview(_historyDraft, _vm.History.Status); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException) { _historyPreview.Text = "目录无效：" + ex.Message; }
+        }
         if (_feature is not null) return;
         _preview.Update(_selected, _selected is { } kind ? _drafts[kind] : new(), _dashboardDraft, _displayDraft.AnimationFrameRate,
             _selected is not { } selected || OverlayRegions.Enabled(_displayDraft, selected), _displayDraft.MaxTracks);
@@ -198,8 +213,9 @@ internal sealed class DisplayPage : Page
             var dashboard = _dashboardDraft with { DanmakuColumnWidth = current.DanmakuColumnWidth, GiftColumnWidth = current.GiftColumnWidth, SuperChatColumnWidth = current.SuperChatColumnWidth,
                 InteractionPanelRatio = current.InteractionPanelRatio, RankPanelRatio = current.RankPanelRatio, RankPanelCollapsed = current.RankPanelCollapsed, RankKind = current.RankKind };
             var cards = _cardModeDirty ? _cardDraft : _cardDraft with { Enabled = _vm.Settings.Cards.Enabled };
-            _saving = true; await _vm.SaveAsync(_vm.Settings with { Display = display, Dashboard = dashboard.Normalize(), PollIntervalSeconds = (int)_poll.Value,
-                MediaPreview = _mediaDraft.Normalize(), Cards = cards.Normalize() });
+            _saving = true; _feedback.Text = "正在保存并应用；更换存档目录时会先复制并校验，请稍候…";
+            await _vm.SaveAsync(_vm.Settings with { Display = display, Dashboard = dashboard.Normalize(), PollIntervalSeconds = (int)_poll.Value,
+                MediaPreview = _mediaDraft.Normalize(), Cards = cards.Normalize(), History = _historyDraft.Normalize() });
             _cardDraft = _vm.Settings.Cards; _savedCardEnabled = _cardDraft.Enabled; _cardModeDirty = false;
             if (_feature == "cards") { _loading = true; _cardEditor.Load(_cardDraft); _loading = false; }
             _layoutDirty.Clear();
@@ -210,6 +226,8 @@ internal sealed class DisplayPage : Page
     }
     private void OnSettingsChanged(object? sender, PropertyChangedEventArgs args)
     {
+        if (!_disposed && !_saving && args.PropertyName == nameof(LiveAssistantViewModel.HistoryWarning) && _feature == "history")
+        { _historyEditor.UpdateUsage(_vm.History.Status); RefreshPreview(); return; }
         if (_disposed || _saving || args.PropertyName != nameof(LiveAssistantViewModel.Settings)) return;
         Capture();
         if (!_cardModeDirty)

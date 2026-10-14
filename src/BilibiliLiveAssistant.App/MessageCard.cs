@@ -12,6 +12,7 @@ namespace BilibiliLiveAssistant.App;
 internal sealed class MessageCard : ContentControl, IDisposable
 {
     private readonly List<BiliImageView> _images = new();
+    private readonly Func<bool> _visible;
     private MediaPreviewGroup? _media;
     private bool _disposed;
     internal Guid RecordId { get; }
@@ -22,6 +23,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
     internal MediaPreviewSettings MediaStyle { get; }
     public MessageCard(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, DashboardSettings? previewStyle = null)
     {
+        _visible = visible;
         var message = record.Event;
         var style = previewStyle ?? vm.Settings.Dashboard;
         RecordId = record.Id; RecordRevision = record.Revision; MessageStyle = style; MediaStyle = vm.Settings.MediaPreview; Read = record.IsRead; Thanked = record.IsThanked;
@@ -369,6 +371,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
     internal void Activate(double rasterizationScale = 1)
     {
         if (_disposed) return;
+        if (!_visible()) { Deactivate(); return; }
         foreach (var image in _images) image.Activate(XamlRoot?.RasterizationScale ?? rasterizationScale);
         _media?.SetActive(true);
     }

@@ -49,7 +49,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 CREATE TABLE anchors(uid INTEGER PRIMARY KEY CHECK(uid>0),name TEXT NOT NULL,avatar TEXT NOT NULL);
                 CREATE TABLE room_aliases(room INTEGER NOT NULL,uid INTEGER NOT NULL REFERENCES anchors(uid),PRIMARY KEY(room,uid));
                 CREATE TABLE sessions(id TEXT PRIMARY KEY,room INTEGER NOT NULL,anchor_uid INTEGER REFERENCES anchors(uid),started INTEGER NOT NULL,
-                    ended INTEGER,status TEXT NOT NULL,first_day TEXT NOT NULL,last_day TEXT NOT NULL);
+                    ended INTEGER,status TEXT NOT NULL,first_day TEXT NOT NULL,last_day TEXT NOT NULL,heartbeat INTEGER NOT NULL);
                 CREATE INDEX ix_sessions_anchor ON sessions(anchor_uid,started);
                 CREATE INDEX ix_sessions_room ON sessions(room,started);
                 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,
@@ -57,8 +57,8 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                     color TEXT NOT NULL,appearance TEXT,fields TEXT NOT NULL,source_id TEXT,quantity INTEGER,paid INTEGER,amount INTEGER);
                 CREATE UNIQUE INDEX ix_events_source ON events(type,source_id) WHERE source_id IS NOT NULL;
                 CREATE INDEX ix_events_time ON events(session_id,local_day,received DESC,id DESC);
-                CREATE INDEX ix_events_type ON events(session_id,type,local_day,id DESC);
-                CREATE INDEX ix_events_uid ON events(session_id,uid,local_day,id DESC);
+                CREATE INDEX ix_events_type ON events(session_id,type,local_day,received DESC,id DESC);
+                CREATE INDEX ix_events_uid ON events(session_id,uid,local_day,received DESC,id DESC);
                 CREATE TABLE profiles(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,local_day TEXT NOT NULL,data TEXT NOT NULL);
                 CREATE INDEX ix_profiles_time ON profiles(session_id,local_day);
                 CREATE TABLE snapshots(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,local_day TEXT NOT NULL,
@@ -67,7 +67,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 CREATE TABLE summaries(session_id TEXT NOT NULL REFERENCES sessions(id),local_day TEXT NOT NULL,type INTEGER NOT NULL,
                     count INTEGER NOT NULL,paid_amount INTEGER NOT NULL,free_quantity INTEGER NOT NULL,sc_amount INTEGER NOT NULL,unknown INTEGER NOT NULL,
                     PRIMARY KEY(session_id,local_day,type));
-                CREATE TABLE gaps(id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),room INTEGER NOT NULL,type INTEGER NOT NULL,local_day TEXT NOT NULL,
+                CREATE TABLE gaps(id TEXT PRIMARY KEY,session_id TEXT REFERENCES sessions(id),room INTEGER NOT NULL,type INTEGER NOT NULL,local_day TEXT NOT NULL,last_day TEXT NOT NULL,
                     count INTEGER NOT NULL,first_at INTEGER NOT NULL,last_at INTEGER NOT NULL,reason TEXT NOT NULL);
                 CREATE INDEX ix_gaps_time ON gaps(session_id,local_day);
                 PRAGMA user_version=1;
@@ -75,17 +75,17 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
             transaction.Commit();
         }
         if (recover)
-            Execute(connection, "UPDATE sessions SET status='interrupted',ended=COALESCE((SELECT MAX(received) FROM events WHERE session_id=sessions.id),started) WHERE status='active';");
+            Execute(connection, "UPDATE sessions SET status='interrupted',ended=heartbeat WHERE status='active';");
     }
     private static void EnsureSession(SqliteConnection connection, HistoryContext context)
     {
-        Execute(connection, "INSERT OR IGNORE INTO sessions(id,room,started,status,first_day,last_day) VALUES($id,$room,$start,'active',$day,$day)",
+        Execute(connection, "INSERT OR IGNORE INTO sessions(id,room,started,status,first_day,last_day,heartbeat) VALUES($id,$room,$start,'active',$day,$day,$start)",
             ("$id", context.Id), ("$room", context.RoomId), ("$start", Millis(context.StartedAt)), ("$day", Day(context.StartedAt)));
     }
     private void WriteEnvelope(SqliteConnection connection, HistoryEnvelope item)
     {
         EnsureSession(connection, item.Context);
-        Execute(connection, "UPDATE sessions SET first_day=MIN(first_day,$day),last_day=MAX(last_day,$day) WHERE id=$id", ("$day", item.LocalDay), ("$id", item.Context.Id));
+        Execute(connection, "UPDATE sessions SET first_day=MIN(first_day,$day),last_day=MAX(last_day,$day),heartbeat=MAX(heartbeat,$at) WHERE id=$id", ("$day", item.LocalDay), ("$at", Millis(item.ReceivedAt)), ("$id", item.Context.Id));
         var value = item.Event; var fields = item.Fields;
         if (value.Type is LiveEventType.Online or LiveEventType.Rank)
         {
@@ -145,16 +145,16 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     private static void WriteGap(SqliteConnection connection, HistoryGap gap)
     {
         Execute(connection, """
-            INSERT INTO gaps(id,session_id,room,type,local_day,count,first_at,last_at,reason) VALUES($id,$s,$room,$type,$day,$count,$first,$last,$why)
-            ON CONFLICT(id) DO UPDATE SET count=MAX(count,excluded.count),first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at)
+            INSERT INTO gaps(id,session_id,room,type,local_day,last_day,count,first_at,last_at,reason) VALUES($id,$s,$room,$type,$day,$lastDay,$count,$first,$last,$why)
+            ON CONFLICT(id) DO UPDATE SET count=MAX(count,excluded.count),first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),last_day=MAX(last_day,excluded.last_day)
             """, ("$id", gap.Id),
-            ("$s", gap.SessionId), ("$room", gap.RoomId), ("$type", (int)gap.Type), ("$day", Day(gap.FirstAt)), ("$count", gap.Count),
+            ("$s", gap.SessionId), ("$room", gap.RoomId), ("$type", (int)gap.Type), ("$day", Day(gap.FirstAt)), ("$lastDay", Day(gap.LastAt)), ("$count", gap.Count),
             ("$first", Millis(gap.FirstAt)), ("$last", Millis(gap.LastAt)), ("$why", gap.Reason));
     }
     private async Task<T> ReadAsync<T>(Func<SqliteConnection, T> read, CancellationToken token)
     {
-        await _ready.Task.WaitAsync(token).ConfigureAwait(false);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        await _ready.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
         await _readGate.WaitAsync(timeout.Token).ConfigureAwait(false);
         try
         {
@@ -234,20 +234,27 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         using (var reader = command.ExecuteReader()) { reader.Read(); totals = Enumerable.Range(0, 10).Select(reader.GetInt64).ToArray(); }
         command.CommandText = $"SELECT COALESCE(SUM(count),0) FROM gaps e JOIN sessions s ON s.id=e.session_id WHERE {where}";
         var missing = Convert.ToInt64(command.ExecuteScalar());
-        return new HistorySummary(totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6], totals[7], totals[8], totals[9], missing, missing > 0);
+        command.CommandText = "SELECT COALESCE(SUM(count),0) FROM gaps WHERE session_id IS NULL AND local_day<=$to AND last_day>=$from";
+        var unassigned = Convert.ToInt64(command.ExecuteScalar());
+        using var interruptedCommand = connection.CreateCommand();
+        var sessionScope = Scope(filter, interruptedCommand, "s").Replace("s.local_day >= $from AND s.local_day <= $to", "s.last_day >= $from AND s.first_day <= $to");
+        interruptedCommand.CommandText = $"SELECT COUNT(*) FROM sessions s WHERE {sessionScope} AND status='interrupted'";
+        var interrupted = Convert.ToInt64(interruptedCommand.ExecuteScalar());
+        return new HistorySummary(totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6], totals[7], totals[8], totals[9], missing, missing > 0 || unassigned > 0 || interrupted > 0, unassigned, interrupted);
     }, token);
     public Task<IReadOnlyList<HistoryGap>> GapsAsync(HistoryFilter filter, CancellationToken token) => ReadAsync<IReadOnlyList<HistoryGap>>(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);
-        command.CommandText = $"SELECT e.session_id,e.room,e.type,e.count,e.first_at,e.last_at,e.reason FROM gaps e JOIN sessions s ON s.id=e.session_id WHERE {where} ORDER BY first_at DESC LIMIT 100";
+        command.CommandText = $"SELECT e.session_id,e.room,e.type,e.count,e.first_at,e.last_at,e.reason FROM gaps e LEFT JOIN sessions s ON s.id=e.session_id WHERE ({where}) OR (e.session_id IS NULL AND e.local_day<=$to AND e.last_day>=$from) ORDER BY first_at DESC LIMIT 100";
         using var reader = command.ExecuteReader(); var result = new List<HistoryGap>();
-        while (reader.Read()) result.Add(new(reader.GetString(0), reader.GetInt32(1), (LiveEventType)reader.GetInt32(2), reader.GetInt64(3), Time(reader.GetInt64(4)), Time(reader.GetInt64(5)), reader.GetString(6)));
+        while (reader.Read()) result.Add(new(reader.IsDBNull(0) ? null : reader.GetString(0), reader.GetInt32(1), (LiveEventType)reader.GetInt32(2), reader.GetInt64(3), Time(reader.GetInt64(4)), Time(reader.GetInt64(5)), reader.GetString(6)));
         return result;
     }, token);
     public Task<long> CountAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);
-        command.CommandText = $"SELECT COUNT(*) FROM events e JOIN sessions s ON s.id=e.session_id WHERE {where}";
+        command.CommandText = "SELECT SUM(n) FROM (" + string.Join(" UNION ALL ", new[] { "events", "profiles", "snapshots", "gaps" }
+            .Select(table => $"SELECT COUNT(*) AS n FROM {table} e JOIN sessions s ON s.id=e.session_id WHERE {where}")) + ")";
         return Convert.ToInt64(command.ExecuteScalar());
     }, token);
     public Task<HistoryDetails> DetailsAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>

@@ -52,6 +52,7 @@ public sealed class MainWindow : Window
         _navigation.IsPaneToggleButtonVisible = true;
         _navigation.PaneTitle = "B站直播助手";
         _navigation.MenuItems.Add(Item("概览", "dashboard", Symbol.Home));
+        _navigation.MenuItems.Add(Item("历史记录", "history", Symbol.Clock));
         _navigation.MenuItems.Add(Item("可视化设置", "display", Symbol.Setting));
         _navigation.MenuItems.Add(Item("音频测试", "audio", Symbol.Microphone));
         _navigation.MenuItems.Add(Item("账号设置", "account", Symbol.Contact));
@@ -103,6 +104,7 @@ public sealed class MainWindow : Window
         _frame.Content = tag switch
         {
             "display" => new DisplayPage(_vm, OpenOverlay, IsMainVisible),
+            "history" => new HistoryPage(_vm, IsMainVisible),
             "audio" => new AudioTestPage(),
             "account" => new AccountPage(_vm),
             "about" => new AboutPage(),
@@ -117,12 +119,14 @@ public sealed class MainWindow : Window
         (_frame.Content as DashboardPage)?.SuspendVisuals();
         (_frame.Content as DisplayPage)?.SuspendVisuals();
         (_frame.Content as AccountPage)?.SetActive(false);
+        (_frame.Content as HistoryPage)?.SetActive(false);
     }
     private void UpdatePageVisibility()
     {
         if (!IsMainVisible()) { SuspendPage(); return; }
         (_frame.Content as DashboardPage)?.ResumeVisuals(); (_frame.Content as DisplayPage)?.ResumeVisuals();
         (_frame.Content as AccountPage)?.SetActive(true);
+        (_frame.Content as HistoryPage)?.SetActive(true);
     }
 
     public void OpenOverlay()

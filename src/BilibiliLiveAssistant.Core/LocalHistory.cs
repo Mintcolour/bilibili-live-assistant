@@ -5,7 +5,7 @@ public sealed record HistorySettings
     public bool Enabled { get; init; } = true;
     public string Directory { get; init; } = "";
     public int CapacityWarningGiB { get; init; } = 10;
-    public HistorySettings Normalize() => this with { Directory = Directory?.Trim() ?? "", CapacityWarningGiB = Math.Clamp(CapacityWarningGiB, 1, 4096) };
+    public HistorySettings Normalize() => this with { Directory = string.IsNullOrWhiteSpace(Directory) ? "" : Path.GetFullPath(Directory.Trim()), CapacityWarningGiB = Math.Clamp(CapacityWarningGiB, 1, 4096) };
     public string EffectiveDirectory => string.IsNullOrWhiteSpace(Directory)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "history")
         : Path.GetFullPath(Directory);
@@ -15,7 +15,7 @@ public sealed record HistorySettings
 public sealed record HistoryEventFields(DateTimeOffset? UpstreamTime = null, string? UniqueId = null,
     long? GiftId = null, string? GiftName = null, long? Quantity = null, string? CoinType = null,
     long? UnitPrice = null, long? TotalCoin = null, long? AmountMilliYuan = null, int? GuardLevel = null,
-    int? InteractionKind = null);
+    int? InteractionKind = null, string? TransactionId = null, string? RawBody = null);
 public sealed record HistoryContext(string Id, int RoomId, DateTimeOffset StartedAt);
 public sealed record HistoryEnvelope(HistoryContext Context, DateTimeOffset ReceivedAt, string LocalDay,
     LiveEvent Event, HistoryEventFields Fields);
@@ -37,7 +37,7 @@ public sealed record HistoryDetails(LiveRoomProfile? Profile, long Snapshots, Da
 public sealed record HistoryRow(long Id, DateTimeOffset ReceivedAt, DateTimeOffset? UpstreamAt, string LocalDay,
     string SessionId, LiveEvent Event, HistoryEventFields Fields);
 public sealed record HistorySummary(long Events, long Danmaku, long Interactions, long Gifts, long Guards, long SuperChats,
-    long PaidGiftMilliYuan, long FreeGiftQuantity, long SuperChatMilliYuan, long UnknownPrices, long Missing, bool Incomplete);
+    long PaidGiftMilliYuan, long FreeGiftQuantity, long SuperChatMilliYuan, long UnknownPrices, long Missing, bool Incomplete, long UnassignedMissing = 0, long InterruptedSessions = 0);
 public sealed record HistoryGap(string? SessionId, int RoomId, LiveEventType Type, long Count,
     DateTimeOffset FirstAt, DateTimeOffset LastAt, string Reason)
 {

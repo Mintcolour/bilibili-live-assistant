@@ -42,15 +42,15 @@ internal static class BiliEventParser
                     $"¥{Text(sc, "price")} {Text(sc, "message")}", "#FFD700", Number(sc, "uid"),
                     Metadata: new Dictionary<string, object?> { ["id"] = Number(sc, "id"), ["price"] = Text(sc, "price") }, Appearance: BiliMessageAppearanceParser.Common(sc))
                 { HistoryFields = new(UpstreamTime: SourceTime(sc, "start_time"), UniqueId: Number(sc, "id") > 0 ? "sc:" + Number(sc, "id").ToString(CultureInfo.InvariantCulture) : null,
-                    AmountMilliYuan: MilliYuan(sc, "price")) });
+                    AmountMilliYuan: MilliYuan(sc, "price"), RawBody: Text(sc, "message")) });
                 break;
             case "INTERACT_WORD_V2":
                 var interaction = Decode<InteractWordV2>(root.GetProperty("data"));
-                EmitInteraction(emit, interaction.Uname, interaction.Uid, interaction.MsgType, BiliMessageAppearanceParser.Interaction(interaction));
+                EmitInteraction(emit, interaction.Uname, interaction.Uid, interaction.MsgType, BiliMessageAppearanceParser.Interaction(interaction), SourceTime(interaction.Timestamp));
                 break;
             case "INTERACT_WORD":
                 var legacy = root.GetProperty("data");
-                EmitInteraction(emit, Text(legacy, "uname"), Number(legacy, "uid"), (int)Number(legacy, "msg_type"), BiliMessageAppearanceParser.Common(legacy));
+                EmitInteraction(emit, Text(legacy, "uname"), Number(legacy, "uid"), (int)Number(legacy, "msg_type"), BiliMessageAppearanceParser.Common(legacy), SourceTime(legacy, "timestamp"));
                 break;
             case "ENTRY_EFFECT":
             case "ENTRY_EFFECT_MUST_RECEIVE":
@@ -67,7 +67,7 @@ internal static class BiliEventParser
                 emit(new LiveEvent(LiveEventType.Guard, Name(Text(sender.GetProperty("base"), "name")),
                     $"开通了{guardName}！", "#FF69B4", Number(sender, "uid"), Appearance: BiliMessageAppearanceParser.Common(toast))
                 { HistoryFields = new(UpstreamTime: SourceTime(toast, "start_time"), Quantity: OptionalNumber(toast, "num"),
-                    GuardLevel: level is >= 1 and <= 3 ? (int)level : null) });
+                    UnitPrice: OptionalNumber(toast, "price"), GuardLevel: level is >= 1 and <= 3 ? (int)level : null) });
                 break;
             case "WATCHED_CHANGE":
                 var watched = root.GetProperty("data");
@@ -93,14 +93,15 @@ internal static class BiliEventParser
                 ["gift_name"] = name,
             }, Appearance: appearance)
         { HistoryFields = new(UpstreamTime: upstream, GiftId: giftId > 0 ? giftId : null, GiftName: name, Quantity: count,
-            CoinType: coinType, UnitPrice: price, TotalCoin: totalCoin, AmountMilliYuan: coinType == "gold" && totalCoin is >= 0 ? totalCoin : null) });
+            CoinType: coinType, UnitPrice: price, TotalCoin: totalCoin, AmountMilliYuan: coinType == "gold" && totalCoin is >= 0 ? totalCoin : null,
+            TransactionId: transactionId.Length > 0 ? transactionId : null) });
     }
 
-    private static void EmitInteraction(Action<LiveEvent> emit, string username, long uid, int type, LiveMessageAppearance? appearance = null)
+    private static void EmitInteraction(Action<LiveEvent> emit, string username, long uid, int type, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null)
     {
         var action = type switch { 1 => "进入了直播间", 2 => "关注了主播", 3 => "分享了直播间", 4 => "特别关注了主播", 5 => "互粉了", 6 => "为主播点赞了", _ => "互动了" };
         emit(new LiveEvent(LiveEventType.Enter, Name(username), action, "#4CAF50", uid, Appearance: appearance)
-        { HistoryFields = new(InteractionKind: type) });
+        { HistoryFields = new(UpstreamTime: upstream, InteractionKind: type) });
     }
 
     private static void EmitEntry(Action<LiveEvent> emit, JsonElement data)
@@ -143,7 +144,10 @@ internal static class BiliEventParser
     private static DateTimeOffset? SourceTime(JsonElement value, string key) => value.TryGetProperty(key, out var item) ? SourceTime(item) : null;
     private static DateTimeOffset? SourceTime(JsonElement value)
     {
-        var number = Number(value);
+        return SourceTime(Number(value));
+    }
+    private static DateTimeOffset? SourceTime(long number)
+    {
         try { return number is > 100000000000 and < 253402300799999 ? DateTimeOffset.FromUnixTimeMilliseconds(number)
             : number is > 1000000000 and < 253402300799 ? DateTimeOffset.FromUnixTimeSeconds(number) : null; }
         catch (ArgumentOutOfRangeException) { return null; }

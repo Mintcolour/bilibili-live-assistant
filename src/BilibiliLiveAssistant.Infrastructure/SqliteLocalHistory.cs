@@ -46,6 +46,7 @@ public sealed partial class SqliteLocalHistory
         {
             var enabled = !_settings.Enabled && settings.Enabled; _settings = settings.Normalize();
             if (enabled) context = _current;
+            _snapshots.Change(_current is not null && _settings.Enabled ? 60000 : Timeout.Infinite, _settings.Enabled ? 60000 : Timeout.Infinite);
         }
         if (context is not null) ObserveControl(QueueCommand(c => EnsureSession(c, context), false));
         Publish(Status.Faulted ? Status.Message : "历史存档就绪", Status.Faulted);
@@ -56,7 +57,7 @@ public sealed partial class SqliteLocalHistory
         lock (_sync)
         {
             _current = context; _profile = null; _rank = null; _popularity = _watchedCount = _rankTotal = null; _hasObservation = false;
-            _snapshots.Change(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+            _snapshots.Change(_settings.Enabled ? 60000 : Timeout.Infinite, _settings.Enabled ? 60000 : Timeout.Infinite);
         }
         if (_settings.Enabled) ObserveControl(QueueCommand(c => EnsureSession(c, context), false)); return context;
     }
@@ -64,7 +65,7 @@ public sealed partial class SqliteLocalHistory
     {
         lock (_sync) { if (_current?.Id == context.Id) { SaveObservationLocked(); _current = null; _snapshots.Change(Timeout.Infinite, Timeout.Infinite); } }
         var ended = DateTimeOffset.UtcNow;
-        ObserveControl(QueueCommand(c => Execute(c, "UPDATE sessions SET ended=$at,status='stopped' WHERE id=$id", ("$at", Millis(ended)), ("$id", context.Id)), false));
+        ObserveControl(QueueCommand(c => Execute(c, "UPDATE sessions SET ended=$at,status='stopped',heartbeat=MAX(heartbeat,$at),last_day=MAX(last_day,$day) WHERE id=$id", ("$at", Millis(ended)), ("$day", Day(ended)), ("$id", context.Id)), false));
     }
     public void Capture(HistoryContext context, LiveEvent value, DateTimeOffset receivedAt)
     {
@@ -74,8 +75,8 @@ public sealed partial class SqliteLocalHistory
             if (value.Type is LiveEventType.Online or LiveEventType.Rank)
             {
                 if (_current?.Id != context.Id) return;
-                if (value.Extra.TryGetValue("archive_popularity", out var p) && p is long pv) _popularity = pv;
-                if (value.Extra.TryGetValue("archive_watched", out var w) && w is long wv) _watchedCount = wv;
+                if (value.Extra.TryGetValue("archive_popularity", out var p)) _popularity = p as long?;
+                if (value.Extra.TryGetValue("archive_watched", out var w)) _watchedCount = w as long?;
                 if (value.Type == LiveEventType.Rank)
                 {
                     _rank = value.Extra.GetValueOrDefault("rank_members") as IReadOnlyList<LiveRankMember> ?? Array.Empty<LiveRankMember>();
@@ -91,10 +92,16 @@ public sealed partial class SqliteLocalHistory
                 if (!_hasObservation) { _hasObservation = true; SaveObservationLocked(); }
                 return;
             }
-            EnqueueLocked(new(context, receivedAt, Day(receivedAt), value, value.HistoryFields ?? new()));
+            EnqueueLocked(new(context, receivedAt, Day(receivedAt), value with { Metadata = null, MediaReferences = Array.Empty<MediaReference>() }, value.HistoryFields ?? new()));
         }
     }
-    private void SaveObservation() { lock (_sync) SaveObservationLocked(); }
+    private void SaveObservation()
+    {
+        HistoryContext? context; var at = DateTimeOffset.UtcNow;
+        lock (_sync) { if (_closing || !_settings.Enabled) return; context = _current; SaveObservationLocked(); }
+        if (context is not null) ObserveControl(QueueCommand(c =>
+            Execute(c, "UPDATE sessions SET heartbeat=MAX(heartbeat,$at),last_day=MAX(last_day,$day) WHERE id=$id", ("$at", Millis(at)), ("$day", Day(at)), ("$id", context.Id)), false));
+    }
     private void SaveObservationLocked()
     {
         if (_current is not { } context || !_settings.Enabled || !_hasObservation || _closing) return;
@@ -124,7 +131,7 @@ public sealed partial class SqliteLocalHistory
         if (count >= 8192 || _bytes + bytes > 16 * 1024 * 1024 || !important && (_ordinary.Count + _inflightOrdinaryCount >= 7168 || _ordinaryBytes + bytes > 14 * 1024 * 1024))
         { AddGapLocked(item, "写入缓冲已满"); Wake(); return; }
         (important ? _important : _ordinary).Enqueue((item, bytes)); _bytes += bytes; if (!important) _ordinaryBytes += bytes;
-        Wake();
+        if (_ordinary.Count + _important.Count is 1 or 500) Wake();
     }
     private void AddGapLocked(HistoryEnvelope item, string reason)
     {
@@ -137,12 +144,12 @@ public sealed partial class SqliteLocalHistory
         else
         {
             // Bounded exceptional fallback is explicitly unassigned rather than attributed to the wrong room.
-            var fallback = ("", item.Event.Type, item.LocalDay);
+            var fallback = ("", item.Event.Type, "*");
             if (_gaps.TryGetValue(fallback, out var overflow)) _gaps[fallback] = (overflow.Context, overflow.Gap with { Count = overflow.Gap.Count + 1, LastAt = item.ReceivedAt });
             else if (_gaps.Count < 272) _gaps[fallback] = (item.Context, new(null, 0, item.Event.Type, 1, item.ReceivedAt, item.ReceivedAt, "多个房间拥堵，未归属缺口"));
         }
     }
-    private void Wake() { try { _wake.Release(); } catch (SemaphoreFullException) { } }
+    private void Wake() { if (_wake.CurrentCount != 0) return; try { _wake.Release(); } catch (SemaphoreFullException) { } }
     private void ObserveControl(Task task) => _ = task.ContinueWith(t => Publish("存档记录状态写入失败：" + t.Exception?.GetBaseException().Message, true),
         CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     private Task QueueCommand(Action<SqliteConnection> run, bool drain = true)
@@ -150,14 +157,14 @@ public sealed partial class SqliteLocalHistory
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_sync)
         {
-            if (_commands.Count >= 128 || _closing) { completion.SetException(new IOException("存档后台操作繁忙")); return completion.Task; }
+            if (_commands.Count >= 128 || _closing || drain && Status.Faulted) { completion.SetException(new IOException("存档后台繁忙或存储故障，请修复后重试")); return completion.Task; }
             _commands.Enqueue(new(run, completion, drain));
         }
         Wake(); return completion.Task;
     }
     private async Task WriterLoopAsync()
     {
-        SqliteConnection? connection = null; var recovered = false;
+        SqliteConnection? connection = null; FileStream? ownership = null; var recovered = false;
         var batch = new List<HistoryEnvelope>(500);
         try
         {
@@ -166,10 +173,12 @@ public sealed partial class SqliteLocalHistory
                 try
                 {
                     if (connection is not null && !string.Equals(connection.DataSource, DatabasePath, StringComparison.OrdinalIgnoreCase))
-                    { connection.Dispose(); connection = null; }
+                    { connection.Dispose(); connection = null; ownership?.Dispose(); ownership = null; }
                     if (connection is null)
                     {
-                        Directory.CreateDirectory(_directory); connection = Open(); Initialize(connection, !recovered);
+                        Directory.CreateDirectory(_directory);
+                        ownership = new FileStream(Path.Combine(_directory, "history.writer.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                        connection = Open(); Initialize(connection, !recovered);
                         if (!recovered) RecoverJournal(connection);
                         recovered = true; _ready.TrySetResult(); Publish("历史存档就绪", false);
                     }
@@ -227,32 +236,46 @@ public sealed partial class SqliteLocalHistory
                     if (work is not null)
                     {
                         try { work.Run(connection); work.Completion.TrySetResult(); Committed?.Invoke(); }
-                        catch (Exception ex) when (ex is not OutOfMemoryException) { work.Completion.TrySetException(ex); }
+                        catch (Exception ex) when (ex is not OutOfMemoryException)
+                        {
+                            work.Completion.TrySetException(ex);
+                            if (ex is SqliteException sqlite && sqlite.SqliteErrorCode is 10 or 13 or 14) throw;
+                        }
                     }
                     Publish(_dropped > 0 ? "存档有遗漏，请在历史记录查看缺口" : "历史存档就绪", false);
                 }
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { break; }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
-                    connection?.Dispose(); connection = null;
+                    connection?.Dispose(); connection = null; ownership?.Dispose(); ownership = null;
                     Publish("归档异常：" + ex.Message + "；直播监视继续，5 秒后重试", true);
+                    lock (_sync)
+                    {
+                        var controls = new List<Work>();
+                        while (_commands.TryDequeue(out var pending))
+                            if (pending.Drain) pending.Completion.TrySetException(new IOException("存档存储故障，操作未完成", ex)); else controls.Add(pending);
+                        foreach (var pending in controls) _commands.Enqueue(pending);
+                    }
                     PersistJournal();
                     await Task.Delay(TimeSpan.FromSeconds(5), _shutdown.Token);
                 }
             }
         }
         catch (OperationCanceledException) { }
-        finally { PersistJournal(); connection?.Dispose(); _ready.TrySetCanceled(); }
+        finally { PersistJournal(); connection?.Dispose(); ownership?.Dispose(); _ready.TrySetCanceled(); }
     }
     private void MergeGapLocked((HistoryContext Context, HistoryGap Gap) entry)
     {
-        var key = (entry.Gap.SessionId ?? "", entry.Gap.Type, Day(entry.Gap.FirstAt));
+        var key = (entry.Gap.SessionId ?? "", entry.Gap.Type, entry.Gap.SessionId is null ? "*" : Day(entry.Gap.FirstAt));
         if (_gaps.TryGetValue(key, out var prior)) _gaps[key] = (entry.Context, prior.Gap with { Count = prior.Gap.Count + entry.Gap.Count,
             FirstAt = prior.Gap.FirstAt < entry.Gap.FirstAt ? prior.Gap.FirstAt : entry.Gap.FirstAt, LastAt = prior.Gap.LastAt > entry.Gap.LastAt ? prior.Gap.LastAt : entry.Gap.LastAt });
         else if (_gaps.Count < 272) _gaps[key] = entry;
     }
     private sealed record JournalEntry(HistoryContext Context, HistoryGap Gap);
-    private string JournalPath => Path.Combine(_directory, "pending-gaps.json");
+    private sealed record GapJournal(int ProcessId, long ProcessStarted, JournalEntry[] Entries);
+    private readonly string _journalName = $"pending-gaps-{Environment.ProcessId}-{Guid.NewGuid():N}.json";
+    private readonly long _processStarted = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
+    private string JournalPath => Path.Combine(_directory, _journalName);
     private void PersistJournal()
     {
         try
@@ -270,29 +293,43 @@ public sealed partial class SqliteLocalHistory
             }
             if (entries.Length == 0) return;
             Directory.CreateDirectory(_directory);
-            File.WriteAllText(JournalPath + ".tmp", JsonSerializer.Serialize(entries, Json)); File.Move(JournalPath + ".tmp", JournalPath, true);
+            File.WriteAllText(JournalPath + ".tmp", JsonSerializer.Serialize(new GapJournal(Environment.ProcessId, _processStarted, entries), Json)); File.Move(JournalPath + ".tmp", JournalPath, true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Status already exposes the disk fault; no credential or packet spill. */ }
     }
     private void RecoverJournal(SqliteConnection connection)
     {
-        if (!File.Exists(JournalPath)) return;
-        if (new FileInfo(JournalPath).Length > 1024 * 1024) throw new InvalidDataException("存档缺口恢复文件过大，请保留备份并检查");
-        var entries = JsonSerializer.Deserialize<JournalEntry[]>(File.ReadAllText(JournalPath), Json) ?? [];
-        using var transaction = new HistoryTransaction(connection);
-        foreach (var entry in entries.Take(272))
+        foreach (var path in Directory.EnumerateFiles(_directory, "pending-gaps-*.json").Take(64))
         {
-            EnsureSession(connection, entry.Context); WriteGap(connection, entry.Gap);
-            Execute(connection, "UPDATE sessions SET status='interrupted',ended=COALESCE(ended,$at) WHERE id=$id", ("$at", Millis(entry.Gap.LastAt)), ("$id", entry.Context.Id));
-        }
-        transaction.Commit(); TryRemoveJournal();
-        lock (_sync)
-        {
-            // These entries are the previous process's journal, not this process's in-memory losses.
-            _dropped += entries.Sum(e => e.Gap.Count);
+            if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidDataException("存档缺口恢复文件过大，请保留备份并检查");
+            var journal = JsonSerializer.Deserialize<GapJournal>(File.ReadAllText(path), Json);
+            if (journal is null) continue;
+            var own = string.Equals(path, JournalPath, StringComparison.OrdinalIgnoreCase);
+            if (!own && JournalOwnerRunning(journal)) continue;
+            var entries = journal.Entries.Take(272).ToArray();
+            using var transaction = new HistoryTransaction(connection);
+            foreach (var entry in entries)
+            {
+                EnsureSession(connection, entry.Context); WriteGap(connection, entry.Gap);
+                if (_current?.Id != entry.Context.Id)
+                    Execute(connection, "UPDATE sessions SET status='interrupted',ended=COALESCE(ended,$at) WHERE id=$id", ("$at", Millis(entry.Gap.LastAt)), ("$id", entry.Context.Id));
+            }
+            transaction.Commit(); TryRemoveJournal(path);
+            if (!own) lock (_sync) _dropped += entries.Sum(e => e.Gap.Count);
         }
     }
-    private void TryRemoveJournal() { try { if (File.Exists(JournalPath)) File.Delete(JournalPath); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    private static bool JournalOwnerRunning(GapJournal journal)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(journal.ProcessId);
+            return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == journal.ProcessStarted;
+        }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return true; }
+    }
+    private void TryRemoveJournal(string? path = null) { try { path ??= JournalPath; if (File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     private void Publish(string message, bool faulted)
     {
         long bytes = 0; foreach (var path in new[] { DatabasePath, DatabasePath + "-wal", DatabasePath + "-shm" })
@@ -316,8 +353,9 @@ public sealed partial class SqliteLocalHistory
         lock (_sync) _closing = true;
         if (!flushed) Publish("退出时未完成落盘；下次启动显示中断和可恢复的遗漏范围", true);
         _shutdown.Cancel(); Wake();
-        try { await _worker.WaitAsync(TimeSpan.FromSeconds(5) - Stopwatch.GetElapsedTime(deadline)).ConfigureAwait(false); }
+        try { await _worker.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, (TimeSpan.FromSeconds(5) - Stopwatch.GetElapsedTime(deadline)).TotalMilliseconds))).ConfigureAwait(false); }
         catch (TimeoutException) { Publish("退出时存档提交超时，下次启动标记中断", true); }
+        if (!flushed) Publish("退出时未确认全部落盘；下次启动显示中断和可恢复的遗漏范围", true);
         // SQLite busy timeout is bounded; do not add another unbounded UI shutdown wait.
         _ = _worker.ContinueWith(_ => { _snapshots.Dispose(); _shutdown.Dispose(); }, TaskScheduler.Default);
     }

@@ -32,9 +32,11 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private HistoryContext? _historyContext;
     private EventHandler<LiveEvent>? _networkHandler;
     private int _historyNoticeScheduled;
+    private string _historyConfigurationWarning = "";
     public bool IsMonitoring => _monitorRequested;
-    public string HistoryWarning => History.Status.Faulted || History.Status.Dropped > 0 || History.Status.CapacityWarning
-        ? History.Status.Message + (History.Status.CapacityWarning ? " · 存档达到容量提醒阈值" : "") : "";
+    public string HistoryWarning => string.Join("\n", new[] { _historyConfigurationWarning,
+        History.Status.Faulted || History.Status.Dropped > 0 || History.Status.CapacityWarning
+        ? History.Status.Message + (History.Status.CapacityWarning ? " · 存档达到容量提醒阈值" : "") : "" }.Where(value => value.Length > 0));
 
     private string _status = "未连接";
     private bool _isConnected;
@@ -86,8 +88,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info)
     {
+        HistorySettings historySettings;
+        try { historySettings = (settings.History ?? new()).Normalize(); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
+        { historySettings = new(); _historyConfigurationWarning = "存档目录配置无效，已使用默认目录；请在可视化设置中重新保存目录。"; }
         _settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
-            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = (settings.History ?? new()).Normalize() };
+            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = historySettings };
         Dashboard.Cleared += CardBoard.Clear;
         _store = store;
         _client = client;
@@ -203,6 +209,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             _settings = previous; History.Configure(previous.History); throw;
         }
         OnPropertyChanged(nameof(Settings));
+        _historyConfigurationWarning = ""; OnPropertyChanged(nameof(HistoryWarning));
         OnPropertyChanged(nameof(RoomId));
         OnPropertyChanged(nameof(IsAnonymousReading));
         OnPropertyChanged(nameof(ConnectionModeText));

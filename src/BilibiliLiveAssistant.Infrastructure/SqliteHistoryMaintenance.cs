@@ -12,7 +12,7 @@ public sealed partial class SqliteLocalHistory
     }
     private async Task MaintainAsync(Action<SqliteConnection> action, CancellationToken token)
     {
-        await _ready.Task.WaitAsync(token).ConfigureAwait(false);
+        await _ready.Task.WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
         await _readGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -24,6 +24,7 @@ public sealed partial class SqliteLocalHistory
                 finally { raw.sqlite3_progress_handler(connection.Handle, 0, null, null); }
             }).ConfigureAwait(false);
         }
+        catch (SqliteException) when (token.IsCancellationRequested) { throw new OperationCanceledException(token); }
         finally { _readGate.Release(); }
         Publish(Status.Message, Status.Faulted); Committed?.Invoke();
     }

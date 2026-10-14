@@ -10,6 +10,7 @@ public partial class App : Application
     private MainWindow? _window;
     private TrayService? _tray;
     private bool _isExiting;
+    internal static nint MainWindowHandle => Current is App app && app._window is { } window ? WinRT.Interop.WindowNative.GetWindowHandle(window) : 0;
 
     public App()
     {
