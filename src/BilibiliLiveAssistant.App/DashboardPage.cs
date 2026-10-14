@@ -40,6 +40,7 @@ internal sealed class DashboardPage : Page
     private readonly Grid _middle = new();
     private readonly DashboardRankPanel _rankPanel;
     private readonly AnchorSummary _anchor;
+    private readonly HistoryAnchorPicker _historyAnchor;
     private readonly ToggleButton _rankExpanded = new() { Content = "榜单", Padding = new Thickness(8, 3, 8, 3), MinHeight = 28 };
     private readonly TextBox _roomInput = new() { PlaceholderText = "房间号 / 直播链接", Width = 175, MinWidth = 100, FontSize = 13 };
     private readonly Button _monitor = new() { Content = "开启监视", Padding = new Thickness(10, 5, 10, 5), MinWidth = 92 };
@@ -76,6 +77,9 @@ internal sealed class DashboardPage : Page
         _animations = new MessageAnimationClock(isWindowVisible);
         _rankPanel = new(vm, _animations, _visible);
         _anchor = new(vm, _animations, _visible);
+        _historyAnchor = new(vm, _visible);
+        _historyAnchor.Selected += anchor => _roomInput.Text = anchor.RoomId.ToString();
+        _roomInput.TextChanged += (_, _) => _historyAnchor.MatchRoom(RoomIdParser.Parse(_roomInput.Text) ?? 0);
         _danmaku = new("弹幕", "\uE8BD", vm, _animations, () => _visible() && !_vm.Settings.Cards.Enabled, false, _cardMode);
         _cardPanel = new(vm, _animations, _visible);
         _cardMode.Click += async (_, _) => await ToggleCardModeAsync();
@@ -107,11 +111,11 @@ internal sealed class DashboardPage : Page
         var reading = DashboardUi.Button("\uE713", "读取模式", 28);
         reading.Flyout = new Flyout { Content = new StackPanel { Spacing = 8, MaxWidth = 270, Children = { _anonymous,
             new TextBlock { Text = "匿名读取不发送已保存的登录 Cookie。未填写账号时也以匿名方式读取。", FontSize = 12, TextWrapping = TextWrapping.Wrap } } } };
-        _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_roomInput); _roomInfo.Children.Add(_monitor); _roomInfo.Children.Add(reading);
+        _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_roomInput); _roomInfo.Children.Add(_monitor); _roomInfo.Children.Add(reading);
         _monitor.Click += async (_, _) => await ToggleMonitorAsync();
         _durationInfo.Children.Add(DashboardUi.Icon("\uE823")); _durationInfo.Children.Add(_duration);
         _audienceInfo.Children.Add(DashboardUi.Icon("\uE890")); _audienceInfo.Children.Add(_audience);
-        top.Children.Add(_roomInfo);
+        top.Children.Add(new TextBlock { Text = "直播概览", FontSize = 18, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center });
         _ranking.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         _ranking.Children.Add(_anchor);
         Grid.SetColumn(_ranking, 1); top.Children.Add(_ranking);
@@ -154,7 +158,7 @@ internal sealed class DashboardPage : Page
         flyout.Items.Add(balance); flyout.Items.Add(clear); flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(single); flyout.Items.Add(_stressItem); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
-        heading.Children.Add(top); heading.Children.Add(_error); root.Children.Add(heading);
+        heading.Children.Add(top); heading.Children.Add(_roomInfo); heading.Children.Add(_error); root.Children.Add(heading);
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.DanmakuColumnWidth, GridUnitType.Star), MinWidth = 150 });
         _columns.ColumnDefinitions.Add(new() { Width = new(6) });
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.SuperChatColumnWidth, GridUnitType.Star), MinWidth = 150 });
@@ -230,9 +234,10 @@ internal sealed class DashboardPage : Page
     {
         if (_connectionBusy) return;
         _connectionBusy = true; _monitor.IsEnabled = false; _roomInput.IsEnabled = false; _anonymous.IsEnabled = false;
+        _historyAnchor.IsEnabled = false;
         try
         {
-            if (_vm.IsListening) await _vm.StopAsync();
+            if (_vm.IsMonitoring) await _vm.StopAsync();
             else
             {
                 var room = RoomIdParser.Parse(_roomInput.Text);
@@ -288,8 +293,8 @@ internal sealed class DashboardPage : Page
 
     private void RefreshHeader()
     {
-        _monitor.Content = _vm.IsListening ? "停止监视" : "开启监视";
-        _monitor.IsEnabled = !_connectionBusy; _roomInput.IsEnabled = _anonymous.IsEnabled = !_vm.IsListening && !_connectionBusy;
+        _monitor.Content = _vm.IsMonitoring ? "停止监视" : "开启监视";
+        _monitor.IsEnabled = !_connectionBusy; _roomInput.IsEnabled = _anonymous.IsEnabled = _historyAnchor.IsEnabled = !_vm.IsMonitoring && !_connectionBusy;
         _anchor.Refresh(); _rankPanel.SetActive(_rankExpanded.IsChecked == true && !_unloaded && _visible());
         _room.Text = _vm.RoomId > 0 ? _vm.RoomId.ToString() : "—";
         var roomInfo = $"{_vm.Status} · 房间 {_room.Text}\n{_vm.ConnectionModeText}\n{_vm.RoomSummary}";
@@ -375,15 +380,15 @@ internal sealed class DashboardPage : Page
         _sc.Sync(history.SuperChats, _settingsDirty); _interactions.Sync(history.Interactions, _settingsDirty);
         _dirty = false; _settingsDirty = false;
     }
-    internal void SuspendVisuals() { _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); _cardPanel.SetActive(false); _danmaku.Suspend(); _gifts.Suspend(); _sc.Suspend(); _interactions.Suspend(); }
-    internal void ResumeVisuals() { if (!_unloaded) { _dirty = true; RefreshIfNeeded(); if (!_vm.Settings.Cards.Enabled) _danmaku.Resume(); _gifts.Resume(); _sc.Resume(); _interactions.Resume(); } }
+    internal void SuspendVisuals() { _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); _historyAnchor.Suspend(); _cardPanel.SetActive(false); _danmaku.Suspend(); _gifts.Suspend(); _sc.Suspend(); _interactions.Suspend(); }
+    internal void ResumeVisuals() { if (!_unloaded) { _historyAnchor.Resume(); _dirty = true; RefreshIfNeeded(); if (!_vm.Settings.Cards.Enabled) _danmaku.Resume(); _gifts.Resume(); _sc.Resume(); _interactions.Resume(); } }
     private void StopStress() { _stress.Stop(); _stressClock.Stop(); _stressItem.Text = "手动高流量示例：100 条/秒，30 秒"; }
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _unloaded = true; _refresh.Stop(); StopStress(); _animations.Dispose();
         _vm.PropertyChanged -= OnPropertyChanged; _vm.Dashboard.Changed -= Dirty; _vm.CardBoard.Changed -= Dirty;
         _vm.AuthenticationChanged -= _rankPanel.AuthenticationChanged;
-        _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose();
+        _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose(); _historyAnchor.Dispose();
         _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose(); _cardPanel.Dispose();
         Unloaded -= OnUnloaded;
     }
