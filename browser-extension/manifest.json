@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "host_permissions": [
+    "https://*.bilibili.com/*"
+  ],
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAppaFd/zME1s/YROfqbuMdhwqUEe6kVQM88J4fzRI0YanHNoAluxWad/HAdpeqLdFyxhqOQgtpbChxXzjG1kp3KmtocjA0TgjufOxibfF2XGOioV6IYgS7MlxcLGQ35NHPRdKz3tG5h4RPuv4cFbqqii1uq7SNsxNMdX0Mfmo7vuRcbdqI4xmQd3KdpchQ7Tckhk+/YxjOgnsUz+irCIhopjAMJxzkppYmiDc6QnwF2bkxnxWT8tufGGjpUtNIx9CPgTXBZr0LzYTUClQtb0WdIY0d2pKJKZRhgBMu4VqJvXMpETB73rx9mZvxS67kKEfYUdEQvKDMYYwGG3sHFE9QQIDAQAB",
+  "permissions": [
+    "cookies",
+    "nativeMessaging",
+    "storage",
+    "alarms"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "name": "B站直播助手 · 本机登录同步",
+  "version": "1.0.0",
+  "background": {
+    "type": "module",
+    "service_worker": "background.js"
+  },
+  "incognito": "not_allowed"
+}
