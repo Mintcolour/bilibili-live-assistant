@@ -36,6 +36,19 @@ public sealed class BrowserAuthVault
         return next;
     }
     public BrowserAuthState Revoke() => Update(previous => new() { Version = previous.Version });
+    // Only called after a separate, explicit user confirmation. Preserve unreadable data.
+    public void RecoverUnreadable()
+    {
+        using var owned = Acquire();
+        try { ReadLocked(); throw new InvalidOperationException("账号存储可正常读取，无需恢复"); }
+        catch (Exception ex) when (ex is CryptographicException or InvalidDataException or JsonException)
+        {
+            SecureDirectory();
+            var backup = Path.Combine(DirectoryPath, "state.unreadable.dat");
+            if (File.Exists(backup)) throw new InvalidOperationException("已有损坏状态备份，请先在账号存储目录妥善保留或清理该备份，再恢复。");
+            File.Move(StatePath, backup);
+        }
+    }
     private BrowserAuthState ReadLocked()
     {
         if (!File.Exists(StatePath)) return new();

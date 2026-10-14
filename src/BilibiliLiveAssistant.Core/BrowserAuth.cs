@@ -50,7 +50,10 @@ public sealed record SyncMessage
 }
 public sealed record SyncReply(bool Ok, string Code, string Message, long Version = 0,
     string Token = "", string BindingGeneration = "", long SourceRevision = 0, bool Notified = false,
-    string AccountState = "", bool Follow = false);
+    string AccountState = "", bool Follow = false)
+{
+    public override string ToString() => $"{Code} · 版本 {Version}";
+}
 public static class BrowserSyncProtocol
 {
     public const int Version = 1;

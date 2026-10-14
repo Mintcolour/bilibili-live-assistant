@@ -209,6 +209,7 @@ internal sealed class DashboardPage : Page
             _roomInput.Width = e.NewSize.Width < 720 ? 125 : 175;
         };
         vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty; vm.CardBoard.Changed += Dirty;
+        vm.AuthenticationChanged += _rankPanel.AuthenticationChanged;
         vm.RoomHistoryReset += ResetRank;
         Unloaded += OnUnloaded;
         RefreshIfNeeded();
@@ -380,6 +381,7 @@ internal sealed class DashboardPage : Page
     {
         _unloaded = true; _refresh.Stop(); StopStress(); _animations.Dispose();
         _vm.PropertyChanged -= OnPropertyChanged; _vm.Dashboard.Changed -= Dirty; _vm.CardBoard.Changed -= Dirty;
+        _vm.AuthenticationChanged -= _rankPanel.AuthenticationChanged;
         _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose();
         _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose(); _cardPanel.Dispose();
         Unloaded -= OnUnloaded;

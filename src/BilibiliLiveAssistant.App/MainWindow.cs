@@ -116,11 +116,13 @@ public sealed class MainWindow : Window
     {
         (_frame.Content as DashboardPage)?.SuspendVisuals();
         (_frame.Content as DisplayPage)?.SuspendVisuals();
+        (_frame.Content as AccountPage)?.SetActive(false);
     }
     private void UpdatePageVisibility()
     {
         if (!IsMainVisible()) { SuspendPage(); return; }
         (_frame.Content as DashboardPage)?.ResumeVisuals(); (_frame.Content as DisplayPage)?.ResumeVisuals();
+        (_frame.Content as AccountPage)?.SetActive(true);
     }
 
     public void OpenOverlay()
@@ -257,24 +259,6 @@ internal sealed class RoomPage : Page
     {
         _vm.PropertyChanged -= OnVmPropertyChanged;
         Unloaded -= OnUnloaded;
-    }
-}
-
-internal sealed class AccountPage : Page
-{
-    public AccountPage(LiveAssistantViewModel vm)
-    {
-        var root = UiFactory.Stack(); root.Children.Add(UiFactory.Heading("账号设置"));
-        root.Children.Add(UiFactory.Subtitle("匿名读取无需填写 Cookie。账号模式会将 Cookie 发送给 B站接口，用于获取账号身份及更完整的用户信息；匿名模式不会发送这些登录字段。"));
-        var sess = new PasswordBox { Header = "SESSDATA", Password = vm.Settings.Cookies.Sessdata };
-        var buvid = new TextBox { Header = "buvid3", Text = vm.Settings.Cookies.Buvid3 };
-        var jct = new PasswordBox { Header = "bili_jct", Password = vm.Settings.Cookies.BiliJct };
-        var tip = new TextBlock { Text = "Cookie 仅用于访问 B站接口，请勿分享 settings.json。", Foreground = new SolidColorBrush(Colors.Gray), TextWrapping = TextWrapping.Wrap };
-        var save = UiFactory.Button("保存账号设置");
-        save.Click += async (_, _) => await vm.SaveAsync(vm.Settings with { Cookies = new CookieOptions(buvid.Text.Trim(), sess.Password.Trim(), jct.Password.Trim()) });
-        root.Children.Add(UiFactory.Section("B站 Cookie", "填写 Cookie 后可获得更完整的人气和用户信息。", new StackPanel { Spacing = 12, Children = { sess, buvid, jct, tip } }));
-        root.Children.Add(save);
-        Content = new ScrollViewer { Content = root };
     }
 }
 

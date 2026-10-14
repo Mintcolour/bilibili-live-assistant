@@ -14,10 +14,10 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
-        var settings = new JsonSettingsStore().Load();
+        var store = new JsonSettingsStore(); var settings = store.Load();
         var client = new BiliLiveClient();
         var info = new BiliLiveInfoService();
-        ViewModel = new LiveAssistantViewModel(settings, new JsonSettingsStore(), client, info);
+        ViewModel = new LiveAssistantViewModel(settings, store, client, info);
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -26,6 +26,7 @@ public partial class App : Application
         _window.ExitRequested += async () => await ExitAsync();
         _window.Activate();
         _tray = new TrayService(_window, ExitAsync);
+        _ = ViewModel.AccountSync.StartAsync();
         if (ViewModel.RoomId <= 0)
             _ = _window.ShowFirstRunDialogAsync();
     }

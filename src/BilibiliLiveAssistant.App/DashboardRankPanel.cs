@@ -84,6 +84,8 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         ReleaseRows(); _list.ItemsSource = null; if (Eligible) _list.ItemsSource = _items;
         _timer.Stop(); SetActive(_active);
     }
+    public void AuthenticationChanged()
+    { CancelRequest(); _timer.Stop(); _due = default; if (Eligible) Schedule(); }
     private async Task SelectAsync(DashboardRankKind kind)
     {
         if (_disposed) return;

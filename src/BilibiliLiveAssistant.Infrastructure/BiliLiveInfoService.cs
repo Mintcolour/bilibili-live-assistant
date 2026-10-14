@@ -96,6 +96,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
             var elapsed = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(start);
             duration = $" · 已直播 {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
         }
+        token.ThrowIfCancellationRequested();
         EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Online, "系统", $"人气: {online}{(string.IsNullOrWhiteSpace(watched) ? "" : $" · {watched}")}", "#2196F3",
             Metadata: new Dictionary<string, object?> { ["room_summary"] = $"{state}{duration}{(string.IsNullOrWhiteSpace(title) ? "" : $" · {title}")}",
                 ["popularity"] = online.ToString(), ["watched"] = watched, ["room_profile"] = profile }));
@@ -112,6 +113,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(token));
         var data = BiliHttp.ReadData(doc.RootElement);
         var items = data.TryGetProperty("OnlineRankItem", out var list) ? list : default;
+        token.ThrowIfCancellationRequested();
         if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
         {
             EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", "暂无榜单", "#9C27B0",

@@ -362,7 +362,7 @@ public sealed class BiliLiveClient : ILiveRoomClient, IDisposable
                 retry = Math.Min(retry + 1, 1000);
                 if (retry % Math.Max(3, _servers.Length) == 0 || _servers.Length == 0) refresh = true;
                 var delaySeconds = Math.Min(30, Math.Pow(2, Math.Min(retry, 5)));
-                StatusChanged?.Invoke(this, $"连接异常：{ex.Message} · {delaySeconds:0} 秒后重试");
+                StatusChanged?.Invoke(this, $"连接暂不可用 · {delaySeconds:0} 秒后重试");
                 try { await Task.Delay(TimeSpan.FromSeconds(delaySeconds), token); }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             }

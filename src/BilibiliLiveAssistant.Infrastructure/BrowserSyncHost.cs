@@ -33,7 +33,11 @@ public sealed class BrowserSyncHost(BrowserAuthVault vault)
             return Error("unpaired", "绑定已失效，请重新连接直播助手");
         if (message.Type == "sync.status") return new(true, "status", "本机状态已读取", current.Version, SourceRevision: current.SourceRevision,
             AccountState: current.AccountState.ToString(), Follow: binding.Follow);
-        if (message.Type == "sync.disconnect") { current = vault.Revoke(); return NotifySaved(current, "disconnected", "已断开本机同步"); }
+        if (message.Type == "sync.disconnect")
+        {
+            current = vault.Update(state => new BrowserAuthState { Version = Authorize(state, message, origin).Version });
+            return NotifySaved(current, "disconnected", "已断开本机同步");
+        }
         if (message.Type == "sync.configure")
         {
             current = vault.Update(state => Authorize(state, message, origin) with { Binding = state.Binding! with { Follow = message.Follow } });
@@ -50,7 +54,8 @@ public sealed class BrowserSyncHost(BrowserAuthVault vault)
             if (message.SourceRevision <= state.SourceRevision) throw new InvalidDataException("过期快照已拒绝");
             return state with { Cookies = cookies, Source = CredentialSource.Browser, SourceRevision = message.SourceRevision,
                 CapturedAt = message.CapturedAt, LastRequestId = message.RequestId, Expirations = message.Expirations,
-                Account = null, AccountState = cookies.Sessdata.Length == 0 ? AccountState.SignedOut : AccountState.Pending };
+                Account = state.Cookies == cookies ? state.Account : null,
+                AccountState = cookies.Sessdata.Length == 0 ? AccountState.SignedOut : state.Cookies == cookies ? state.AccountState : AccountState.Pending };
         });
         return NotifySaved(current, duplicate ? "unchanged" : "saved", duplicate ? "状态未变化" : "已保存本机快照，等待助手验证");
     }

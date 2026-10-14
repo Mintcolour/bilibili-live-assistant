@@ -12,6 +12,15 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private readonly ILiveInfoService _info;
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _eventTimer;
+    private readonly DispatcherQueueTimer _authTimer;
+    private readonly SemaphoreSlim _connectionGate = new(1, 1);
+    private CancellationTokenSource? _connectionRun;
+    private CookieOptions _runtimeCookies = new(), _startedCookies = new();
+    private string _accountName = "", _accountReason = "无需登录";
+    private bool _monitorRequested, _authApplying;
+    private long _credentialsRevision;
+    internal BrowserAccountController AccountSync { get; }
+    internal event Action? AuthenticationChanged;
     private readonly LiveEventBuffer _pendingEvents = new(256);
     private int _flushScheduled;
     private long _receivedEvents;
@@ -63,15 +72,14 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     }
     public AppSettings Settings => _settings;
     public int RoomId => _settings.RoomId;
-    public bool IsAnonymousReading => _settings.AnonymousReading || string.IsNullOrWhiteSpace(_settings.Cookies.Sessdata);
-    public string ConnectionModeText => IsAnonymousReading ? "匿名读取 · 无需登录" : "使用账号 Cookie 读取";
+    public bool IsAnonymousReading => _settings.AnonymousReading || string.IsNullOrWhiteSpace(_runtimeCookies.Sessdata);
+    public string ConnectionModeText => (_client.IsRunning ? "" : "未监视 · ") + (IsAnonymousReading ? $"匿名读取 · {(_settings.AnonymousReading ? "已选择匿名模式" : _accountReason)}" : $"账号读取 · {_accountName}");
     private CookieOptions ConnectionCookies => EffectiveCookies(_settings);
-    private static CookieOptions EffectiveCookies(AppSettings settings) => settings.AnonymousReading ? new CookieOptions()
-        : string.IsNullOrWhiteSpace(settings.Cookies.Sessdata) ? new CookieOptions(Buvid3: settings.Cookies.Buvid3) : settings.Cookies;
+    private CookieOptions EffectiveCookies(AppSettings settings) => settings.AnonymousReading || _runtimeCookies.Sessdata.Length == 0 ? new() : _runtimeCookies;
 
     public LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info)
     {
-        _settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize(),
+        _settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         Dashboard.Cleared += CardBoard.Clear;
         _store = store;
@@ -79,6 +87,10 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _info = info;
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _eventTimer = _dispatcher.CreateTimer();
+        _authTimer = _dispatcher.CreateTimer(); _authTimer.IsRepeating = false; _authTimer.Interval = TimeSpan.FromSeconds(1);
+        _authTimer.Tick += async (_, _) => await ApplyAccountConnectionAsync();
+        AccountSync = new(this, _dispatcher);
+        if (store is JsonSettingsStore json && json.LoadWarning.Length > 0) ErrorText = json.LoadWarning;
         ApplyEventInterval();
         _eventTimer.Tick += FlushEvents;
         _client.EventReceived += OnEvent;
@@ -88,29 +100,47 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public async Task StartAsync(int roomId)
     {
+        if (_disposed) return;
+        await _connectionGate.WaitAsync();
+        try { await StartCoreAsync(roomId, true); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
+        finally { _connectionGate.Release(); }
+    }
+    private async Task StartCoreAsync(int roomId, bool newMonitoring)
+    {
         if (roomId <= 0) { ErrorText = "请输入有效的直播间ID"; return; }
         if (_client.IsRunning) return;
-        PopularityHistory.Clear();
+        if (newMonitoring) PopularityHistory.Clear();
+        _monitorRequested = true;
         ErrorText = string.Empty;
         if (_settings.RoomId != roomId) ResetRoomHistory();
         _settings = _settings with { RoomId = roomId };
         await _store.SaveAsync(_settings);
+        if (_disposed || !_monitorRequested) return;
         try
         {
-            await _client.StartAsync(roomId, ConnectionCookies);
+            _connectionRun?.Dispose(); _connectionRun = new(); _startedCookies = ConnectionCookies;
+            await _client.StartAsync(roomId, _startedCookies, _connectionRun.Token);
             OnPropertyChanged(nameof(IsListening));
-            await _info.StartAsync(roomId, ConnectionCookies, _settings.PollIntervalSeconds);
+            await _info.StartAsync(roomId, _startedCookies, _settings.PollIntervalSeconds, _connectionRun.Token);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            await StopAsync();
-            ErrorText = ex.Message;
+            await StopCoreAsync();
+            ErrorText = "连接失败，请检查网络后重新开启监视";
             Status = "连接失败";
         }
     }
 
     public async Task StopAsync()
     {
+        _monitorRequested = false; _authTimer.Stop(); _connectionRun?.Cancel();
+        await _connectionGate.WaitAsync();
+        try { await StopCoreAsync(); } finally { _connectionGate.Release(); }
+    }
+    private async Task StopCoreAsync()
+    {
+        _connectionRun?.Cancel();
         await _info.StopAsync();
         await _client.StopAsync();
         OnPropertyChanged(nameof(IsListening));
@@ -118,10 +148,16 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public async Task SaveAsync(AppSettings settings)
     {
+        await _connectionGate.WaitAsync();
+        try { await SaveCoreAsync(settings); } finally { _connectionGate.Release(); }
+    }
+    private async Task SaveCoreAsync(AppSettings settings)
+    {
         var previous = _settings;
         var wasRunning = _client.IsRunning;
-        if (wasRunning && previous.RoomId != settings.RoomId) await StopAsync();
-        settings = settings with { Dashboard = (settings.Dashboard ?? new()).Normalize(),
+        var previousCookies = EffectiveCookies(previous);
+        if (wasRunning && previous.RoomId != settings.RoomId) await StopCoreAsync();
+        settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         _settings = settings;
         if (previous.RoomId != settings.RoomId) ResetRoomHistory();
@@ -133,22 +169,62 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         OnPropertyChanged(nameof(IsAnonymousReading));
         OnPropertyChanged(nameof(ConnectionModeText));
 
-        if (!wasRunning) return;
+        if (!wasRunning || !_monitorRequested) return;
 
         // Cookie 或房间变更后必须重建 WebSocket，避免继续使用旧的认证信息。
-        if (previous.RoomId != settings.RoomId || EffectiveCookies(previous) != ConnectionCookies)
+        if (previous.RoomId != settings.RoomId || previousCookies != ConnectionCookies)
         {
-            await StopAsync();
-            if (settings.RoomId > 0)
-                await StartAsync(settings.RoomId);
+            AuthenticationChanged?.Invoke(); await StopCoreAsync();
+            if (settings.RoomId > 0 && _monitorRequested && !_disposed)
+                await StartCoreAsync(settings.RoomId, previous.RoomId != settings.RoomId);
             return;
         }
 
         if (previous.PollIntervalSeconds != settings.PollIntervalSeconds)
         {
             await _info.StopAsync();
-            await _info.StartAsync(settings.RoomId, ConnectionCookies, settings.PollIntervalSeconds);
+            await _info.StartAsync(settings.RoomId, ConnectionCookies, settings.PollIntervalSeconds, _connectionRun?.Token ?? CancellationToken.None);
         }
+    }
+
+    internal void UpdateAccountCredentials(CookieOptions cookies, string name, string reason, bool stopMonitoring)
+    {
+        if (_disposed) return;
+        var previous = ConnectionCookies; _runtimeCookies = cookies; _accountName = name; _accountReason = reason;
+        OnPropertyChanged(nameof(IsAnonymousReading)); OnPropertyChanged(nameof(ConnectionModeText));
+        if (stopMonitoring) { AuthenticationChanged?.Invoke(); _ = StopForAccountLossAsync(); return; }
+        if (previous == ConnectionCookies) return;
+        _credentialsRevision++; AuthenticationChanged?.Invoke();
+        // Immediately cancel requests using the previous identity; combine rapid updates before rebuilding.
+        if (_startedCookies.Sessdata != ConnectionCookies.Sessdata || _startedCookies.Buvid3 != ConnectionCookies.Buvid3) _connectionRun?.Cancel();
+        _authTimer.Stop(); _authTimer.Start();
+    }
+    private async Task StopForAccountLossAsync()
+    {
+        try { await StopAsync(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { ErrorText = "停止监视未完成，请退出助手后重新打开"; }
+    }
+    private async Task ApplyAccountConnectionAsync()
+    {
+        _authTimer.Stop(); if (_disposed || _authApplying) return; _authApplying = true;
+        var revision = _credentialsRevision;
+        try
+        {
+            await _connectionGate.WaitAsync();
+            try
+            {
+                if (!_disposed && _monitorRequested)
+                {
+                    if (_startedCookies.Sessdata != ConnectionCookies.Sessdata || _startedCookies.Buvid3 != ConnectionCookies.Buvid3 || _connectionRun?.IsCancellationRequested == true)
+                    { await StopCoreAsync(); if (_monitorRequested && !_disposed) await StartCoreAsync(RoomId, false); }
+                    else if (_startedCookies != ConnectionCookies)
+                    { await _info.StopAsync(); _startedCookies = ConnectionCookies; await _info.StartAsync(RoomId, _startedCookies, Settings.PollIntervalSeconds, _connectionRun?.Token ?? CancellationToken.None); }
+                }
+            }
+            finally { _connectionGate.Release(); }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { ErrorText = "账号连接更新失败，请重新开启监视"; }
+        finally { _authApplying = false; if (!_disposed && revision != _credentialsRevision) _authTimer.Start(); }
     }
 
     public void SendTestDanmaku(int? sequence = null)
@@ -251,12 +327,14 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     private void OnStatus(object? sender, string value)
     {
+        var run = _connectionRun;
         void Update()
         {
-            if (_disposed) return;
+            if (_disposed || !ReferenceEquals(run, _connectionRun) || run?.IsCancellationRequested == true && value == "已连接") return;
             Status = value;
             IsConnected = value == "已连接";
             OnPropertyChanged(nameof(IsListening));
+            OnPropertyChanged(nameof(ConnectionModeText));
         }
         if (_dispatcher.HasThreadAccess) Update();
         else _dispatcher.TryEnqueue(Update);
@@ -265,6 +343,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private void OnEvent(object? sender, LiveEvent value)
     {
         if (_disposed) return;
+        if ((ReferenceEquals(sender, _client) || ReferenceEquals(sender, _info)) && _connectionRun?.IsCancellationRequested == true) return;
         if (value.Type is LiveEventType.Danmaku or LiveEventType.SuperChat && value.MediaReferences.Count == 0)
             value = value with { MediaReferences = MediaDetector.Detect(value.Content) };
         Interlocked.Increment(ref _receivedEvents);
@@ -346,6 +425,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _authTimer.Stop(); await AccountSync.DisposeAsync();
         _eventTimer.Stop();
         _eventTimer.Tick -= FlushEvents;
         _client.EventReceived -= OnEvent;
@@ -355,6 +435,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         Images.Dispose();
         Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
         await StopAsync();
+        _connectionRun?.Dispose();
         if (_client is IDisposable disposable) disposable.Dispose();
         if (_info is IDisposable info) info.Dispose();
     }
