@@ -2,7 +2,9 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9-]{0,63}$')]
     [string]$ReleaseName = 'browser-login-sync-v1',
     [string]$InheritSettingsFrom = 'media-cards',
-    [switch]$IncludeLocalHistory
+    [switch]$IncludeLocalHistory,
+    [ValidatePattern('^[a-z0-9][a-z0-9-]{0,63}\.md$')]
+    [string]$LocalHistoryDeliveryDocument = 'local-history-delivery.md'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -31,7 +33,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'browser-extension') -Destination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/browser-login-sync.md') -Destination (Join-Path $destination '浏览器登录同步说明.md')
 if ($IncludeLocalHistory) {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/local-history.md') -Destination (Join-Path $destination '本地历史使用说明.md')
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/local-history-delivery.md') -Destination (Join-Path $destination '交付核对.md')
+    Copy-Item -LiteralPath (Join-Path $projectRoot "docs/$LocalHistoryDeliveryDocument") -Destination (Join-Path $destination '交付核对.md')
 } else {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/browser-login-sync-delivery.md') -Destination (Join-Path $destination '交付核对.md')
 }
