@@ -1,7 +1,8 @@
 param(
     [ValidatePattern('^[a-z0-9][a-z0-9-]{0,63}$')]
     [string]$ReleaseName = 'browser-login-sync-v1',
-    [string]$InheritSettingsFrom = 'media-cards'
+    [string]$InheritSettingsFrom = 'media-cards',
+    [switch]$IncludeLocalHistory
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -28,12 +29,20 @@ if ($LASTEXITCODE -ne 0) { throw '桥接 Release 发布失败' }
 [IO.File]::WriteAllText((Join-Path $bridgeDirectory 'protocol-version.txt'), '1', [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $projectRoot 'browser-extension') -Destination $destination -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/browser-login-sync.md') -Destination (Join-Path $destination '浏览器登录同步说明.md')
-Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/browser-login-sync-delivery.md') -Destination (Join-Path $destination '交付核对.md')
+if ($IncludeLocalHistory) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/local-history.md') -Destination (Join-Path $destination '本地历史使用说明.md')
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/local-history-delivery.md') -Destination (Join-Path $destination '交付核对.md')
+} else {
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/browser-login-sync-delivery.md') -Destination (Join-Path $destination '交付核对.md')
+}
 # Only the user's private local directory inherits settings. Distributable ZIPs exclude them.
 if (Test-Path -LiteralPath $previousSettings) { Copy-Item -LiteralPath $previousSettings -Destination (Join-Path $destination 'settings.json') }
 $required = @('BilibiliLiveAssistant.App.exe', 'BilibiliLiveAssistant.App.dll', 'BilibiliLiveAssistant.App.pri', 'coreclr.dll', 'hostfxr.dll',
     'Microsoft.UI.Xaml.dll', 'BrowserHost/BilibiliLiveAssistant.BrowserHost.exe', 'BrowserHost/BilibiliLiveAssistant.BrowserHost.dll',
     'BrowserHost/coreclr.dll', 'BrowserHost/hostfxr.dll', 'BrowserHost/protocol-version.txt', 'browser-extension/manifest.json', 'browser-extension/background.js')
+if ($IncludeLocalHistory) {
+    $required += @('Microsoft.Data.Sqlite.dll', 'SQLitePCLRaw.core.dll', 'SQLitePCLRaw.batteries_v2.dll', 'SQLitePCLRaw.provider.e_sqlite3.dll', 'e_sqlite3.dll', '本地历史使用说明.md')
+}
 foreach ($relative in $required) { if (!(Test-Path -LiteralPath (Join-Path $destination $relative) -PathType Leaf)) { throw "发布缺少 $relative" } }
 foreach ($script in @('background.js', 'popup.js')) {
     & node --check (Join-Path $destination "browser-extension/$script")
@@ -46,7 +55,7 @@ function Write-Package([string]$folder, [string]$zipPath) {
     $archive = [IO.Compression.ZipArchive]::new($fileStream, [IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($file in Get-ChildItem -LiteralPath $folder -File -Recurse) {
-            if ($file.Name -eq 'settings.json' -or $file.Extension -in @('.pdb', '.tmp', '.dat')) { continue }
+            if ($file.Name -eq 'settings.json' -or $file.Name -like 'pending-gaps-*' -or $file.Name -eq 'history.writer.lock' -or $file.Extension -in @('.pdb', '.tmp', '.dat', '.db', '.db-wal', '.db-shm')) { continue }
             $relative = [IO.Path]::GetRelativePath($folder, $file.FullName).Replace('\', '/')
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $relative, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
         }
