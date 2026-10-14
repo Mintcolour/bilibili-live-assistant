@@ -2,6 +2,9 @@ const HOST = 'cn.bililiveassistant.browser_sync';
 const ALARM = 'bili-sync-pending';
 const NAMES = ['SESSDATA', 'bili_jct', 'buvid3'];
 const TARGETS = ['https://api.bilibili.com/x/web-interface/nav', 'https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo'];
+// Chromium checks the Cookie's own domain and Secure flag, even for an HTTPS URL query.
+// Exact parent/API hosts cover domain Cookies and non-Secure Cookies; no HTTP requests are made.
+const COOKIE_ORIGINS = ['*://bilibili.com/*', '*://api.bilibili.com/*', '*://api.live.bilibili.com/*'];
 let timer, sending = false, metadataQueue = Promise.resolve();
 const boot = chrome.storage.local.get('state').then(async ({ state }) => {
   if (!state) await chrome.storage.local.set({ state: { sourceId: crypto.randomUUID(), revision: 0, dirtyRevision: 0, follow: false, dirty: false } });
@@ -21,7 +24,7 @@ async function native(type, extra = {}) {
 }
 async function forgetBinding() {
   clearTimeout(timer); await chrome.alarms.clear(ALARM);
-  await update(s => { s.binding = null; s.dirty = false; s.follow = false; s.pending = null; s.fingerprint = ''; s.configurePending = false; });
+  await update(s => { s.binding = null; s.dirty = false; s.follow = false; s.pending = null; s.fingerprint = ''; s.configurePending = false; s.manualPending = false; });
 }
 async function checkReply(reply) {
   if (!reply.ok) { if (reply.code === 'unpaired') await forgetBinding(); throw new Error(reply.message || '请重新连接直播助手'); }
@@ -34,7 +37,7 @@ function applicable(cookie, target) {
   return domainMatch && (url.pathname === path || url.pathname.startsWith(path.endsWith('/') ? path : path + '/'));
 }
 async function snapshot() {
-  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: ['https://api.bilibili.com/*', 'https://api.live.bilibili.com/*'] }))
+  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: COOKIE_ORIGINS }))
     throw new Error('B站站点权限不可用，请在扩展管理页恢复权限后立即同步');
   const values = {}, expirations = {};
   for (const name of NAMES) {
@@ -55,7 +58,7 @@ async function snapshot() {
     if (new TextEncoder().encode(value).length > 8192 || /[\x00-\x1f\x7f;]/.test(value)) throw new Error('登录字段格式无效');
     values[name] = value; expirations[name] = cookie?.expirationDate ?? null;
   }
-  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: ['https://api.bilibili.com/*', 'https://api.live.bilibili.com/*'] }))
+  if (!await chrome.permissions.contains({ permissions: ['cookies'], origins: COOKIE_ORIGINS }))
     throw new Error('B站站点权限已改变，请恢复权限后立即同步');
   return { cookies: { sessdata: values.SESSDATA, biliJct: values.bili_jct, buvid3: values.buvid3 }, expirations };
 }
@@ -65,8 +68,8 @@ async function digest(value) {
 }
 async function schedule() {
   const state = await read(); clearTimeout(timer);
-  if (!state.binding || state.stopped || (!state.dirty && !state.configurePending)) { await chrome.alarms.clear(ALARM); return; }
-  if (!state.follow && !state.configurePending && !state.retryAt) { await chrome.alarms.clear(ALARM); return; }
+  if (!state.binding || state.stopped || (!state.dirty && !state.configurePending && !state.pending && !state.manualPending)) { await chrome.alarms.clear(ALARM); return; }
+  if (!state.follow && !state.configurePending && !state.manualPending && !state.pending) { await chrome.alarms.clear(ALARM); return; }
   const now = Date.now();
   const due = state.retryAt || Math.max(Math.min((state.lastEventAt || now) + 2000, (state.firstDirtyAt || now) + 10000), (state.sentAt || 0) + 5000);
   timer = setTimeout(() => { void run(false); }, Math.max(0, due - now));
@@ -90,7 +93,8 @@ async function run(manual) {
   try {
     let state = await read();
     if (!state.binding) return { ok: false, message: '请先连接直播助手' };
-    if (!manual && (!state.follow && !state.configurePending && !state.retryAt || state.stopped)) return { ok: true, message: '自动跟随已关闭' };
+    if (!manual && (!state.follow && !state.configurePending && !state.manualPending && !state.pending || state.stopped)) return { ok: true, message: '自动跟随已关闭' };
+    if (manual) state = await update(s => { s.manualPending = true; s.dirty = true; s.dirtyRevision++; s.firstDirtyAt ||= Date.now(); });
     if (!manual && state.retryAt > Date.now()) { await schedule(); return { ok: true, message: '等待重试' }; }
     if (state.configurePending) {
       const reply = await checkReply(await native('sync.configure', { follow: state.followRequested }));
@@ -98,7 +102,7 @@ async function run(manual) {
       await update(s => { s.follow = reply.follow; s.configurePending = false; s.error = ''; s.retryAt = 0; s.failures = 0; s.stopped = false; });
       state = await read();
     }
-    if (!manual && !state.follow && !state.pending) return { ok: true, message: '自动跟随已关闭' };
+    if (!manual && !state.follow && !state.pending && !state.manualPending) return { ok: true, message: '自动跟随已关闭' };
     const capturedDirty = state.dirtyRevision;
     // Reserve a revision before reading. Retry an identical pending payload with its original ID.
     state = await update(s => {
@@ -110,7 +114,7 @@ async function run(manual) {
     const fingerprint = await digest(payload);
     if (fingerprint === state.fingerprint && !state.pending) {
       const reply = manual ? await checkReply(await native('sync.status')) : null;
-      await update(s => { if (s.dirtyRevision === capturedDirty) s.dirty = false; s.firstDirtyAt = 0; s.error = ''; s.retryAt = 0; s.failures = 0; });
+      await update(s => { if (s.dirtyRevision === capturedDirty) s.dirty = false; s.manualPending = false; s.firstDirtyAt = 0; s.error = ''; s.retryAt = 0; s.failures = 0; });
       return { ok: true, message: reply ? `状态未变化 · ${accountLabel(reply.accountState)}` : '状态未变化' };
     }
     state = await update(s => {
@@ -123,7 +127,7 @@ async function run(manual) {
       requestId: state.pending.requestId, capturedAt: new Date().toISOString(), reason: manual ? 'manual' : 'cookies_changed' }));
     await update(s => {
       s.fingerprint = fingerprint; s.lastSync = Date.now();
-      if (reply.notified) { s.pending = null; if (s.dirtyRevision === capturedDirty) s.dirty = false; s.firstDirtyAt = 0; s.failures = 0; s.retryAt = 0; s.stopped = false; s.error = ''; }
+      if (reply.notified) { s.pending = null; s.manualPending = false; if (s.dirtyRevision === capturedDirty) s.dirty = false; s.firstDirtyAt = 0; s.failures = 0; s.retryAt = 0; s.stopped = false; s.error = ''; }
     });
     if (!reply.notified) await failure('已保存本机状态，助手尚未确认；打开助手或刷新本机状态');
     return { ok: true, message: `${reply.message} · ${accountLabel(reply.accountState)}` };

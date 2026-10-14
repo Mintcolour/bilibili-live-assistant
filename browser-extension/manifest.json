@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "host_permissions": [
-    "https://api.bilibili.com/*",
-    "https://api.live.bilibili.com/*"
+    "*://bilibili.com/*",
+    "*://api.bilibili.com/*",
+    "*://api.live.bilibili.com/*"
   ],
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAppaFd/zME1s/YROfqbuMdhwqUEe6kVQM88J4fzRI0YanHNoAluxWad/HAdpeqLdFyxhqOQgtpbChxXzjG1kp3KmtocjA0TgjufOxibfF2XGOioV6IYgS7MlxcLGQ35NHPRdKz3tG5h4RPuv4cFbqqii1uq7SNsxNMdX0Mfmo7vuRcbdqI4xmQd3KdpchQ7Tckhk+/YxjOgnsUz+irCIhopjAMJxzkppYmiDc6QnwF2bkxnxWT8tufGGjpUtNIx9CPgTXBZr0LzYTUClQtb0WdIY0d2pKJKZRhgBMu4VqJvXMpETB73rx9mZvxS67kKEfYUdEQvKDMYYwGG3sHFE9QQIDAQAB",
