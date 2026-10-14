@@ -28,6 +28,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private int _overlayMediaCount;
     private volatile bool _disposed;
     private AppSettings _settings;
+    internal ILocalHistory History { get; }
+    private HistoryContext? _historyContext;
+    private EventHandler<LiveEvent>? _networkHandler;
+    private int _historyNoticeScheduled;
+    public bool IsMonitoring => _monitorRequested;
+    public string HistoryWarning => History.Status.Faulted || History.Status.Dropped > 0 || History.Status.CapacityWarning
+        ? History.Status.Message + (History.Status.CapacityWarning ? " · 存档达到容量提醒阈值" : "") : "";
 
     private string _status = "未连接";
     private bool _isConnected;
@@ -80,7 +87,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info)
     {
         _settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
-            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
+            MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = (settings.History ?? new()).Normalize() };
         Dashboard.Cleared += CardBoard.Clear;
         _store = store;
         _client = client;
@@ -93,9 +100,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (store is JsonSettingsStore json && json.LoadWarning.Length > 0) ErrorText = json.LoadWarning;
         ApplyEventInterval();
         _eventTimer.Tick += FlushEvents;
-        _client.EventReceived += OnEvent;
+        History = new SqliteLocalHistory(_settings.History);
+        History.StatusChanged += OnHistoryStatus;
         _client.StatusChanged += OnStatus;
-        _info.EventReceived += OnEvent;
     }
 
     public async Task StartAsync(int roomId)
@@ -103,15 +110,21 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_disposed) return;
         await _connectionGate.WaitAsync();
         try { await StartCoreAsync(roomId, true); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring)); ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
         finally { _connectionGate.Release(); }
     }
     private async Task StartCoreAsync(int roomId, bool newMonitoring)
     {
         if (roomId <= 0) { ErrorText = "请输入有效的直播间ID"; return; }
         if (_client.IsRunning) return;
-        if (newMonitoring) PopularityHistory.Clear();
+        if (newMonitoring)
+        {
+            PopularityHistory.Clear();
+            CloseHistorySegment();
+            _historyContext = History.Begin(roomId);
+        }
         _monitorRequested = true;
+        OnPropertyChanged(nameof(IsMonitoring));
         ErrorText = string.Empty;
         if (_settings.RoomId != roomId) ResetRoomHistory();
         _settings = _settings with { RoomId = roomId };
@@ -120,6 +133,16 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         try
         {
             _connectionRun?.Dispose(); _connectionRun = new(); _startedCookies = ConnectionCookies;
+            var run = _connectionRun; var context = _historyContext;
+            _networkHandler = (sender, value) =>
+            {
+                if (_disposed || run.IsCancellationRequested || !ReferenceEquals(run, _connectionRun)) return;
+                // Captured session and room travel with the event before display overflow or merging.
+                if (context is not null && !(value.Extra.GetValueOrDefault("sample") is true))
+                    History.Capture(context, value, DateTimeOffset.UtcNow);
+                OnEvent(sender, value);
+            };
+            _client.EventReceived += _networkHandler; _info.EventReceived += _networkHandler;
             await _client.StartAsync(roomId, _startedCookies, _connectionRun.Token);
             OnPropertyChanged(nameof(IsListening));
             await _info.StartAsync(roomId, _startedCookies, _settings.PollIntervalSeconds, _connectionRun.Token);
@@ -136,11 +159,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     {
         _monitorRequested = false; _authTimer.Stop(); _connectionRun?.Cancel();
         await _connectionGate.WaitAsync();
-        try { await StopCoreAsync(); } finally { _connectionGate.Release(); }
+        try { await StopCoreAsync(); CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring)); } finally { _connectionGate.Release(); }
     }
     private async Task StopCoreAsync()
     {
         _connectionRun?.Cancel();
+        if (_networkHandler is not null) { _client.EventReceived -= _networkHandler; _info.EventReceived -= _networkHandler; _networkHandler = null; }
         await _info.StopAsync();
         await _client.StopAsync();
         OnPropertyChanged(nameof(IsListening));
@@ -154,16 +178,30 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private async Task SaveCoreAsync(AppSettings settings)
     {
         var previous = _settings;
+        settings = settings with { History = (settings.History ?? new()).Normalize() };
+        var directoryChanged = !string.Equals(previous.History.EffectiveDirectory, settings.History.EffectiveDirectory, StringComparison.OrdinalIgnoreCase);
+        if (directoryChanged && _monitorRequested) throw new InvalidOperationException("更换存档目录前请先停止监视");
+        if (directoryChanged) await History.MoveAsync(settings.History.EffectiveDirectory, CancellationToken.None);
         var wasRunning = _client.IsRunning;
         var previousCookies = EffectiveCookies(previous);
         if (wasRunning && previous.RoomId != settings.RoomId) await StopCoreAsync();
         settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         _settings = settings;
+        History.Configure(settings.History);
         if (previous.RoomId != settings.RoomId) ResetRoomHistory();
         Dashboard.Trim(settings.Dashboard);
         ApplyEventInterval();
-        await _store.SaveAsync(settings);
+        try { await _store.SaveAsync(settings); }
+        catch
+        {
+            if (directoryChanged)
+            {
+                // Old database remains a complete backup. Reopen it if persisting the new path fails.
+                await ((SqliteLocalHistory)History).UseExistingDirectoryAsync(previous.History.EffectiveDirectory);
+            }
+            _settings = previous; History.Configure(previous.History); throw;
+        }
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(RoomId));
         OnPropertyChanged(nameof(IsAnonymousReading));
@@ -241,6 +279,28 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             .Min(kind => OverlayRegions.Get(_settings.Display, kind).UpdateIntervalMs));
 
     public void ReportSettingsError(string message) => ErrorText = message;
+    private void CloseHistorySegment()
+    {
+        var context = Interlocked.Exchange(ref _historyContext, null);
+        if (context is not null) History.End(context);
+    }
+    private void OnHistoryStatus(HistoryStatus status)
+    {
+        if (_disposed || Interlocked.CompareExchange(ref _historyNoticeScheduled, 1, 0) != 0) return;
+        if (!_dispatcher.TryEnqueue(() => { Interlocked.Exchange(ref _historyNoticeScheduled, 0); if (!_disposed) OnPropertyChanged(nameof(HistoryWarning)); }))
+            Interlocked.Exchange(ref _historyNoticeScheduled, 0);
+    }
+    internal async Task DeleteHistoryAsync(HistoryFilter filter, CancellationToken token)
+    {
+        await _connectionGate.WaitAsync(token);
+        try { await History.DeleteAsync(filter, token); } finally { _connectionGate.Release(); }
+    }
+    internal async Task CompactHistoryAsync(CancellationToken token)
+    {
+        await _connectionGate.WaitAsync(token);
+        try { if (IsMonitoring) throw new InvalidOperationException("请先停止监视"); await History.CompactAsync(token); }
+        finally { _connectionGate.Release(); }
+    }
 
     internal LiveRankMember[] GetRankMembers(LiveEvent rank, int count)
     {
@@ -428,13 +488,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _authTimer.Stop(); await AccountSync.DisposeAsync();
         _eventTimer.Stop();
         _eventTimer.Tick -= FlushEvents;
-        _client.EventReceived -= OnEvent;
         _client.StatusChanged -= OnStatus;
-        _info.EventReceived -= OnEvent;
         _pendingEvents.Clear();
         Images.Dispose();
         Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
         await StopAsync();
+        History.StatusChanged -= OnHistoryStatus;
+        await History.DisposeAsync();
         _connectionRun?.Dispose();
         if (_client is IDisposable disposable) disposable.Dispose();
         if (_info is IDisposable info) info.Dispose();

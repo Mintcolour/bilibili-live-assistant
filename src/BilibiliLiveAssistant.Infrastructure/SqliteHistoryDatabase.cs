@@ -28,6 +28,14 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     }
     private static void Execute(SqliteConnection connection, string sql, params (string, object?)[] parameters)
     { using var command = Command(connection, sql, parameters); command.ExecuteNonQuery(); }
+    // SQL transactions keep every command in the same native transaction, including migration batches.
+    private sealed class HistoryTransaction : IDisposable
+    {
+        private readonly SqliteConnection _connection; private bool _committed;
+        public HistoryTransaction(SqliteConnection connection) { _connection = connection; Execute(connection, "BEGIN IMMEDIATE;"); }
+        public void Commit() { Execute(_connection, "COMMIT;"); _committed = true; }
+        public void Dispose() { if (!_committed) { try { Execute(_connection, "ROLLBACK;"); } catch (SqliteException) { } } }
+    }
     private void Initialize(SqliteConnection connection, bool recover)
     {
         Execute(connection, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
@@ -36,7 +44,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         if (version > 1) throw new InvalidDataException("历史数据库来自更新的软件版本，请使用新版打开");
         if (version == 0)
         {
-            using var transaction = connection.BeginTransaction();
+            using var transaction = new HistoryTransaction(connection);
             Execute(connection, """
                 CREATE TABLE anchors(uid INTEGER PRIMARY KEY CHECK(uid>0),name TEXT NOT NULL,avatar TEXT NOT NULL);
                 CREATE TABLE room_aliases(room INTEGER NOT NULL,uid INTEGER NOT NULL REFERENCES anchors(uid),PRIMARY KEY(room,uid));
@@ -47,7 +55,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,
                     upstream INTEGER,local_day TEXT NOT NULL,type INTEGER NOT NULL,uid INTEGER NOT NULL,name TEXT NOT NULL,content TEXT NOT NULL,
                     color TEXT NOT NULL,appearance TEXT,fields TEXT NOT NULL,source_id TEXT,quantity INTEGER,paid INTEGER,amount INTEGER);
-                CREATE UNIQUE INDEX ix_events_source ON events(session_id,type,source_id) WHERE source_id IS NOT NULL;
+                CREATE UNIQUE INDEX ix_events_source ON events(type,source_id) WHERE source_id IS NOT NULL;
                 CREATE INDEX ix_events_time ON events(session_id,local_day,received DESC,id DESC);
                 CREATE INDEX ix_events_type ON events(session_id,type,local_day,id DESC);
                 CREATE INDEX ix_events_uid ON events(session_id,uid,local_day,id DESC);

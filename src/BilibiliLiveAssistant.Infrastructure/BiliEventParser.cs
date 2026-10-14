@@ -22,12 +22,13 @@ internal static class BiliEventParser
                 var color = info[0].ValueKind == JsonValueKind.Array && info[0].GetArrayLength() > 3
                     ? Number(info[0][3]) : 0xFFFFFF;
                 emit(new LiveEvent(LiveEventType.Danmaku, Name(Text(user[1])), Text(info[1]), $"#{color & 0xFFFFFF:X6}", Number(user[0]),
-                    Appearance: BiliMessageAppearanceParser.Danmaku(info)));
+                    Appearance: BiliMessageAppearanceParser.Danmaku(info))
+                { HistoryFields = new(UpstreamTime: info[0].ValueKind == JsonValueKind.Array && info[0].GetArrayLength() > 4 ? SourceTime(info[0][4]) : null) });
                 break;
             case "SEND_GIFT":
                 var gift = root.GetProperty("data");
                 EmitGift(emit, Text(gift, "uname"), Number(gift, "uid"), Text(gift, "giftName"), Number(gift, "num"),
-                    Text(gift, "action"), Text(gift, "coin_type"), Number(gift, "total_coin"), Number(gift, "giftId"), Number(gift, "price"), Text(gift, "tid"), BiliMessageAppearanceParser.Common(gift));
+                    Text(gift, "action"), Text(gift, "coin_type"), OptionalNumber(gift, "total_coin"), Number(gift, "giftId"), OptionalNumber(gift, "price"), Text(gift, "tid"), BiliMessageAppearanceParser.Common(gift), SourceTime(gift, "timestamp"));
                 break;
             case "SEND_GIFT_V2":
                 var broadcast = Decode<SendGiftBroadcast>(root.GetProperty("data"));
@@ -39,7 +40,9 @@ internal static class BiliEventParser
                 var sc = root.GetProperty("data");
                 emit(new LiveEvent(LiveEventType.SuperChat, Name(Text(sc.GetProperty("user_info"), "uname")),
                     $"¥{Text(sc, "price")} {Text(sc, "message")}", "#FFD700", Number(sc, "uid"),
-                    Metadata: new Dictionary<string, object?> { ["id"] = Number(sc, "id"), ["price"] = Text(sc, "price") }, Appearance: BiliMessageAppearanceParser.Common(sc)));
+                    Metadata: new Dictionary<string, object?> { ["id"] = Number(sc, "id"), ["price"] = Text(sc, "price") }, Appearance: BiliMessageAppearanceParser.Common(sc))
+                { HistoryFields = new(UpstreamTime: SourceTime(sc, "start_time"), UniqueId: Number(sc, "id") > 0 ? "sc:" + Number(sc, "id").ToString(CultureInfo.InvariantCulture) : null,
+                    AmountMilliYuan: MilliYuan(sc, "price")) });
                 break;
             case "INTERACT_WORD_V2":
                 var interaction = Decode<InteractWordV2>(root.GetProperty("data"));
@@ -62,37 +65,42 @@ internal static class BiliEventParser
                 var level = Number(guard, "guard_level");
                 var guardName = level switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "大航海" };
                 emit(new LiveEvent(LiveEventType.Guard, Name(Text(sender.GetProperty("base"), "name")),
-                    $"开通了{guardName}！", "#FF69B4", Number(sender, "uid"), Appearance: BiliMessageAppearanceParser.Common(toast)));
+                    $"开通了{guardName}！", "#FF69B4", Number(sender, "uid"), Appearance: BiliMessageAppearanceParser.Common(toast))
+                { HistoryFields = new(UpstreamTime: SourceTime(toast, "start_time"), Quantity: OptionalNumber(toast, "num"),
+                    GuardLevel: level is >= 1 and <= 3 ? (int)level : null) });
                 break;
             case "WATCHED_CHANGE":
                 var watched = root.GetProperty("data");
                 var watchedText = Text(watched, "text_large");
                 if (watchedText.Length == 0) watchedText = Text(watched, "num");
                 emit(new LiveEvent(LiveEventType.Online, "系统", $"看过: {watchedText}", "#2196F3",
-                    Metadata: new Dictionary<string, object?> { ["watched"] = watchedText }));
+                    Metadata: new Dictionary<string, object?> { ["watched"] = watchedText, ["archive_watched"] = OptionalNumber(watched, "num") }));
                 break;
         }
     }
 
     private static void EmitGift(Action<LiveEvent> emit, string username, long uid, string name, long count,
-        string action, string coinType, long totalCoin, long giftId, long price, string transactionId, LiveMessageAppearance? appearance = null)
+        string action, string coinType, long? totalCoin, long giftId, long? price, string transactionId, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null)
     {
         if (name.Length == 0 || count <= 0) return;
         var amount = coinType == "gold" && totalCoin > 0
-            ? $" · ¥{(totalCoin / 1000m).ToString("0.###", CultureInfo.InvariantCulture)}" : string.Empty;
+            ? $" · ¥{(totalCoin.Value / 1000m).ToString("0.###", CultureInfo.InvariantCulture)}" : string.Empty;
         emit(new LiveEvent(LiveEventType.Gift, Name(username), $"{(action.Length == 0 ? "赠送" : action)} {name}×{count}{amount}", "#FF69B4", uid,
             Metadata: new Dictionary<string, object?>
             {
                 ["gift_id"] = giftId, ["num"] = count, ["coin_type"] = coinType,
                 ["total_coin"] = totalCoin, ["price"] = price, ["transaction_id"] = transactionId,
                 ["gift_name"] = name,
-            }, Appearance: appearance));
+            }, Appearance: appearance)
+        { HistoryFields = new(UpstreamTime: upstream, GiftId: giftId > 0 ? giftId : null, GiftName: name, Quantity: count,
+            CoinType: coinType, UnitPrice: price, TotalCoin: totalCoin, AmountMilliYuan: coinType == "gold" && totalCoin is >= 0 ? totalCoin : null) });
     }
 
     private static void EmitInteraction(Action<LiveEvent> emit, string username, long uid, int type, LiveMessageAppearance? appearance = null)
     {
         var action = type switch { 1 => "进入了直播间", 2 => "关注了主播", 3 => "分享了直播间", 4 => "特别关注了主播", 5 => "互粉了", 6 => "为主播点赞了", _ => "互动了" };
-        emit(new LiveEvent(LiveEventType.Enter, Name(username), action, "#4CAF50", uid, Appearance: appearance));
+        emit(new LiveEvent(LiveEventType.Enter, Name(username), action, "#4CAF50", uid, Appearance: appearance)
+        { HistoryFields = new(InteractionKind: type) });
     }
 
     private static void EmitEntry(Action<LiveEvent> emit, JsonElement data)
@@ -130,6 +138,18 @@ internal static class BiliEventParser
     private static long Number(JsonElement value) => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number) ? number
         : long.TryParse(Text(value), NumberStyles.Integer, CultureInfo.InvariantCulture, out number) ? number : 0;
     private static long Number(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var item) ? Number(item) : 0;
+    private static long? OptionalNumber(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var item)
+        && long.TryParse(Text(item), NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number >= 0 ? number : null;
+    private static DateTimeOffset? SourceTime(JsonElement value, string key) => value.TryGetProperty(key, out var item) ? SourceTime(item) : null;
+    private static DateTimeOffset? SourceTime(JsonElement value)
+    {
+        var number = Number(value);
+        try { return number is > 100000000000 and < 253402300799999 ? DateTimeOffset.FromUnixTimeMilliseconds(number)
+            : number is > 1000000000 and < 253402300799 ? DateTimeOffset.FromUnixTimeSeconds(number) : null; }
+        catch (ArgumentOutOfRangeException) { return null; }
+    }
+    private static long? MilliYuan(JsonElement value, string key) => decimal.TryParse(Text(value, key), NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
+        && amount >= 0 && amount <= long.MaxValue / 1000m && decimal.Truncate(amount * 1000m) == amount * 1000m ? (long)(amount * 1000m) : null;
 }
 
 // Field numbers match blivedm's SEND_GIFT_V2 model; unused fields are skipped.
@@ -147,8 +167,8 @@ internal sealed class SendGiftItem
     [ProtoMember(1)] public long Id { get; set; }
     [ProtoMember(2)] public string Name { get; set; } = string.Empty;
     [ProtoMember(3)] public long Count { get; set; }
-    [ProtoMember(5)] public long Price { get; set; }
-    [ProtoMember(7)] public long TotalCoin { get; set; }
+    [ProtoMember(5)] public long? Price { get; set; }
+    [ProtoMember(7)] public long? TotalCoin { get; set; }
     [ProtoMember(8)] public string CoinType { get; set; } = string.Empty;
     [ProtoMember(9)] public string TransactionId { get; set; } = string.Empty;
     [ProtoMember(18)] public string Action { get; set; } = string.Empty;

@@ -40,7 +40,7 @@ public sealed partial class SqliteLocalHistory
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                using var transaction = connection.BeginTransaction(); using var delete = connection.CreateCommand();
+                using var transaction = new HistoryTransaction(connection); using var delete = connection.CreateCommand();
                 var where = Scope(filter, delete);
                 if (table == "events")
                 {
@@ -111,4 +111,11 @@ public sealed partial class SqliteLocalHistory
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }, token).ConfigureAwait(false);
     }
+    public Task UseExistingDirectoryAsync(string directory) => MaintainAsync(connection =>
+    {
+        RequireStopped(); var target = Path.Combine(Path.GetFullPath(directory), "history.db");
+        using var check = Open(true, target); using var verify = Command(check, "PRAGMA quick_check;");
+        if (!Equals(verify.ExecuteScalar(), "ok")) throw new IOException("原存档备份校验失败");
+        Volatile.Write(ref _directory, Path.GetFullPath(directory));
+    }, CancellationToken.None);
 }

@@ -99,7 +99,9 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         token.ThrowIfCancellationRequested();
         EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Online, "系统", $"人气: {online}{(string.IsNullOrWhiteSpace(watched) ? "" : $" · {watched}")}", "#2196F3",
             Metadata: new Dictionary<string, object?> { ["room_summary"] = $"{state}{duration}{(string.IsNullOrWhiteSpace(title) ? "" : $" · {title}")}",
-                ["popularity"] = online.ToString(), ["watched"] = watched, ["room_profile"] = profile }));
+                ["popularity"] = online.ToString(), ["watched"] = watched, ["room_profile"] = profile,
+                ["archive_popularity"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(room, "online")),
+                ["archive_watched"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "watched_show"), "num")) }));
         if (room.TryGetProperty("uid", out var uidNode))
             await FetchRankAsync(uidNode.GetInt64(), token);
     }

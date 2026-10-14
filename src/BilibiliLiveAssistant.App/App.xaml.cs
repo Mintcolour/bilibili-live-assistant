@@ -39,6 +39,15 @@ public partial class App : Application
         {
             _window?.AllowClose();
             await ViewModel.DisposeAsync();
+            if (ViewModel.History.Status.Faulted && _window?.Content?.XamlRoot is { } root)
+            {
+                _window.ShowMainWindow();
+                await new Microsoft.UI.Xaml.Controls.ContentDialog
+                {
+                    Title = "历史存档未完整保存", Content = ViewModel.History.Status.Message,
+                    CloseButtonText = "退出", XamlRoot = root,
+                }.ShowAsync();
+            }
         }
         finally
         {

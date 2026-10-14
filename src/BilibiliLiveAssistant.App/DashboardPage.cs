@@ -352,7 +352,8 @@ internal sealed class DashboardPage : Page
         if (!_dirty) return;
         var history = _vm.Dashboard;
         RefreshHeader();
-        _error.Text = _vm.ErrorText; _error.Visibility = string.IsNullOrEmpty(_vm.ErrorText) ? Visibility.Collapsed : Visibility.Visible;
+        _error.Text = string.Join("\n", new[] { _vm.ErrorText, _vm.HistoryWarning }.Where(s => s.Length > 0));
+        _error.Visibility = _error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_settingsDirty)
         {
             _style = _vm.Settings.Dashboard;
