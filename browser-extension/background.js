@@ -4,7 +4,7 @@ const NAMES = ['SESSDATA', 'bili_jct', 'buvid3'];
 const TARGETS = ['https://api.bilibili.com/x/web-interface/nav', 'https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo'];
 // Chromium checks the Cookie's own domain and Secure flag, even for an HTTPS URL query.
 // Exact parent/API hosts cover domain Cookies and non-Secure Cookies; no HTTP requests are made.
-const COOKIE_ORIGINS = ['*://bilibili.com/*', '*://api.bilibili.com/*', '*://api.live.bilibili.com/*'];
+const COOKIE_ORIGINS = ['*://bilibili.com/*', '*://live.bilibili.com/*', '*://api.bilibili.com/*', '*://api.live.bilibili.com/*'];
 let timer, sending = false, metadataQueue = Promise.resolve();
 const boot = chrome.storage.local.get('state').then(async ({ state }) => {
   if (!state) await chrome.storage.local.set({ state: { sourceId: crypto.randomUUID(), revision: 0, dirtyRevision: 0, follow: false, dirty: false } });

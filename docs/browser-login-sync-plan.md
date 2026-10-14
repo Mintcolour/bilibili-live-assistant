@@ -1,7 +1,7 @@
 # 浏览器登录状态本机同步实施计划
 
 日期：2026-10-14  
-状态：待实施；本文件仅记录方案，不代表功能已经实现。  
+状态：实现及 Release 发布已交付，真实浏览器流程与性能待用户手动验收；操作说明见 [浏览器登录同步](browser-login-sync.md)。
 适用项目：B站直播弹幕助手，Windows / WinUI 3 / C#。  
 核心方向：减少登录操作，保持低 CPU、有限内存和长期稳定。
 
@@ -121,7 +121,7 @@ Native Messaging 注册是浏览器与本机通信所需的安装步骤，不是
 
 ### 6.1 权限和读取范围
 
-初始权限为 `cookies`、`nativeMessaging`、`storage`、`alarms`，站点权限限定 B站所需 HTTPS 域名。实现时核对实际 Cookie 域及接口需要的最小站点集合，不申请所有网站权限。
+初始权限为 `cookies`、`nativeMessaging`、`storage`、`alarms`。实施核对后，站点权限限定两个 API 目标主机及其父域的 HTTP／HTTPS Cookie origin（共四个确切主机）；这是 Chromium 按 Cookie 域和 Secure 标记筛选时所需的最小集合。查询和实际接口访问仍仅使用 HTTPS，不发起 HTTP 请求，不申请所有网站或任意子域权限。具体说明见交付文档。
 
 - 初始仅支持普通浏览器配置；不支持无痕 Cookie Store、容器或跨配置读取。
 - 不注入页面脚本，不依赖网页的 `document.cookie`，不读取密码、浏览记录或其他站点数据。

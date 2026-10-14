@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "host_permissions": [
     "*://bilibili.com/*",
+    "*://live.bilibili.com/*",
     "*://api.bilibili.com/*",
     "*://api.live.bilibili.com/*"
   ],

@@ -35,7 +35,8 @@ pwsh -NoProfile -File scripts/start-winui.ps1 -SkipBuild
 排查时应同时检查启动进程是否继承了其他应用的包身份。
 
 WinUI 3 应用在“概览”顶部填写房间号或直播链接，点击“开启监视”，并打开弹幕悬浮窗。
-可选 Cookie 仍在“账号设置”填写。
+“账号设置”支持 Chrome／Edge 本机登录同步，手工 Cookie 导入归入高级设置。
+首次连接、组件安装／卸载、配置迁移及人工验收见 [浏览器登录同步说明](docs/browser-login-sync.md)。
 
 ### 匿名读取直播间
 
