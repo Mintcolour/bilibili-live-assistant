@@ -169,6 +169,7 @@ internal sealed class HistoryPage : Page
     {
         if (_disposed || !_active || _managing) return;
         var run = NewQuery(); ResetPages(); _status.Text = "查询中…"; SetPagerEnabled(false);
+        _rows = []; _messages.SetRows([]); _details = null; _gaps = []; ShowSummary(null);
         Interlocked.Exchange(ref _hasNewRecords, 0); _newRecords.Visibility = Visibility.Collapsed;
         try
         {
@@ -231,7 +232,7 @@ internal sealed class HistoryPage : Page
     }
     private async Task DialogAsync(string title, string text)
     {
-        if (_disposed || _dialogOpen || XamlRoot is null) return;
+        if (_disposed || _managing || _dialogOpen || XamlRoot is null) return;
         _dialogOpen = true;
         try { await new ContentDialog { Title = title, Content = new ScrollViewer { Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }, MaxHeight = 420 }, CloseButtonText = "关闭", XamlRoot = XamlRoot }.ShowAsync(); }
         finally { _dialogOpen = false; }

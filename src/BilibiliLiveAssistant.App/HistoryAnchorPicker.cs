@@ -31,7 +31,7 @@ internal sealed class HistoryAnchorPicker : Button, IDisposable
         _flyout = new() { Content = body }; Flyout = _flyout;
         _flyout.Opening += async (_, _) => { _open = true; _choices.SetActive(true); await LoadAsync(); };
         _flyout.Closed += (_, _) => { _open = false; _query?.Cancel(); _choices.SetActive(false); };
-        _search.TextChanged += (_, _) => _query?.Cancel();
+        _search.TextChanged += (_, _) => { _query?.Cancel(); _choices.List.IsEnabled = false; _status.Text = "输入完成后按 Enter 或点击搜索"; };
         _search.KeyDown += async (_, args) => { if (args.Key == Windows.System.VirtualKey.Enter) { args.Handled = true; await LoadAsync(); } };
         _choices.List.SelectionChanged += (_, _) =>
         {
@@ -42,12 +42,13 @@ internal sealed class HistoryAnchorPicker : Button, IDisposable
     }
     private async Task LoadAsync()
     {
-        if (_disposed || !_open) return; _query?.Cancel(); _query?.Dispose(); var run = _query = new(); _status.Text = "正在读取本地主播…";
+        if (_disposed || !_open) return; _query?.Cancel(); _query?.Dispose(); var run = _query = new(); _status.Text = "正在读取本地主播…"; _choices.List.IsEnabled = false;
         try
         {
             var anchors = await _vm.History.AnchorsAsync(run.Token, _search.Text.Trim());
             if (_disposed || !_open || run.IsCancellationRequested || !ReferenceEquals(_query, run)) return;
             _loading = true; _choices.SetItems(anchors); _choices.List.SelectedItem = null; _loading = false;
+            _choices.List.IsEnabled = true;
             _status.Text = anchors.Count == 0 ? "尚无匹配主播 · 监视后会保留在这里" : $"{anchors.Count:N0} 位 · 选择后点击开启监视";
             if (_selected is not null && string.IsNullOrWhiteSpace(_search.Text) && !anchors.Any(a => Same(a, _selected))) ClearSelection();
         }
