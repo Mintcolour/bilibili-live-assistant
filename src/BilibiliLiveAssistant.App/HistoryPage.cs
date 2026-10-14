@@ -12,7 +12,11 @@ internal sealed class HistoryPage : Page
     private readonly LiveAssistantViewModel _vm;
     private readonly ILocalHistory _history;
     private readonly Func<bool> _visible;
-    private readonly ListView _anchors = new() { SelectionMode = ListViewSelectionMode.Single, DisplayMemberPath = nameof(HistoryAnchor.Label) };
+    private readonly HistoryAnchorList _anchorList;
+    private ListView _anchors => _anchorList.List;
+    private readonly TextBlock _anchorTitle = new() { Text = "选择一位主播", FontSize = 21, FontWeight = new(600), TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock _anchorSubtitle = new() { FontSize = 12, Opacity = 0.6 };
+    private readonly TextBlock[] _statValues = Enumerable.Range(0, 4).Select(_ => new TextBlock { Text = "—", FontSize = 23, FontWeight = new(600) }).ToArray();
     private readonly TextBox _anchorSearch = new() { PlaceholderText = "昵称 / 曾用名 / UID / 房间号", MaxLength = 128 };
     private readonly CalendarDatePicker _from = new() { Header = "开始日期", Date = DateTimeOffset.Now.AddDays(-6), DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
     private readonly CalendarDatePicker _to = new() { Header = "结束日期", Date = DateTimeOffset.Now, DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
@@ -39,59 +43,94 @@ internal sealed class HistoryPage : Page
     public HistoryPage(LiveAssistantViewModel vm, Func<bool> visible)
     {
         _vm = vm; _history = vm.History; _visible = visible;
-        _messages = new(vm, () => _active && !_disposed && _visible());
-        var root = new Grid { Padding = new Thickness(20, 12, 20, 16), RowSpacing = 12 };
+        _anchorList = new(vm); _messages = new(vm, () => _active && !_disposed && _visible());
+        var root = new Grid { Padding = new Thickness(20, 16, 20, 16), RowSpacing = 16, Background = MessageCard.Brush("#171A21"), RequestedTheme = ElementTheme.Dark };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         var heading = new Grid(); heading.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        heading.Children.Add(new TextBlock { Text = "历史记录", FontSize = 22 });
+        heading.Children.Add(new TextBlock { Text = "历史记录", FontSize = 22, FontWeight = new(600) });
         _newRecords.Visibility = Visibility.Collapsed; _newRecords.Click += async (_, _) => await RefreshAsync(true);
         Grid.SetColumn(_newRecords, 1); heading.Children.Add(_newRecords); root.Children.Add(heading);
-        var body = new Grid { ColumnSpacing = 16 }; body.ColumnDefinitions.Add(new() { Width = new(210), MinWidth = 130 }); body.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        var left = new Grid { RowSpacing = 8 }; left.RowDefinitions.Add(new() { Height = GridLength.Auto }); left.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var anchorHeader = new StackPanel { Spacing = 6, Children = { new TextBlock { Text = "主播 / 待识别房间", FontSize = 14 }, _anchorSearch } };
-        var findAnchor = UiFactory.Button("查询主播"); findAnchor.Click += async (_, _) => await RefreshAsync(true); anchorHeader.Children.Add(findAnchor);
-        ToolTipService.SetToolTip(_anchorSearch, "默认显示最近 2000 个主播；搜索可以查找更早的存档。");
+        var body = new Grid { ColumnSpacing = 20 }; body.ColumnDefinitions.Add(new() { Width = new(230), MinWidth = 160 }); body.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        var left = new Grid { RowSpacing = 12 }; left.RowDefinitions.Add(new() { Height = GridLength.Auto }); left.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        var anchorHeader = new StackPanel { Spacing = 10, Children = { new TextBlock { Text = "已监视主播", FontSize = 15, FontWeight = new(600) } } };
+        var searchRow = new Grid { ColumnSpacing = 4 }; searchRow.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); searchRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        _anchorSearch.PlaceholderText = "搜索主播"; searchRow.Children.Add(_anchorSearch);
+        var findAnchor = DashboardUi.Button("\uE721", "查询主播 / 曾用名 / UID / 房间号"); findAnchor.Click += async (_, _) => await RefreshAsync(true); Grid.SetColumn(findAnchor, 1); searchRow.Children.Add(findAnchor); anchorHeader.Children.Add(searchRow);
+        ToolTipService.SetToolTip(_anchorSearch, "昵称 / 曾用名 / UID / 房间号；显示最近 2000 位，搜索可查找更早存档。");
         _anchorSearch.TextChanged += (_, _) => { if (!_loading) _query?.Cancel(); };
-        left.Children.Add(anchorHeader); Grid.SetRow(_anchors, 1); left.Children.Add(_anchors);
-        Grid.SetRow(_storage, 2); left.Children.Add(_storage); body.Children.Add(left);
-        var right = new Grid { RowSpacing = 10 };
-        foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) right.RowDefinitions.Add(new() { Height = height });
-        var filters = new StackPanel { Spacing = 8 };
-        filters.Children.Add(Strip(_from, _to, _sessions));
-        var apply = UiFactory.Button("查询"); apply.VerticalAlignment = VerticalAlignment.Bottom; apply.Click += async (_, _) => await RefreshAsync(false);
-        var cancel = UiFactory.Button("取消查询"); cancel.VerticalAlignment = VerticalAlignment.Bottom; cancel.Click += (_, _) => { _query?.Cancel(); _status.Text = "已取消查询"; };
-        filters.Children.Add(Strip(_type, _uid, _name, _keyword, apply, cancel));
+        _anchorSearch.KeyDown += async (_, args) => { if (args.Key == Windows.System.VirtualKey.Enter) { args.Handled = true; await RefreshAsync(true); } };
+        left.Children.Add(anchorHeader); Grid.SetRow(_anchorList, 1); left.Children.Add(_anchorList);
+        Grid.SetRow(_storage, 2); left.Children.Add(_storage); body.Children.Add(Surface(left, 12));
+        var right = new Grid { RowSpacing = 12 };
+        foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) right.RowDefinitions.Add(new() { Height = height });
+        var title = new Grid { ColumnSpacing = 12 }; title.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); title.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        title.Children.Add(new StackPanel { Spacing = 4, Children = { _anchorTitle, _anchorSubtitle } });
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        var details = DashboardUi.Button("\uE946", "资料与榜单快照"); details.Click += async (_, _) => await ShowDetailsAsync(); tools.Children.Add(details);
+        var gaps = DashboardUi.Button("\uE7BA", "查看归档缺口"); gaps.Click += async (_, _) => await ShowGapsAsync(); tools.Children.Add(gaps);
+        var manage = UiFactory.Button("主播操作 ▾"); ToolTipService.SetToolTip(manage, "删除主播、日期范围清理与磁盘整理"); var menu = new MenuFlyout();
+        var deleteAnchor = new MenuFlyoutItem { Text = "删除此主播全部存档…", Icon = new SymbolIcon(Symbol.Delete) }; deleteAnchor.Click += async (_, _) => await DeleteAsync(true);
+        var deleteRange = new MenuFlyoutItem { Text = "清理所选日期范围…" }; deleteRange.Click += async (_, _) => await DeleteAsync();
+        var compact = new MenuFlyoutItem { Text = "释放磁盘空间（停止监视后）…" }; compact.Click += async (_, _) => await CompactAsync();
+        menu.Items.Add(deleteAnchor); menu.Items.Add(deleteRange); menu.Items.Add(new MenuFlyoutSeparator()); menu.Items.Add(compact); manage.Flyout = menu; tools.Children.Add(manage);
+        Grid.SetColumn(tools, 1); title.Children.Add(tools); right.Children.Add(title);
+        var apply = UiFactory.Button("查询记录"); apply.VerticalAlignment = VerticalAlignment.Bottom; apply.Click += async (_, _) => await RefreshAsync(false);
+        _type.Header = "类型";
         _type.Items.Add(new ComboBoxItem { Content = "全部互动" });
-        foreach (var type in new[] { LiveEventType.Danmaku, LiveEventType.Gift, LiveEventType.SuperChat, LiveEventType.Guard, LiveEventType.Enter })
-            _type.Items.Add(new ComboBoxItem { Content = TypeName(type), Tag = type });
-        _type.SelectedIndex = 0; right.Children.Add(filters);
-        var stats = new StackPanel { Spacing = 5, Children = { _summary } };
-        var more = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        var details = UiFactory.Button("资料与榜单快照"); details.Click += async (_, _) => await ShowDetailsAsync(); more.Children.Add(details);
-        var gaps = UiFactory.Button("归档缺口"); gaps.Click += async (_, _) => await ShowGapsAsync(); more.Children.Add(gaps);
-        stats.Children.Add(more); Grid.SetRow(stats, 1); right.Children.Add(stats);
-        Grid.SetRow(_status, 2); right.Children.Add(_status); Grid.SetRow(_messages, 3); right.Children.Add(_messages);
-        var footer = new Grid { ColumnSpacing = 8 }; footer.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var pager = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { _previous, _page, _next } };
+        foreach (var type in new[] { LiveEventType.Danmaku, LiveEventType.Gift, LiveEventType.SuperChat, LiveEventType.Guard, LiveEventType.Enter }) _type.Items.Add(new ComboBoxItem { Content = TypeName(type), Tag = type });
+        _type.SelectedIndex = 0;
+        var dates = Strip(_from, _to, _type, apply); Grid.SetRow(dates, 1); right.Children.Add(dates);
+        var stats = new StackPanel { Spacing = 8 };
+        var statGrid = new Grid { ColumnSpacing = 10 };
+        var labels = new[] { "弹幕", "礼物 / 上舰", "SC", "进房 / 互动" };
+        for (var i = 0; i < labels.Length; i++)
+        {
+            statGrid.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+            var card = Surface(new StackPanel { Spacing = 5, Children = { new TextBlock { Text = labels[i], FontSize = 12, Opacity = 0.65 }, _statValues[i] } }, 12);
+            Grid.SetColumn(card, i); statGrid.Children.Add(card);
+        }
+        stats.Children.Add(statGrid); _summary.Opacity = 0.8; stats.Children.Add(_summary); Grid.SetRow(stats, 2); right.Children.Add(stats);
+        var advanced = new Expander { Header = "更多筛选", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var advancedFields = new StackPanel { Spacing = 8 };
+        advancedFields.Children.Add(Strip(_sessions, _uid, _name));
+        var cancel = UiFactory.Button("取消查询"); cancel.VerticalAlignment = VerticalAlignment.Bottom; cancel.Click += (_, _) => { _query?.Cancel(); _status.Text = "已取消查询"; };
+        var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += (_, _) => { _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0; _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; };
+        _keyword.MinWidth = 230; advancedFields.Children.Add(Strip(_keyword, reset, cancel)); advanced.Content = advancedFields;
+        Grid.SetRow(advanced, 3); right.Children.Add(advanced);
+        Grid.SetRow(_status, 4); right.Children.Add(_status);
+        var messages = Surface(_messages, 4); Grid.SetRow(messages, 5); right.Children.Add(messages);
+        var pager = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _page, _next } };
         _previous.Click += async (_, _) => { if (_cursors.Count > 1) { _cursors.RemoveAt(_cursors.Count - 1); _pageNumber--; await LoadPageAsync(); } };
         _next.Click += async (_, _) =>
         {
             if (_rows.Count < 100) return; var last = _rows[^1]; _cursors.Add((last.Id, last.ReceivedAt));
             if (_cursors.Count > 256) _cursors.RemoveAt(0); _pageNumber++; await LoadPageAsync();
         };
-        footer.Children.Add(pager);
-        var manage = UiFactory.Button("存档维护"); var menu = new MenuFlyout();
-        var delete = new MenuFlyoutItem { Text = "清理所选主播与日期范围…" }; delete.Click += async (_, _) => await DeleteAsync();
-        var compact = new MenuFlyoutItem { Text = "释放磁盘空间（停止监视后）…" }; compact.Click += async (_, _) => await CompactAsync();
-        menu.Items.Add(delete); menu.Items.Add(compact); manage.Flyout = menu; Grid.SetColumn(manage, 1); footer.Children.Add(manage);
-        Grid.SetRow(footer, 4); right.Children.Add(footer); Grid.SetColumn(right, 1); body.Children.Add(right); Grid.SetRow(body, 1); root.Children.Add(body); Content = root;
-        _anchors.SelectionChanged += async (_, _) => { if (!_loading && !_managing) await RefreshAsync(false, true); };
+        Grid.SetRow(pager, 6); right.Children.Add(pager); Grid.SetColumn(right, 1); body.Children.Add(right); Grid.SetRow(body, 1); root.Children.Add(body); Content = root;
+        SizeChanged += (_, args) => body.ColumnDefinitions[0].Width = new(args.NewSize.Width < 900 ? 180 : 230);
+        _anchors.SelectionChanged += async (_, _) => { UpdateAnchorHeading(); if (!_loading && !_managing) await RefreshAsync(false, true); };
         _from.DateChanged += (_, _) => ConditionsChanged(true); _to.DateChanged += (_, _) => ConditionsChanged(true);
         _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += (_, _) => ConditionsChanged();
         foreach (var input in new[] { _uid, _name, _keyword }) input.TextChanged += (_, _) => ConditionsChanged();
         _history.Committed += OnCommitted; _vm.PropertyChanged += OnVmChanged;
-        Loaded += async (_, _) => { _active = _visible(); if (_active) await RefreshAsync(true); };
+        Loaded += async (_, _) => { _active = _visible(); _anchorList.SetActive(_active); if (_active) await RefreshAsync(true); };
         Unloaded += OnUnloaded; UpdateStorage(); UpdatePager();
+    }
+    private static Border Surface(UIElement child, double padding) => new() { Child = child, Padding = new Thickness(padding), CornerRadius = new CornerRadius(8), Background = MessageCard.Brush("#222732") };
+    private void UpdateAnchorHeading()
+    {
+        var anchor = _anchors.SelectedItem as HistoryAnchor;
+        _anchorTitle.Text = anchor is null ? "选择一位主播" : HistoryAnchorList.DisplayName(anchor);
+        _anchorSubtitle.Text = anchor is null ? "左侧选择主播后查看存档" : $"房间 {anchor.RoomId}" + (anchor.Uid is > 0 ? $"  ·  UID {anchor.Uid}" : "  ·  身份待识别");
+    }
+    private void ShowSummary(HistorySummary? summary)
+    {
+        var counts = summary is null ? null : new[] { summary.Danmaku, summary.Gifts + summary.Guards, summary.SuperChats, summary.Interactions };
+        for (var i = 0; i < _statValues.Length; i++) _statValues[i].Text = counts is null ? "—" : counts[i].ToString("N0");
+        if (summary is null) { _summary.Text = "统计待查询"; return; }
+        _summary.Text = $"付费礼物 ¥{summary.PaidGiftMilliYuan / 1000m:N3}   ·   SC ¥{summary.SuperChatMilliYuan / 1000m:N3}   ·   免费礼物 {summary.FreeGiftQuantity:N0} 个";
+        ToolTipService.SetToolTip(_summary, $"仅统计已存档数据，不估算实际收入。\n未知价格 {summary.UnknownPrices:N0} 条 · 上舰 {summary.Guards:N0} 条");
+        if (summary.Incomplete) _summary.Text += $"\n⚠ 存档不完整 · 已知遗漏 {summary.Missing:N0} 条 · 未归属缺口 {summary.UnassignedMissing:N0} 条 · 中断 {summary.InterruptedSessions:N0} 段";
     }
     private static ScrollViewer Strip(params UIElement[] controls)
     {
@@ -117,7 +156,7 @@ internal sealed class HistoryPage : Page
     {
         if (_loading || _disposed || _managing) return;
         _query?.Cancel(); ResetPages(); _rows = []; _messages.SetRows(_rows); _details = null; _gaps = [];
-        if (scope) _summary.Text = "统计待查询";
+        if (scope) ShowSummary(null);
         _status.Text = "条件已修改 · 点击查询"; UpdatePager();
     }
     private void ResetPages() { _cursors.Clear(); _cursors.Add((null, null)); _pageNumber = 1; }
@@ -138,12 +177,12 @@ internal sealed class HistoryPage : Page
                 var selected = _anchors.SelectedItem as HistoryAnchor;
                 var values = await _history.AnchorsAsync(run.Token, _anchorSearch.Text.Trim()); if (!Current(run)) return;
                 _loading = true;
-                _anchors.ItemsSource = values;
+                _anchorList.SetItems(values);
                 _anchors.SelectedItem = selected is null ? values.FirstOrDefault() : values.FirstOrDefault(a => a.Uid == selected.Uid && (a.Uid is > 0 || a.RoomId == selected.RoomId)) ?? values.FirstOrDefault();
                 _loading = false;
             }
             if (_anchors.SelectedItem is not HistoryAnchor)
-            { _summary.Text = "尚无本地记录"; _status.Text = "开启监视后开始归档；测试与示例不会保存。"; _messages.SetRows([]); return; }
+            { ShowSummary(null); _summary.Text = "尚无本地记录"; _status.Text = "开启监视后开始归档；测试与示例不会保存。"; _rows = []; _messages.SetRows([]); _details = null; _gaps = []; _loading = true; _sessions.ItemsSource = null; _loading = false; UpdatePager(); return; }
             var oldSession = resetSession ? null : (_sessions.SelectedItem as HistorySession)?.Id;
             var filter = Filter() with { SessionId = null };
             var sessions = await _history.SessionsAsync(filter, run.Token); if (!Current(run)) return;
@@ -153,10 +192,7 @@ internal sealed class HistoryPage : Page
             var summary = await _history.SummaryAsync(filter, run.Token); if (!Current(run)) return;
             _details = await _history.DetailsAsync(filter, run.Token); if (!Current(run)) return;
             _gaps = await _history.GapsAsync(filter, run.Token); if (!Current(run)) return;
-            _summary.Text = $"弹幕 {summary.Danmaku:N0} · 互动 {summary.Interactions:N0} · 礼物 {summary.Gifts:N0} · 上舰 {summary.Guards:N0} · SC {summary.SuperChats:N0}\n" +
-                $"已知付费礼物 ¥{summary.PaidGiftMilliYuan / 1000m:N3} · 免费礼物 {summary.FreeGiftQuantity:N0} 个 · SC ¥{summary.SuperChatMilliYuan / 1000m:N3} · 未知价格 {summary.UnknownPrices:N0} 条" +
-                (summary.Incomplete ? $"\n⚠ 不完整：已知遗漏 {summary.Missing:N0} 条" + (summary.UnassignedMissing > 0 ? $" · 同期另有 {summary.UnassignedMissing:N0} 条未归属缺口" : "") +
-                    (summary.InterruptedSessions > 0 ? $" · {summary.InterruptedSessions:N0} 段中断，末尾遗漏可能无法确定" : "") + "；仅统计已存档部分" : "");
+            ShowSummary(summary);
             await QueryRowsAsync(run); if (!Current(run)) return;
             UpdateStorage();
         }
@@ -189,9 +225,9 @@ internal sealed class HistoryPage : Page
     private void UpdateStorage()
     {
         var status = _history.Status;
-        _storage.Text = $"{status.Bytes / (1024d * 1024):N1} MiB\n{(_vm.Settings.History.Enabled ? "● 记录开启" : "○ 记录暂停")} · 长期保留\n" +
-            (status.Faulted || status.Dropped > 0 || status.CapacityWarning ? _vm.HistoryWarning : "") + "\n目录、开关和容量提醒在可视化设置中调整";
-        ToolTipService.SetToolTip(_storage, _history.DatabasePath);
+        _storage.Text = $"{(_vm.Settings.History.Enabled ? "● 正在归档" : "○ 归档暂停")}  ·  {status.Bytes / (1024d * 1024):N1} MiB" +
+            (status.Faulted || status.Dropped > 0 || status.CapacityWarning ? "\n" + _vm.HistoryWarning : "");
+        ToolTipService.SetToolTip(_storage, _history.DatabasePath + "\n长期保留 · 目录、开关和容量提醒在可视化设置中调整");
     }
     private async Task DialogAsync(string title, string text)
     {
@@ -212,30 +248,50 @@ internal sealed class HistoryPage : Page
     }
     private Task ShowGapsAsync() => DialogAsync("归档缺口（最近 100 项）", _gaps.Count == 0 ? "所选范围未记录到缺口。仅保存软件实际收到的数据，未监视时无法补录。"
         : string.Join("\n\n", _gaps.Select(g => $"{g.FirstAt.ToLocalTime():yyyy-MM-dd HH:mm:ss} ～ {g.LastAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n{TypeName(g.Type)} · {g.Count:N0} 条 · {g.Reason}")));
-    private async Task DeleteAsync()
+    private async Task DeleteAsync(bool entireAnchor = false)
     {
-        if (_managing || _disposed) return; _managing = true; _query?.Cancel(); _maintenance = new(); SetPagerEnabled(false);
+        if (_managing || _disposed || _dialogOpen || XamlRoot is null) return;
+        if (_anchors.SelectedItem is not HistoryAnchor anchor) { _status.Text = "请先选择要清理的主播"; return; }
+        _managing = true; _query?.Cancel(); _maintenance = new(); SetPagerEnabled(false); var completed = false;
         try
         {
-            var filter = Filter(); var count = await _history.CountAsync(filter, _maintenance.Token);
+            var filter = entireAnchor ? new HistoryFilter(anchor, "0001-01-01", "9999-12-31") : Filter();
+            var count = await _history.CountAsync(filter, _maintenance.Token);
             if (_disposed) return;
-            var result = await new ContentDialog
+            _dialogOpen = true;
+            ContentDialogResult result;
+            try { result = await new ContentDialog
             {
-                Title = "清理本地存档", Content = $"主播：{filter.Anchor.Label}\n日期：{filter.FromDay} ～ {filter.ToDay}\n监视记录：{filter.SessionId ?? "全部"}\n存档条目：{count:N0} 条（互动、资料、快照、缺口）\n\n消息类型、昵称、关键词筛选不缩小清理范围。涉及正在记录的监视段时须先停止。",
-                PrimaryButtonText = "确认清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot,
-            }.ShowAsync();
+                Title = entireAnchor ? "删除此主播全部存档？" : "清理所选日期范围？",
+                Content = $"主播：{filter.Anchor.Label}\n" + (entireAnchor ? "范围：所有日期、所有监视记录" : $"日期：{filter.FromDay} ～ {filter.ToDay}\n监视记录：{filter.SessionId ?? "全部"}") +
+                    $"\n存档条目：{count:N0} 条（互动、资料、快照、缺口）\n\n" +
+                    (entireAnchor ? "将删除该主播的消息、资料、榜单快照、统计和监视记录，并从已监视主播列表移除。此操作无法撤销。" : "消息类型、昵称、关键词筛选不缩小清理范围。") +
+                    "\n涉及正在记录的监视段时须先停止监视。",
+                PrimaryButtonText = entireAnchor ? "删除全部存档" : "确认清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot,
+            }.ShowAsync(); }
+            finally { _dialogOpen = false; }
             if (result != ContentDialogResult.Primary || _disposed) return;
-            _status.Text = "后台分批清理中…"; await _vm.DeleteHistoryAsync(filter, _maintenance.Token); _status.Text = "清理完成，空闲页可复用";
+            _status.Text = "后台分批清理中…"; await _vm.DeleteHistoryAsync(filter, _maintenance.Token); completed = true;
         }
         catch (OperationCanceledException) { if (!_disposed) _status.Text = "清理已停止，已完成批次的统计已同步"; }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed) _status.Text = "清理失败：" + ex.Message; }
         finally { _managing = false; _maintenance?.Dispose(); _maintenance = null; if (!_disposed) { UpdateStorage(); UpdatePager(); _newRecords.Visibility = Visibility.Visible; } }
+        if (completed && !_disposed)
+        {
+            // Delete the selected anchor even when an active search would otherwise keep it selected.
+            _loading = true; if (entireAnchor) _anchors.SelectedItem = null; _loading = false;
+            await RefreshAsync(true, entireAnchor);
+            if (!_disposed && _active) _status.Text = entireAnchor ? "已删除该主播全部存档" : "所选范围已清理 · 空闲页可复用";
+        }
     }
     private async Task CompactAsync()
     {
-        if (_managing || _disposed) return;
+        if (_managing || _disposed || _dialogOpen || XamlRoot is null) return;
         if (_vm.IsMonitoring) { _status.Text = "释放磁盘空间前请先停止监视"; return; }
-        var answer = await new ContentDialog { Title = "释放磁盘空间", Content = "重新整理数据库，将删除后空闲页归还磁盘。此操作可能耗时且需要临时磁盘空间；原有历史会保留。", PrimaryButtonText = "开始整理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot }.ShowAsync();
+        _dialogOpen = true;
+        ContentDialogResult answer;
+        try { answer = await new ContentDialog { Title = "释放磁盘空间", Content = "重新整理数据库，将删除后空闲页归还磁盘。此操作可能耗时且需要临时磁盘空间；原有历史会保留。", PrimaryButtonText = "开始整理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot }.ShowAsync(); }
+        finally { _dialogOpen = false; }
         if (answer != ContentDialogResult.Primary || _disposed) return;
         _managing = true; _query?.Cancel(); _maintenance = new();
         try { _status.Text = "正在后台释放空间…"; await _vm.CompactHistoryAsync(_maintenance.Token); if (!_disposed) _status.Text = "磁盘空间整理完成"; }
@@ -246,11 +302,11 @@ internal sealed class HistoryPage : Page
     internal void SetActive(bool active)
     {
         if (_disposed) return; _active = active;
-        if (!active) _query?.Cancel(); _messages.SetActive(active);
+        if (!active) _query?.Cancel(); _messages.SetActive(active); _anchorList.SetActive(active);
     }
     private void OnUnloaded(object sender, RoutedEventArgs args)
     {
         _disposed = true; _active = false; _query?.Cancel(); _query?.Dispose(); _maintenance?.Cancel();
-        _history.Committed -= OnCommitted; _vm.PropertyChanged -= OnVmChanged; _messages.Dispose(); Unloaded -= OnUnloaded;
+        _history.Committed -= OnCommitted; _vm.PropertyChanged -= OnVmChanged; _messages.Dispose(); _anchorList.Dispose(); Unloaded -= OnUnloaded;
     }
 }
