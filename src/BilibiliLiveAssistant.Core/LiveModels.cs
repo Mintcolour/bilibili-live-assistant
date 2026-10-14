@@ -26,6 +26,7 @@ public sealed record LiveEvent(
     public DateTimeOffset OccurredAt { get; } = Timestamp ?? DateTimeOffset.Now;
     public IReadOnlyDictionary<string, object?> Extra => Metadata ?? EmptyMetadata;
     public IReadOnlyList<MediaReference> MediaReferences { get; init; } = Array.Empty<MediaReference>();
+    public HistoryEventFields? HistoryFields { get; init; }
 }
 
 public sealed record CookieOptions(string Buvid3 = "", string Sessdata = "", string BiliJct = "")
@@ -74,6 +75,7 @@ public sealed record AppSettings
     public DashboardSettings Dashboard { get; init; } = new();
     public MediaPreviewSettings MediaPreview { get; init; } = new();
     public DanmakuCardSettings Cards { get; init; } = new();
+    public HistorySettings History { get; init; } = new();
     public int PollIntervalSeconds { get; init; } = 30;
 }
 

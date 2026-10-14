@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.32" />
     <ProjectReference Include="..\BilibiliLiveAssistant.Core\BilibiliLiveAssistant.Core.csproj" />
   </ItemGroup>
 
