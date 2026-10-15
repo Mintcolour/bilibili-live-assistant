@@ -15,6 +15,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <DefineConstants>$(DefineConstants);MEMORY_SOAK</DefineConstants>
+    <AppSdkVersion Condition="'$(AppSdkVersion)' == ''">1.7.250401001</AppSdkVersion>
     <SourceRoot Condition="'$(SourceRoot)' == ''">../../src/BilibiliLiveAssistant.App</SourceRoot>
     <DefineConstants Condition="'$(TraySmoke)' == 'true'">$(DefineConstants);TRAY_SMOKE</DefineConstants>
   </PropertyGroup>
@@ -22,7 +24,7 @@
     <ProjectReference Include="../../src/BilibiliLiveAssistant.Core/BilibiliLiveAssistant.Core.csproj" />
     <ProjectReference Include="../../src/BilibiliLiveAssistant.Infrastructure/BilibiliLiveAssistant.Infrastructure.csproj" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250401001" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(AppSdkVersion)" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <Compile Include="MemorySoakApp.cs" />

@@ -480,6 +480,13 @@ internal sealed class BiliImageView : Grid, IDisposable
                 if (_disposed || !_active || !_visible() || generation != _generation) return;
                 if (_displayUrl.Length == 0) { Interlocked.Increment(ref ImageResourceCounters.MissingAvatars); return; }
             }
+#if MEMORY_SOAK
+            if (!App.CreateImageSources)
+            {
+                await _cache.GetStaticForViewAsync(_displayUrl, cancellation, RequestedDecodeLimit);
+                return;
+            }
+#endif
             acquired = await _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation);
             if (_disposed || !_active || !_visible() || generation != _generation || acquired is null) return;
             _first = acquired; acquired = null;
@@ -496,6 +503,9 @@ internal sealed class BiliImageView : Grid, IDisposable
     }
     private void Bind(ImageSource source)
     {
+#if MEMORY_SOAK
+        if (!App.AttachImageSources) return;
+#endif
         if (_image is not null) _image.Source = source;
         if (_person is not null) { _person.ProfilePicture = source; Interlocked.Increment(ref ImageResourceCounters.AvatarBindings); }
         if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;

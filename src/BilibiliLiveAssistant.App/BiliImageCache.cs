@@ -375,6 +375,26 @@ internal sealed class BiliImageCache : IDisposable
     private static async Task<BiliImageAsset> DecodeAsync(byte[] raw, bool animate, int maxDimension, CancellationToken token)
     {
         using var timing = ImageResourceCounters.Measure(0);
+#if MEMORY_SOAK
+        if (App.UseDrawingDecode && !animate && (raw.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71 })
+            || raw.AsSpan().StartsWith(new byte[] { 255, 216 })))
+        {
+            using var encoded = new MemoryStream(raw);
+            using var image = System.Drawing.Image.FromStream(encoded, false, false);
+            if (image.Width is <= 0 or > 4096 || image.Height is <= 0 or > 4096 || (long)image.Width * image.Height > 8_388_608)
+                throw new InvalidDataException("图片尺寸超过限制");
+            var factor = Math.Min(1d, maxDimension / (double)Math.Max(image.Width, image.Height));
+            using var bitmap = new System.Drawing.Bitmap(Math.Max(1, (int)(image.Width * factor)), Math.Max(1, (int)(image.Height * factor)), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+            {
+                graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                graphics.DrawImage(image, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height));
+            }
+            token.ThrowIfCancellationRequested();
+            return new BiliStaticImageAsset(BiliPixelFrame.FromDrawingBitmap(bitmap), false, maxDimension);
+        }
+#endif
         using var input = await ToStreamAsync(raw);
         var decoder = await BitmapDecoder.CreateAsync(input);
         if (decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 || (long)decoder.PixelWidth * decoder.PixelHeight > 8_388_608)

@@ -3,10 +3,13 @@ param(
     [ValidateRange(10,14400)][int]$Seconds = 180,
     [ValidateRange(1,2000)][int]$Rate = 50,
     [ValidateRange(1,1000000)][int]$Users = 20000,
-    [ValidateSet('both','overlay','dashboard')][string]$View = 'both',
+    [ValidateSet('both','overlay','dashboard','pipeline')][string]$View = 'both',
     [ValidateSet('unique','shared','none','avatars','emotes')][string]$Images = 'unique',
     [string]$BinarySource = '',
-    [switch]$Snapshot
+    [switch]$Snapshot,
+    [switch]$NoImageBinding,
+    [switch]$NoImageSources,
+    [switch]$DrawingDecoder
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -18,7 +21,7 @@ if ((Test-Path -LiteralPath $runDirectory) -or (Test-Path -LiteralPath $binaryDi
 if (!(Test-Path -LiteralPath (Join-Path $sourceDirectory 'StressApp.exe'))) { throw '请先编译 Release x64 压力程序' }
 New-Item -ItemType Directory -Path $runDirectory,$binaryDirectory -Force | Out-Null
 Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $binaryDirectory -Recurse
-[ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images } |
+[ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
 $binary = Join-Path $binaryDirectory 'StressApp.exe'
 # Explorer avoids inheriting the Codex/terminal package identity. Never launch

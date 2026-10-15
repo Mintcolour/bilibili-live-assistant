@@ -8,6 +8,11 @@ if ($samples.Count -eq 0) { throw '没有可分析的采样' }
 $traffic = @($samples | Where-Object phase -eq traffic)
 $completedPath = Join-Path $runPath 'completed.json'
 $completed = if (Test-Path -LiteralPath $completedPath) { Get-Content -LiteralPath $completedPath -Raw | ConvertFrom-Json } else { $null }
+$assertions = $rows | Where-Object kind -eq assertions | Select-Object -Last 1
+$eligible = $header.config.View -eq 'both' -and $header.config.Images -eq 'unique' -and !$header.config.Snapshot -and
+    $header.config.AttachImages -ne $false -and $header.config.CreateSources -ne $false -and !$header.config.DrawingDecode
+$retentionPassed = $null -ne $assertions -and $assertions.stopRetainsContent -and $assertions.sameRoomRetainsContent -and
+    $assertions.offlineRetainsContent -and $assertions.switchClearsContent
 function Get-MemorySummary([string]$Field) {
     $values = @($samples | ForEach-Object { $_.$Field } | Where-Object { $null -ne $_ })
     if ($values.Count -eq 0) { return $null }
@@ -31,11 +36,16 @@ $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Su
 [ordered]@{
     name = $header.config.Name
     configuration = $header.config
+    winUiVersion = $header.winUiVersion
+    renderingAcceptanceEligible = $eligible
+    retentionChecksPassed = $retentionPassed
     finished = $null -ne $completed
     elapsedSeconds = $last.seconds
     produced = $last.produced
     completedTrafficSeconds = if ($completed) { $header.config.Seconds } else { $null }
     twoHourTrafficCompleted = $null -ne $completed -and $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
+    twoHourRenderingRunCompleted = $eligible -and $retentionPassed -and $null -ne $completed -and
+        $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
     privateCommit = Get-MemorySummary 'privateBytes'
     totalWorkingSet = Get-MemorySummary 'workingSetBytes'
     privateWorkingSet = Get-MemorySummary 'privateWorkingSetBytes'
@@ -50,6 +60,6 @@ $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Su
     archivedEvents = $last.ui.history.writtenEvents
     archivePending = $last.ui.history.pending
     diskScans = $last.ui.images.diskScans
-    assertions = $rows | Where-Object kind -eq assertions | Select-Object -Last 1
+    assertions = $assertions
     note = 'Sampling every ~5s; peaks are observed samples, not continuous maxima. MiB=1048576 bytes. Overlay expiry/queue drops are separately reported; no forced GC or working-set trimming.'
 } | ConvertTo-Json -Depth 8

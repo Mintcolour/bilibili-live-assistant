@@ -16,6 +16,9 @@ namespace BilibiliLiveAssistant.App;
 public partial class App : Application
 {
     public static LiveAssistantViewModel ViewModel { get; private set; } = null!;
+    internal static bool AttachImageSources { get; private set; } = true;
+    internal static bool CreateImageSources { get; private set; } = true;
+    internal static bool UseDrawingDecode { get; private set; }
     private MainWindow? _window;
     internal static nint MainWindowHandle => Current is App app && app._window is { } window ? WinRT.Interop.WindowNative.GetWindowHandle(window) : 0;
     private readonly SoakConfig _config;
@@ -35,6 +38,9 @@ public partial class App : Application
     {
         InitializeComponent();
         _config = JsonSerializer.Deserialize<SoakConfig>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-config.json")))!;
+        AttachImageSources = _config.AttachImages;
+        CreateImageSources = _config.CreateSources;
+        UseDrawingDecode = _config.DrawingDecode;
         Directory.CreateDirectory(_config.Output);
         UnhandledException += (_, e) =>
         {
@@ -54,8 +60,8 @@ public partial class App : Application
             ViewModel = new(settings, new SoakStore(), _client, new SoakInfo(), images);
             _window = new(ViewModel) { Title = "内存模拟 · " + _config.Name };
             _window.Activate();
-            if (_config.View != "dashboard") _window.OpenOverlay();
-            if (_config.View == "overlay") _window.HideToTray();
+            if (_config.View is not ("dashboard" or "pipeline")) _window.OpenOverlay();
+            if (_config.View is "overlay" or "pipeline") _window.HideToTray();
             _process = Process.GetCurrentProcess();
             _previousCpu = _process.TotalProcessorTime.TotalSeconds;
             _elapsed.Start();
@@ -65,13 +71,36 @@ public partial class App : Application
             _log.WriteLine(JsonSerializer.Serialize(new { kind = "header", config = _config, pid = Environment.ProcessId,
                 runtime = Environment.Version.ToString(), processors = Environment.ProcessorCount,
                 assembly = typeof(App).Assembly.GetName().Name, dpi = _window.Content.XamlRoot?.RasterizationScale,
-                timestamp = DateTimeOffset.UtcNow, simulatedImages = true, realArchive = true, realRendering = true,
+                winUiVersion = _process.Modules.Cast<ProcessModule>().FirstOrDefault(m => m.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))?.FileVersionInfo.FileVersion,
+                timestamp = DateTimeOffset.UtcNow, simulatedImages = true, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
                 note = "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
             Sample();
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
             if (_config.Snapshot) _snapshot = CaptureOverviewAsync();
+            if (_config.View == "pipeline")
+            {
+                // Diagnostic only: exercise exactly the production cache/decode
+                // and optional UI source factories, with no message visual tree.
+                var start = Stopwatch.GetTimestamp();
+                using var cadence = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+                while (Stopwatch.GetElapsedTime(start).TotalSeconds < _config.Seconds && await cadence.WaitForNextTickAsync(_stop.Token))
+                {
+                    var expected = (long)(Stopwatch.GetElapsedTime(start).TotalSeconds * _config.Rate);
+                    var tasks = new List<Task>();
+                    while (_produced < expected && tasks.Count < 32)
+                    {
+                        var sequence = ++_produced;
+                        tasks.Add(ExerciseImagePipelineAsync(sequence));
+                    }
+                    await Task.WhenAll(tasks);
+                }
+                _log.WriteLine(JsonSerializer.Serialize(new { kind = "diagnostic", pipelineOnly = true,
+                    note = "Not a rendering, archive, retention or two-hour acceptance run." }));
+                await FinishAsync();
+                return;
+            }
             await Task.Run(async () =>
             {
                 var start = Stopwatch.GetTimestamp();
@@ -122,6 +151,15 @@ public partial class App : Application
             File.WriteAllText(Path.Combine(_config.Output, "fatal.txt"), ex.ToString());
             Environment.Exit(2);
         }
+    }
+    private async Task ExerciseImagePipelineAsync(long sequence)
+    {
+        var url = $"https://i0.hdslb.com/soak/avatar/{sequence % _config.Users}.png";
+        if (_config.CreateSources)
+        {
+            using var lease = await ViewModel.Images.Sources.AcquireStaticSourceAsync(url, 32, 64, _stop.Token);
+        }
+        else await ViewModel.Images.GetStaticForViewAsync(url, _stop.Token, 64);
     }
     private void Emit(long sequence)
     {
@@ -208,7 +246,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique");
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
