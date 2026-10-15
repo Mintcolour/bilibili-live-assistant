@@ -39,6 +39,7 @@
 
   <ItemGroup>
     <Content Include="../../assets/icons/app.ico" Link="Assets/app.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../scripts/analyze-performance.ps1" Link="tools/analyze-performance.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
