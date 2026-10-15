@@ -1,5 +1,7 @@
 # 图片内存管线重构交付说明
 
+2026-10-15 的启动问题已在独立目录 `artifacts/releases/memory-image-pipeline-fix` 修正，见 [启动修正说明](memory-image-pipeline-startup-fix.md)。原发布目录保留，请使用修正版。
+
 ## 范围与证据边界
 
 本轮处理实际可见行、静态像素传递、共享显示源及释放路径。没有新增用户设置项，没有修改字体、阴影、透明度、目标帧率、消息容量、礼物合并、历史数据库或账号登录流程。
@@ -15,7 +17,7 @@
 - `BiliPixelFrame` 独立拥有 BGRA8、预乘 Alpha、紧密排列的只读像素，步长为宽度乘 4。
 - 普通静态图片由 Windows 解码器缩放后直接取像素。GIF 首帧继续通过原有 GDI+ 画布合成，再读取像素；静态分支在 PNG 编码之前返回。
 - 静态头像、表情、默认 GIF 首帧、头像装饰和媒体封面使用同一管线。64／128／256 px 解码档位、原图尺寸上限、不放大原图及较大解码复用规则继续保留。
-- WinUI 显示源改为 `SoftwareBitmapSource`；源 `SoftwareBitmap` 在异步上传完全结束后释放。取消时也等待已经开始的上传结束，随后释放过期显示源，避免提前销毁仍被原生操作读取的输入。
+- WinUI 显示源改为 `SoftwareBitmapSource`。启动修正版中，成功传入的 `SoftwareBitmap` 由原生显示源持有并在关闭时释放；上传结束后仍可能被后续布局、表面复制和恢复读取，不能在此时单独释放。取消时也等待已经开始的上传结束，再关闭过期显示源。
 - 需要二次缩小时直接缩放像素。浮窗仅在一次消息合成期间复制为 `Format32bppPArgb` 位图，用完释放，没有新增常驻 GDI 图片缓存。
 - 普通设置预览和媒体设置预览直接上传合成位图的像素。新预览取消旧预览，清空时先解除图片绑定，再释放旧显示源；全局像素转换／上传最多两路。
 - 动画资产仍保存原有紧凑编码帧和延迟。GIF 合成、40 帧上限、长动画退回首帧、默认关闭、每个既有时钟最多 4 个动画及最高 10 FPS 的规则没有改变。暂停或离屏后控件丢弃动画资产和动画显示帧引用，恢复共享静态首帧；缓存中的动画仍受原有资产预算约束。
@@ -55,11 +57,12 @@
 | `imageResources.views` / `activeViews` | 已创建图片控件／当前激活控件；离屏仍保留文字控件不等于保留图片 |
 | `uiImages.sources` / `leases` | 服务中独立静态显示源／被控件借用的租约。多个租约可共用一个源 |
 | `uiImages.activeSources` / `idleSources` / `reservedSources` | 正在使用、可淘汰闲置、完成但尚待领取；三类互斥，总和等于 sources |
-| `uiImages.activeBytes` / `idleBytes` / `reservedBytes` | 上述三类像素字节估算，互斥；idle 才受 8 MiB 闲置预算约束 |
+| `uiImages.activeBytes` / `idleBytes` / `reservedBytes` | 上述三类字节估算，互斥；启动修正版将底层位图和一份显示表面同时计费，idle 才受 8 MiB 闲置预算约束 |
 | `uiImages.pending` / `queued` / `creating` / `waiters` | 受 32 键限制的待完成或待领取项、其中尚未开始项、正在创建项及等待消费者数 |
 | `uiImages.created` / `released` | 进入共享服务的源及其释放累计数；差值等于服务 sources |
 | `uiImages.cancelled` / `aborted` / `stale` | 因最后一个消费者离开而取消的共享任务、取消退出的工厂、工厂完成后被代次判断丢弃的结果 |
 | `imageResources.nativeSources` / `nativePixelBytesEstimate` | 全部受管理的 SoftwareBitmapSource，包括服务源、正在上传的源及设置预览；uiImages 是其子集，**不能相加** |
+| `imageResources.backingBitmapBytes` / `displaySurfaceBytesEstimate` | 底层位图像素字节及一份显示表面的估算；修正版两者已包含在 nativePixelBytesEstimate 中，不能重复相加。pixelAccounting=backing-plus-surface-v2 标识新计费口径 |
 | `imageResources.created` / `released` / `staleUploads` | 所有上述源的创建、释放、上传完成后因取消立即丢弃的累计数；包含未进入共享缓存的过期上传 |
 | `imageResources.pendingUploads` / `activeUploads` | 全局像素转换／上传等待与执行数，执行最多 2 个 |
 | `imageResources.decodeCount` / `decodeMs` 等 | 诊断开启期间的解码、转换、上传、释放次数和墙钟耗时。可含取消或失败的尝试，不能相加当作 CPU 时间 |
