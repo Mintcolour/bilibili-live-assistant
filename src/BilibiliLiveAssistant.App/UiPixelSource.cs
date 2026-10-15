@@ -1,16 +1,18 @@
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Dispatching;
+using Windows.Graphics.Imaging;
 
 namespace BilibiliLiveAssistant.App;
 
-// UI-thread owned. The input SoftwareBitmap lives through the complete upload,
-// including cancellation; only its completed result may be bound to a control.
+// UI-thread owned. SoftwareBitmapSource keeps its input for later surface
+// copies/recovery as well as the first upload, and closes that input itself.
 internal sealed class UiPixelSource : IDisposable
 {
     // Includes settings previews as well as shared URL-backed display sources.
     private static readonly SemaphoreSlim UploadSlots = new(2, 2);
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     public SoftwareBitmapSource Source { get; }
+    public long BitmapBytes { get; }
     public long Bytes { get; }
     public bool CanAnimate { get; }
     public int DecodeLimit { get; }
@@ -18,10 +20,12 @@ internal sealed class UiPixelSource : IDisposable
     private bool _disposed;
     private UiPixelSource(SoftwareBitmapSource source, BiliPixelFrame pixels, bool animated, int limit)
     {
-        Source = source; Bytes = pixels.Bytes; CanAnimate = animated; DecodeLimit = limit; PixelWidth = pixels.Width;
+        Source = source; BitmapBytes = pixels.Bytes; Bytes = checked(BitmapBytes * 2);
+        CanAnimate = animated; DecodeLimit = limit; PixelWidth = pixels.Width;
         Interlocked.Increment(ref ImageResourceCounters.Sources);
         Interlocked.Increment(ref ImageResourceCounters.Created);
         Interlocked.Add(ref ImageResourceCounters.SourceBytes, Bytes);
+        Interlocked.Add(ref ImageResourceCounters.BackingBitmapBytes, BitmapBytes);
     }
     internal static async Task<UiPixelSource> CreateAsync(BiliPixelFrame pixels, int width, bool animated, int limit, CancellationToken cancellation)
     {
@@ -39,19 +43,27 @@ internal sealed class UiPixelSource : IDisposable
             using (ImageResourceCounters.Measure(1))
                 scaled = await Task.Run(() => { cancellation.ThrowIfCancellationRequested(); return pixels.AtWidth(width); }, cancellation);
             cancellation.ThrowIfCancellationRequested();
-            using var bitmap = scaled.CreateSoftwareBitmap();
             var result = new UiPixelSource(new SoftwareBitmapSource(), scaled, animated, limit);
+            SoftwareBitmap? unownedBitmap = null;
             try
             {
                 using var timing = ImageResourceCounters.Measure(2);
-                // Do not cancel just the wait: the input must stay alive until the
-                // native operation completes, even when the consumer disappeared.
-                await result.Source.SetBitmapAsync(bitmap);
+                unownedBitmap = scaled.CreateSoftwareBitmap();
+                var upload = result.Source.SetBitmapAsync(unownedBitmap);
+                // Transfer ownership to the native source. Completing this action
+                // does not end the bitmap's lifetime: subsequent layout/rendering
+                // may copy its pixels again. Source.Dispose() closes it, deferring
+                // that close itself while a native copy is still in progress.
+                unownedBitmap = null;
+                // A cancelled consumer still waits for this native action before
+                // disposing the obsolete source; never cancel just the wait.
+                await upload;
                 if (cancellation.IsCancellationRequested) Interlocked.Increment(ref ImageResourceCounters.StaleUploads);
                 cancellation.ThrowIfCancellationRequested();
                 return result;
             }
             catch { result.Dispose(); throw; }
+            finally { unownedBitmap?.Dispose(); }
         }
         finally
         {
@@ -68,5 +80,6 @@ internal sealed class UiPixelSource : IDisposable
         Interlocked.Decrement(ref ImageResourceCounters.Sources);
         Interlocked.Increment(ref ImageResourceCounters.Released);
         Interlocked.Add(ref ImageResourceCounters.SourceBytes, -Bytes);
+        Interlocked.Add(ref ImageResourceCounters.BackingBitmapBytes, -BitmapBytes);
     }
 }

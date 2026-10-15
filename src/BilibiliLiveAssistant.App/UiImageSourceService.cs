@@ -121,6 +121,7 @@ internal sealed class UiImageSourceService : IDisposable
         if (_disposed) { ClearIdle(); return; }
         // A completed factory's waiters have not yet received their leases.
         var idle = _sources.Where(p => p.Value.Leases == 0 && !_pending.ContainsKey(p.Key)).OrderByDescending(p => p.Value.Used).ToArray();
+        // Charge both the native input bitmap and one estimated display surface.
         long bytes = 0; var count = 0;
         foreach (var pair in idle)
         {

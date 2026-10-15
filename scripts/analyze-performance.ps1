@@ -110,6 +110,8 @@ $phases = foreach ($segment in $segments) {
         ActiveImageViewsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.activeViews })
         NativeImageSourcesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.nativeSources })
         NativeImagePixelBytesEstimatePeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.nativePixelBytesEstimate })
+        ImageBackingBitmapBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.backingBitmapBytes })
+        ImageDisplaySurfaceBytesEstimatePeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.displaySurfaceBytesEstimate })
         ImageUploadQueuePeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.pendingUploads })
         ActiveImageUploadsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.activeUploads })
         ImageStaleUploadsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.staleUploads }
@@ -154,6 +156,7 @@ $report = [pscustomobject]@{ Session = $Session; Samples = $ordered.Count; Skipp
         'timings 为 UI 脉冲间的区间统计；嵌套测量会重叠，不要相加当作 CPU。frameGap 是回调间隔，不是屏幕实际呈现帧率。',
         'schema 3 的 uiImages 内，active、idle、reserved 的显示源及估算字节互斥；reserved 为创建完成、尚未发出租约的资源。',
         'imageResources.nativeSources 含共享源、上传中源及设置预览，是总数；uiImages 为其中共享服务部分，不能相加。像素估算不涵盖 WinUI、驱动和分配器全部原生内存。旧日志缺少的新字段返回 null。',
+        'pixelAccounting=backing-plus-surface-v2 时，nativePixelBytesEstimate 与 uiImages 字节预算包含底层位图和一份显示表面估算；两项分量不能再加到总数上，旧版仅计一份像素时不可直接比较。',
         '切换场景前后约一个采样区间可能含过渡活动。原始日志滚动覆盖后只分析保留下来的区间。')
     Phases = @($phases) }
 $json = $report | ConvertTo-Json -Depth 12
