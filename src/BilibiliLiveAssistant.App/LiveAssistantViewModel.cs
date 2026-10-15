@@ -149,7 +149,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_disposed) return;
         await _connectionGate.WaitAsync();
         try { await StartCoreAsync(roomId, true); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; await StopCoreAsync(); CloseHistorySegment(); ResetRoomHistory(4); OnPropertyChanged(nameof(IsMonitoring)); ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; await StopCoreAsync(); CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring)); ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
         finally { _connectionGate.Release(); }
     }
     private async Task StartCoreAsync(int roomId, bool newMonitoring)
@@ -158,15 +158,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_client.IsRunning) return;
         if (newMonitoring)
         {
-            ResetRoomHistory();
-            AudienceHistory.Clear();
             CloseHistorySegment();
             _historyContext = History.Begin(roomId);
         }
         _monitorRequested = true;
         OnPropertyChanged(nameof(IsMonitoring));
         ErrorText = string.Empty;
-        if (!newMonitoring && _settings.RoomId != roomId) ResetRoomHistory();
+        if (_settings.RoomId != roomId) ResetRoomHistory();
         _settings = _settings with { RoomId = roomId };
         await _store.SaveAsync(_settings);
         if (_disposed || !_monitorRequested) return;
@@ -194,7 +192,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             await StopCoreAsync();
-            _monitorRequested = false; CloseHistorySegment(); ResetRoomHistory(4); OnPropertyChanged(nameof(IsMonitoring));
+            _monitorRequested = false; CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring));
             ErrorText = "连接失败，请检查网络后重新开启监视";
             Status = "连接失败";
         }
@@ -207,7 +205,14 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         try
         {
             try { await StopCoreAsync(); }
-            finally { CloseHistorySegment(); ResetRoomHistory(2); OnPropertyChanged(nameof(IsMonitoring)); }
+            finally
+            {
+                CloseHistorySegment();
+                // Stop preserves the current room for review; only a room change
+                // or application shutdown releases its display/history resources.
+                if (_disposed) ResetRoomHistory(2);
+                OnPropertyChanged(nameof(IsMonitoring));
+            }
         }
         finally { _connectionGate.Release(); }
     }
@@ -537,12 +542,6 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                     && value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile liveProfile
                     && liveProfile.LiveStatus is { } liveState)
                 {
-                    if (RoomProfile?.LiveStatus == 1 && liveState is 0 or 2)
-                    {
-                        // A confirmed live -> offline transition is different from
-                        // a network outage. Keep monitoring and the archive segment.
-                        ResetRoomHistory(3); accepted.Clear();
-                    }
                     _roomOffline = liveState is 0 or 2;
                 }
                 if (!example && _roomOffline && value.Type == LiveEventType.Rank) continue;
@@ -562,7 +561,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                     if (_popularity.Length > 0) metrics.Add("人气: " + _popularity);
                     if (_watched.Length > 0) metrics.Add("看过: " + _watched.Replace("人看过", "", StringComparison.Ordinal));
                     OnlineText = metrics.Count > 0 ? string.Join(" · ", metrics) : value.Content;
-                    LatestOnline = _roomOffline ? null : value with { Content = OnlineText,
+                    if (!_roomOffline) LatestOnline = value with { Content = OnlineText,
                         Metadata = new Dictionary<string, object?>(value.Extra) { ["popularity"] = _popularity, ["watched"] = _watched } };
                     if (value.Extra.TryGetValue("room_summary", out var summary) && summary is string text) RoomSummary = text;
                     if (value.Extra.TryGetValue("room_profile", out var profile) && profile is LiveRoomProfile suppliedProfile)

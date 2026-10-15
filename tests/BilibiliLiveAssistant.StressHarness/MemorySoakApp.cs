@@ -84,6 +84,12 @@ public partial class App : Application
                     if ((int)elapsed / 30 != lastProfile) { lastProfile = (int)elapsed / 30; EmitRoom(settings.RoomId); }
                 }
             });
+            // Let the normal display batch finish before taking retention checks.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var retainedIds = ViewModel.Dashboard.Danmaku.Concat(ViewModel.Dashboard.Gifts).Concat(ViewModel.Dashboard.SuperChats).Select(r => r.Id).ToHashSet();
+            EmitRoom(settings.RoomId, 0);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var offlineRetainsContent = retainedIds.IsSubsetOf(ViewModel.Dashboard.Danmaku.Concat(ViewModel.Dashboard.Gifts).Concat(ViewModel.Dashboard.SuperChats).Select(r => r.Id));
             _phase = "before_stop"; Sample();
             var retained = ViewModel.Dashboard.Danmaku.Count + ViewModel.Dashboard.Gifts.Count + ViewModel.Dashboard.SuperChats.Count;
             await ViewModel.StopAsync();
@@ -93,6 +99,7 @@ public partial class App : Application
             // A new monitoring segment in the same room must not erase the overview.
             await ViewModel.StartAsync(settings.RoomId);
             var sameRoom = ViewModel.Dashboard.Danmaku.Count + ViewModel.Dashboard.Gifts.Count + ViewModel.Dashboard.SuperChats.Count;
+            var sameRoomRetainsContent = retainedIds.IsSubsetOf(ViewModel.Dashboard.Danmaku.Concat(ViewModel.Dashboard.Gifts).Concat(ViewModel.Dashboard.SuperChats).Select(r => r.Id));
             await ViewModel.StopAsync();
             foreach (var record in ViewModel.Dashboard.Danmaku.Take(10)) _retired.Add(new(record));
             await ViewModel.SaveAsync(ViewModel.Settings with { RoomId = settings.RoomId + 1 });
@@ -101,7 +108,8 @@ public partial class App : Application
             await Task.Delay(TimeSpan.FromSeconds(20));
             _log.WriteLine(JsonSerializer.Serialize(new { kind = "assertions", retainedBeforeStop = retained, retainedAfterStop = afterStop,
                 retainedSameRoomRestart = sameRoom, previousRoomAfterSwitch = switched,
-                stopRetainsContent = retained > 0 && afterStop == retained, sameRoomRetainsContent = sameRoom == retained,
+                stopRetainsContent = retained > 0 && afterStop == retained, sameRoomRetainsContent,
+                offlineRetainsContent,
                 switchClearsContent = switched == 0, retiredRecordWeakAlive = _retired.Count(r => r.IsAlive) }));
             await FinishAsync();
         }
@@ -128,10 +136,10 @@ public partial class App : Application
             : type == LiveEventType.SuperChat ? new HistoryEventFields(UniqueId: "sc" + sequence, AmountMilliYuan: 30000) : null;
         _client.Emit(new(type, $"模拟用户{uid}", body, "#FFFFFF", uid, Appearance: appearance) { HistoryFields = fields });
     }
-    private void EmitRoom(int room)
+    private void EmitRoom(int room, int liveStatus = 1)
     {
         var profile = new LiveRoomProfile(100000, room, "模拟主播", "https://i0.hdslb.com/soak/avatar/anchor.png", "隔离压力模拟", "测试团", 20000, 200, 100000, 3000)
-            { LiveStatus = 1, LiveStartedAt = DateTimeOffset.UtcNow.AddHours(-1) };
+            { LiveStatus = liveStatus, LiveStartedAt = DateTimeOffset.UtcNow.AddHours(-1) };
         _client.Emit(new(LiveEventType.Online, "系统", "人数模拟", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["room_profile"] = profile }));
         var members = Enumerable.Range(1, 10).Select(i => new LiveRankMember(i, i, $"模拟榜单{i}", new() { AvatarUrl = $"https://i0.hdslb.com/soak/avatar/{i}.png", MedalName = "测试团", MedalLevel = 20, GuardLevel = 3 })).ToArray();
         _client.Emit(new(LiveEventType.Rank, "系统", "高能榜", "#FFFFFF", Metadata: new Dictionary<string, object?>
@@ -142,8 +150,11 @@ public partial class App : Application
         if (_process is null || _finishing) return;
         _process.Refresh(); var seconds = _elapsed.Elapsed.TotalSeconds; var cpu = _process.TotalProcessorTime.TotalSeconds;
         var gc = GC.GetGCMemoryInfo();
+        var native = new ProcessMemoryCounters { Size = (uint)Marshal.SizeOf<ProcessMemoryCounters>() };
+        var hasNativeMemory = GetProcessMemoryInfo(_process.Handle, ref native, native.Size);
         _log!.WriteLine(JsonSerializer.Serialize(new { kind = "sample", phase = _phase, seconds, produced = Interlocked.Read(ref _produced),
             privateBytes = _process.PrivateMemorySize64, workingSetBytes = _process.WorkingSet64, managedBytes = GC.GetTotalMemory(false),
+            privateWorkingSetBytes = hasNativeMemory ? (ulong?)native.PrivateWorkingSetSize : null,
             gcHeapBytes = gc.HeapSizeBytes, fragmentedBytes = gc.FragmentedBytes,
             allocatedBytes = GC.GetTotalAllocatedBytes(false), gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
             cpuPercent = seconds > _previousSeconds ? 100 * (cpu - _previousCpu) / (seconds - _previousSeconds) / Environment.ProcessorCount : 0,
@@ -160,6 +171,19 @@ public partial class App : Application
         Exit();
     }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
+    // Layout from the installed Windows SDK psapi.h PROCESS_MEMORY_COUNTERS_EX2.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessMemoryCounters
+    {
+        public uint Size, PageFaultCount;
+        public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+            QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage,
+            PrivateUsage, PrivateWorkingSetSize;
+        public ulong SharedCommitUsage;
+    }
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
 internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both");
 internal sealed class SoakStore : ISettingsStore
