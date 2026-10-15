@@ -12,7 +12,8 @@ internal sealed class ListImageVisibility : IDisposable
     private readonly Func<bool> _active;
     private readonly Action _update;
     private ScrollViewer? _scroll;
-    private bool _pending, _disposed;
+    private XamlRoot? _root;
+    private bool _pending, _disposed, _retriedLayout;
     internal ListImageVisibility(ListView list, Func<bool> active, Action update)
     {
         _list = list; _active = active; _update = update;
@@ -26,18 +27,34 @@ internal sealed class ListImageVisibility : IDisposable
     }
     internal void Request()
     {
-        if (_disposed || _pending) return;
+        if (_disposed || _pending || !_active()) return;
         _pending = true; _list.LayoutUpdated += LayoutReady;
     }
-    internal void RefreshNow() { if (_disposed) return; _update(); Request(); }
     private void LayoutReady(object? sender, object args)
     {
         _list.LayoutUpdated -= LayoutReady; _pending = false;
-        if (!_disposed) { HookScroll(); _update(); }
+        if (_disposed || !_active()) return;
+        HookScroll(); _update();
+        var valid = _list.ItemsPanelRoot is ItemsStackPanel { FirstVisibleIndex: >= 0, LastVisibleIndex: >= 0 };
+        // Some templates report their range only after the first layout. Retry
+        // once, then wait for a real container/size/scroll change; never poll.
+        if (!valid && _list.Items.Count > 0 && !_retriedLayout) { _retriedLayout = true; Request(); }
+        else if (valid) _retriedLayout = false;
     }
-    private void Loaded(object sender, RoutedEventArgs args) { HookScroll(); RefreshNow(); }
+    private void Loaded(object sender, RoutedEventArgs args)
+    {
+        HookScroll();
+        if (_root != _list.XamlRoot)
+        {
+            if (_root is not null) _root.Changed -= RootChanged;
+            _root = _list.XamlRoot;
+            if (_root is not null) _root.Changed += RootChanged;
+        }
+        Request();
+    }
+    private void RootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => Request();
     private void SizeChanged(object sender, SizeChangedEventArgs args) => Request();
-    private void Scrolled(object? sender, ScrollViewerViewChangedEventArgs args) => RefreshNow();
+    private void Scrolled(object? sender, ScrollViewerViewChangedEventArgs args) => Request();
     private void HookScroll()
     {
         var scroll = Find(_list);
@@ -58,5 +75,6 @@ internal sealed class ListImageVisibility : IDisposable
         if (_disposed) return; _disposed = true;
         _list.Loaded -= Loaded; _list.SizeChanged -= SizeChanged; _list.LayoutUpdated -= LayoutReady;
         if (_scroll is not null) _scroll.ViewChanged -= Scrolled;
+        if (_root is not null) _root.Changed -= RootChanged;
     }
 }

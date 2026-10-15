@@ -13,7 +13,7 @@ internal sealed class UiImageSourceService : IDisposable
     private readonly SemaphoreSlim _slots = new(2, 2);
     private readonly DispatcherQueueTimer _idleTimer;
     private TaskCompletionSource _capacity = NewSignal();
-    private long _sequence, _cancelled, _stale, _hits, _created, _released;
+    private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released;
     private bool _disposed;
     internal readonly record struct Key(string Url, int Width, int Limit);
     internal sealed class Entry(UiPixelSource value) { public UiPixelSource Value = value; public int Leases; public long Used; }
@@ -22,7 +22,7 @@ internal sealed class UiImageSourceService : IDisposable
         public readonly CancellationTokenSource Cancel = new();
         public readonly TaskCompletionSource<Entry?> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Waiters;
-        public bool Finished;
+        public bool Started, Finished;
     }
     internal UiImageSourceService(BiliImageCache images)
     {
@@ -81,7 +81,7 @@ internal sealed class UiImageSourceService : IDisposable
         try
         {
             var token = pending.Cancel.Token;
-            await _slots.WaitAsync(token); entered = true;
+            await _slots.WaitAsync(token); entered = true; pending.Started = true;
             var asset = await _images.GetStaticForViewAsync(key.Url, token, key.Limit);
             if (asset is null) { pending.Completion.TrySetResult(null); return; }
             value = await UiPixelSource.CreateAsync(asset.Frame, key.Width, asset.CanAnimate, asset.DecodeLimit, token);
@@ -91,7 +91,7 @@ internal sealed class UiImageSourceService : IDisposable
             _sources.Add(key, entry); _created++; value = null;
             pending.Completion.TrySetResult(entry);
         }
-        catch (OperationCanceledException) { _stale++; pending.Completion.TrySetResult(null); }
+        catch (OperationCanceledException) { _aborted++; pending.Completion.TrySetResult(null); }
         catch (Exception ex)
         {
             if (ex is OutOfMemoryException) pending.Completion.TrySetException(ex);
@@ -137,15 +137,27 @@ internal sealed class UiImageSourceService : IDisposable
             Remove(pair.Key, pair.Value);
     }
     private void Remove(Key key, Entry entry) { _sources.Remove(key); entry.Value.Dispose(); _released++; }
-    internal object GetDiagnostics() => new
+    internal object GetDiagnostics()
     {
-        sources = _sources.Count, leases = _sources.Values.Sum(e => e.Leases),
-        idleBytes = _sources.Values.Where(e => e.Leases == 0).Sum(e => e.Value.Bytes),
-        activeBytes = _sources.Values.Where(e => e.Leases > 0).Sum(e => e.Value.Bytes),
-        pending = _pending.Count, waiters = _pending.Values.Sum(p => p.Waiters),
-        hits = _hits, cancelled = _cancelled, stale = _stale,
-        created = _created, released = _released,
-    };
+        CheckThread();
+        long idleBytes = 0, activeBytes = 0, reservedBytes = 0;
+        var idle = 0; var active = 0; var reserved = 0;
+        foreach (var pair in _sources)
+        {
+            if (pair.Value.Leases > 0) { active++; activeBytes += pair.Value.Value.Bytes; }
+            else if (_pending.ContainsKey(pair.Key)) { reserved++; reservedBytes += pair.Value.Value.Bytes; }
+            else { idle++; idleBytes += pair.Value.Value.Bytes; }
+        }
+        return new
+        {
+            sources = _sources.Count, leases = _sources.Values.Sum(e => e.Leases),
+            idleSources = idle, activeSources = active, reservedSources = reserved,
+            idleBytes, activeBytes, reservedBytes,
+            pending = _pending.Count, queued = _pending.Values.Count(p => !p.Started && !p.Finished),
+            creating = _pending.Values.Count(p => p.Started && !p.Finished), waiters = _pending.Values.Sum(p => p.Waiters),
+            hits = _hits, cancelled = _cancelled, aborted = _aborted, stale = _stale, created = _created, released = _released,
+        };
+    }
     public void Dispose()
     {
         CheckThread(); if (_disposed) return; _disposed = true; _idleTimer.Stop();

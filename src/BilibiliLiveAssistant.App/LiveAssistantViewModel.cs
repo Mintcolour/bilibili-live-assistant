@@ -576,6 +576,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         RoomProfile = null; AudienceHistory.Clear(); OnPropertyChanged(nameof(RoomProfile));
         _popularity = ""; _watched = "";
         RoomHistoryReset?.Invoke();
+        UiImages.ClearIdle();
         OnlineText = "--"; RankText = "暂无榜单"; RoomSummary = "房间状态暂无数据";
     }
 

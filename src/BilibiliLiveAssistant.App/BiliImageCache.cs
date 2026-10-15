@@ -210,7 +210,7 @@ internal sealed class BiliImageCache : IDisposable
             }
             lock (_gate)
             {
-                if (_disposed) return null;
+                if (_disposed || token.IsCancellationRequested) return null;
                 var assetSize = asset.Size;
                 while ((_bytes + assetSize > MemoryLimit || _memory.Count >= MemoryItemLimit) && _memory.Count > 0)
                 {
@@ -404,10 +404,14 @@ internal sealed class BiliImageCache : IDisposable
     internal static async Task<InMemoryRandomAccessStream> ToStreamAsync(byte[] bytes)
     {
         var stream = new InMemoryRandomAccessStream();
-        using var writer = new DataWriter(stream);
-        writer.WriteBytes(bytes); await writer.StoreAsync(); await writer.FlushAsync();
-        writer.DetachStream();
-        stream.Seek(0); return stream;
+        try
+        {
+            using var writer = new DataWriter(stream);
+            writer.WriteBytes(bytes); await writer.StoreAsync(); await writer.FlushAsync();
+            writer.DetachStream();
+            stream.Seek(0); return stream;
+        }
+        catch { stream.Dispose(); throw; }
     }
     public void Dispose()
     {

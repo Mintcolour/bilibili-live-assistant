@@ -454,6 +454,7 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal void Activate(double rasterizationScale)
     {
         if (_disposed) return;
+        if (!_visible()) { Deactivate(); return; }
         var sizeChanged = Math.Abs(_rasterizationScale - rasterizationScale) > 0.001;
         if (!_active) Interlocked.Increment(ref ImageResourceCounters.ActiveViews);
         _active = true; _rasterizationScale = rasterizationScale;
@@ -470,7 +471,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         try
         {
             acquired = await _cache.Sources.AcquireStaticSourceAsync(_url, RequestedWidth, RequestedDecodeLimit, cancellation);
-            if (_disposed || !_active || generation != _generation || acquired is null) return;
+            if (_disposed || !_active || !_visible() || generation != _generation || acquired is null) return;
             _first = acquired; acquired = null;
             Bind(_first.Value.Source);
             if (_animate && _first.Value.CanAnimate) _clock.Add(this);

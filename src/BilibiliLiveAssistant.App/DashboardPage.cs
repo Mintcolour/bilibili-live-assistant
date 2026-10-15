@@ -231,7 +231,14 @@ internal sealed class DashboardPage : Page
         _middle.RowDefinitions[2].Height = expanded ? new(_style.RankPanelRatio, GridUnitType.Star) : GridLength.Auto;
         _rankPanel.SetActive(expanded && !_unloaded && _visible());
     }
-    private void ResetRank() { _rankPanel.RoomReset(); _anchor.Refresh(); Dirty(); }
+    private void ResetRank()
+    {
+        // Cancel the old room's consumers synchronously, before any new room
+        // events or image completions can be delivered on the dispatcher.
+        _danmaku.Sync(_vm.Dashboard.Danmaku, false); _gifts.Sync(_vm.Dashboard.Gifts, false);
+        _sc.Sync(_vm.Dashboard.SuperChats, false); _interactions.Sync(_vm.Dashboard.Interactions, false);
+        _cardPanel.Sync(); _rankPanel.RoomReset(); _anchor.Refresh(); Dirty();
+    }
     private async Task ToggleMonitorAsync()
     {
         if (_connectionBusy) return;
@@ -605,7 +612,7 @@ internal sealed class DashboardList : Grid, IDisposable
         _animations.Wake();
     }
     public void Suspend() { _active = false; foreach (var card in _cards) card.Deactivate(); }
-    public void Resume() { _active = true; _visibility.RefreshNow(); }
+    public void Resume() { _active = true; _visibility.Request(); }
     public void Dispose()
     {
         _visibility.Dispose(); _visibleRecords.Clear();

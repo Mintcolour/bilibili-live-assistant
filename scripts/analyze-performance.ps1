@@ -103,19 +103,37 @@ $phases = foreach ($segment in $segments) {
         ImageNetworkRequestsDelta = Get-Delta $rows { param($r) $r.ui.images.networkRequests }
         ImageFrameHitsDelta = Get-Delta $rows { param($r) $r.ui.images.frameHits }
         ImageFrameMissesDelta = Get-Delta $rows { param($r) $r.ui.images.frameMisses }
+        StaticPixelBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.images.staticPixelBytes })
+        AnimationEncodedBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.images.animationEncodedBytes })
+        AnimationFirstPixelBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.images.animationPixelBytes })
+        ImageViewsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.views })
         ActiveImageViewsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.activeViews })
+        NativeImageSourcesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.nativeSources })
+        NativeImagePixelBytesEstimatePeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.nativePixelBytesEstimate })
+        ImageUploadQueuePeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.pendingUploads })
+        ActiveImageUploadsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.activeUploads })
+        ImageStaleUploadsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.staleUploads }
         UiImageLeasesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.leases })
         UiImageSourcesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.sources })
         UiImageIdleBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.idleBytes })
         UiImageActiveBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.activeBytes })
+        UiImageReservedBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.reservedBytes })
         UiImagePendingPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.pending })
+        UiImageQueuedPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.queued })
         UiImageCreatedDelta = Get-Delta $rows { param($r) $r.ui.uiImages.created }
         UiImageReleasedDelta = Get-Delta $rows { param($r) $r.ui.uiImages.released }
         UiImageCancelledDelta = Get-Delta $rows { param($r) $r.ui.uiImages.cancelled }
+        UiImageAbortedDelta = Get-Delta $rows { param($r) $r.ui.uiImages.aborted }
         UiImageStaleDelta = Get-Delta $rows { param($r) $r.ui.uiImages.stale }
         ImageDecodeDelta = Get-Delta $rows { param($r) $r.ui.imageResources.decodeCount }
         ImageConversionDelta = Get-Delta $rows { param($r) $r.ui.imageResources.conversionCount }
         ImageUploadDelta = Get-Delta $rows { param($r) $r.ui.imageResources.uploadCount }
+        ImageDecodeMsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.decodeMs }
+        ImageConversionMsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.conversionMs }
+        ImageUploadMsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.uploadMs }
+        ImageReleaseMsDelta = Get-Delta $rows { param($r) $r.ui.imageResources.releaseMs }
+        MainVisibleSamples = @($rows | Where-Object { $_.ui.window.mainVisible -eq $true }).Count
+        MainHiddenSamples = @($rows | Where-Object { $_.ui.window.mainVisible -eq $false }).Count
         CanvasPeakMiB = [math]::Round(($rows.ui | Measure-Object canvasBytes -Maximum).Maximum / 1MB, 2)
         ArchivePendingPeak = ($rows.ui.history | Measure-Object pending -Maximum).Maximum
         BufferDroppedDelta = Get-Delta $rows { param($r) $r.ui.bufferDropped }
@@ -134,6 +152,8 @@ $report = [pscustomobject]@{ Session = $Session; Samples = $ordered.Count; Skipp
     Notes = @('CPU 为本进程按可用逻辑处理器数归一化的百分比；不含 BrowserHost/浏览器。',
         '内存增长率至少 3 个点，仅作定位线索；缓存预热、GC 和原生内存都会影响，不能直接认定泄漏。',
         'timings 为 UI 脉冲间的区间统计；嵌套测量会重叠，不要相加当作 CPU。frameGap 是回调间隔，不是屏幕实际呈现帧率。',
+        'schema 3 的 uiImages 内，active、idle、reserved 的显示源及估算字节互斥；reserved 为创建完成、尚未发出租约的资源。',
+        'imageResources.nativeSources 含共享源、上传中源及设置预览，是总数；uiImages 为其中共享服务部分，不能相加。像素估算不涵盖 WinUI、驱动和分配器全部原生内存。旧日志缺少的新字段返回 null。',
         '切换场景前后约一个采样区间可能含过渡活动。原始日志滚动覆盖后只分析保留下来的区间。')
     Phases = @($phases) }
 $json = $report | ConvertTo-Json -Depth 12

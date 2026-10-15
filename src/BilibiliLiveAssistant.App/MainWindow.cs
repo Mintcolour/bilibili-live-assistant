@@ -23,6 +23,9 @@ public sealed class MainWindow : Window
     private readonly AppWindow _appWindow;
     private OverlayWindow? _overlay;
     private bool _allowClose;
+    private bool? _pageVisible;
+    private double _pageScale;
+    private XamlRoot? _root;
 
     public MainWindow(LiveAssistantViewModel vm)
     {
@@ -62,6 +65,7 @@ public sealed class MainWindow : Window
         _navigation.Content = _frame;
         _navigation.SelectionChanged += OnSelectionChanged;
         Content = _navigation;
+        _navigation.Loaded += NavigationLoaded;
         _navigation.SelectedItem = _navigation.MenuItems[0];
         Activated += (_, _) => UpdatePageVisibility();
         _appWindow.Changed += (_, _) => UpdatePageVisibility();
@@ -101,33 +105,53 @@ public sealed class MainWindow : Window
 
     private void OnSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
+        if (_allowClose) return;
         var tag = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString();
         if (tag == "exit") { ExitRequested?.Invoke(); return; }
         SuspendPage();
-        _frame.Content = tag switch
+        Page? page = null;
+        bool PageVisible() => page is not null && IsMainVisible() && ReferenceEquals(_frame.Content, page);
+        page = tag switch
         {
-            "display" => new DisplayPage(_vm, OpenOverlay, IsMainVisible),
-            "history" => new HistoryPage(_vm, IsMainVisible),
+            "display" => new DisplayPage(_vm, OpenOverlay, PageVisible),
+            "history" => new HistoryPage(_vm, PageVisible),
             "audio" => new AudioTestPage(),
-            "account" => new AccountPage(_vm),
+            "account" => new AccountPage(_vm, PageVisible),
             "performance" => new PerformancePage(_vm.Diagnostics),
             "about" => new AboutPage(),
             _ => new DashboardPage(_vm, _overlay?.OverlayVisible == true, SetOverlayVisible,
-                IsMainVisible),
+                PageVisible),
         };
+        _frame.Content = page;
+        _pageVisible = null; UpdatePageVisibility();
     }
 
-    private bool IsMainVisible() => _appWindow.IsVisible && (_appWindow.Presenter is not OverlappedPresenter presenter || presenter.State != OverlappedPresenterState.Minimized);
+    private bool IsMainVisible() => !_allowClose && _appWindow.IsVisible && (_appWindow.Presenter is not OverlappedPresenter presenter || presenter.State != OverlappedPresenterState.Minimized);
     private void SuspendPage()
     {
+        _pageVisible = false;
         (_frame.Content as DashboardPage)?.SuspendVisuals();
         (_frame.Content as DisplayPage)?.SuspendVisuals();
         (_frame.Content as AccountPage)?.SetActive(false);
         (_frame.Content as HistoryPage)?.SetActive(false);
     }
+    private void NavigationLoaded(object sender, RoutedEventArgs args)
+    {
+        if (_root != _navigation.XamlRoot)
+        {
+            if (_root is not null) _root.Changed -= RootChanged;
+            _root = _navigation.XamlRoot;
+            if (_root is not null) _root.Changed += RootChanged;
+        }
+        UpdatePageVisibility();
+    }
+    private void RootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => UpdatePageVisibility();
     private void UpdatePageVisibility()
     {
-        if (!IsMainVisible()) { SuspendPage(); return; }
+        var visible = IsMainVisible(); var scale = _frame.XamlRoot?.RasterizationScale ?? 1;
+        if (_pageVisible == visible && Math.Abs(_pageScale - scale) < 0.001) return;
+        _pageVisible = visible; _pageScale = scale;
+        if (!visible) { SuspendPage(); return; }
         (_frame.Content as DashboardPage)?.ResumeVisuals(); (_frame.Content as DisplayPage)?.ResumeVisuals();
         (_frame.Content as AccountPage)?.SetActive(true);
         (_frame.Content as HistoryPage)?.SetActive(true);
@@ -135,6 +159,7 @@ public sealed class MainWindow : Window
 
     public void OpenOverlay()
     {
+        if (_allowClose) return;
         if (_overlay is null)
         {
             _overlay = new OverlayWindow(_vm);
@@ -173,6 +198,9 @@ public sealed class MainWindow : Window
     public void AllowClose()
     {
         _allowClose = true;
+        SuspendPage();
+        _navigation.Loaded -= NavigationLoaded;
+        if (_root is not null) _root.Changed -= RootChanged;
         _appWindow.Closing -= OnAppWindowClosing;
         _overlay?.Close();
         _overlay = null;

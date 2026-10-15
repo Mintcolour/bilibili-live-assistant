@@ -71,7 +71,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
             CancelRequest(); _timer.Stop(); ReleaseRows(); _list.ItemsSource = null; UpdateActions(); return;
         }
         if (_list.ItemsSource is null) _list.ItemsSource = _items;
-        _visibility.RefreshNow();
+        _visibility.Request();
         if (changed || !_timer.IsRunning) Schedule();
         UpdateActions();
     }

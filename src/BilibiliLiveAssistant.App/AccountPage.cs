@@ -8,6 +8,7 @@ namespace BilibiliLiveAssistant.App;
 internal sealed class AccountPage : Page
 {
     private readonly LiveAssistantViewModel _vm;
+    private readonly Func<bool> _visible;
     private readonly BrowserAccountController _sync;
     private readonly BrowserHostInstaller _installer = new();
     private readonly MessageAnimationClock _clock;
@@ -19,9 +20,9 @@ internal sealed class AccountPage : Page
     private readonly Button _connect = UiFactory.Button("连接浏览器"), _disconnect = UiFactory.Button("断开同步"), _guide = UiFactory.Button("在浏览器同步"), _refresh = UiFactory.Button("刷新本机状态／重试验证");
     private readonly ComboBox _policy = new() { Header = "浏览器明确退出后", ItemsSource = new[] { "继续匿名读取", "停止直播监视" }, HorizontalAlignment = HorizontalAlignment.Left };
     private bool _active = true, _disposed, _loading, _busy;
-    public AccountPage(LiveAssistantViewModel vm)
+    public AccountPage(LiveAssistantViewModel vm, Func<bool> visible)
     {
-        _vm = vm; _sync = vm.AccountSync; _clock = new(() => _active && !_disposed);
+        _vm = vm; _visible = visible; _sync = vm.AccountSync; _clock = new(() => _active && !_disposed && _visible());
         var root = UiFactory.Stack(); root.Children.Add(UiFactory.Heading("账号设置"));
         root.Children.Add(UiFactory.Subtitle("使用 Chrome／Edge 已登录的 B站账号，仅同步到这台电脑。浏览器关闭不等于账号退出。"));
         var info = new StackPanel { Spacing = 8, Children = { _name, _state, _source } };
@@ -68,7 +69,7 @@ internal sealed class AccountPage : Page
     { if (e.PropertyName is nameof(LiveAssistantViewModel.ConnectionModeText) or nameof(LiveAssistantViewModel.Settings)) Refresh(); }
     private void Refresh()
     {
-        if (_disposed || !_active) return;
+        if (_disposed || !_active || !_visible()) return;
         var state = _sync.State; _name.Text = state.Account?.Name ?? "未登录账号";
         var label = state.AccountState switch { AccountState.LoggedIn => "已验证登录", AccountState.Pending => "同步中，等待验证", AccountState.Expired => "登录已失效，请在浏览器重新登录",
             AccountState.Unavailable => "验证暂不可用，请重试", _ => state.Binding is null ? "未连接浏览器" : "请在此浏览器登录 B站并同步" };
@@ -84,7 +85,7 @@ internal sealed class AccountPage : Page
         var url = state.Account?.Avatar ?? "";
         if (_image is null || _avatarUrl != url)
         {
-            _image?.Dispose(); _avatarUrl = url; _image = new(_vm.Images, url, state.Account?.Name ?? "账号", 64, 64, false, _clock, () => _active && !_disposed, true); _avatar.Child = _image;
+            _image?.Dispose(); _avatarUrl = url; _image = new(_vm.Images, url, state.Account?.Name ?? "账号", 64, 64, false, _clock, () => _active && !_disposed && _visible(), true); _avatar.Child = _image;
         }
         _image.Activate(XamlRoot?.RasterizationScale ?? 1);
     }

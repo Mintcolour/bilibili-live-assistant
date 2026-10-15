@@ -35,8 +35,8 @@ internal sealed class DanmakuCardPanel : Grid, IDisposable
     {
         if (_active == active) return;
         _active = active;
-        foreach (var view in _views) view.SetActive(active && _visible());
         if (active) Sync(true);
+        else foreach (var view in _views) view.SetActive(false);
     }
     public void Sync(bool styleChanged = false)
     {
