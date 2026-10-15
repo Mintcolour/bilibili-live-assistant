@@ -56,6 +56,11 @@ function Get-Delta([object[]]$Rows, [scriptblock]$Selector) {
     if ($null -eq $last -or $null -eq $first) { return $null }
     return $last - $first
 }
+function Optional-Peak([object[]]$Values) {
+    $valid = @($Values | Where-Object { $null -ne $_ })
+    if ($valid.Count -eq 0) { return $null }
+    return ($valid | Measure-Object -Maximum).Maximum
+}
 $labels = @('空闲 / 无弹幕', '正常监视', '大量弹幕', '主窗或浮窗隐藏', '浏览历史', '调整浮窗 / 设置预览')
 # Preserve contiguous phases; don't merge warm-up and later idle into a misleading trend.
 $segments = [System.Collections.Generic.List[object]]::new()
@@ -98,6 +103,19 @@ $phases = foreach ($segment in $segments) {
         ImageNetworkRequestsDelta = Get-Delta $rows { param($r) $r.ui.images.networkRequests }
         ImageFrameHitsDelta = Get-Delta $rows { param($r) $r.ui.images.frameHits }
         ImageFrameMissesDelta = Get-Delta $rows { param($r) $r.ui.images.frameMisses }
+        ActiveImageViewsPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.imageResources.activeViews })
+        UiImageLeasesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.leases })
+        UiImageSourcesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.sources })
+        UiImageIdleBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.idleBytes })
+        UiImageActiveBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.activeBytes })
+        UiImagePendingPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.uiImages.pending })
+        UiImageCreatedDelta = Get-Delta $rows { param($r) $r.ui.uiImages.created }
+        UiImageReleasedDelta = Get-Delta $rows { param($r) $r.ui.uiImages.released }
+        UiImageCancelledDelta = Get-Delta $rows { param($r) $r.ui.uiImages.cancelled }
+        UiImageStaleDelta = Get-Delta $rows { param($r) $r.ui.uiImages.stale }
+        ImageDecodeDelta = Get-Delta $rows { param($r) $r.ui.imageResources.decodeCount }
+        ImageConversionDelta = Get-Delta $rows { param($r) $r.ui.imageResources.conversionCount }
+        ImageUploadDelta = Get-Delta $rows { param($r) $r.ui.imageResources.uploadCount }
         CanvasPeakMiB = [math]::Round(($rows.ui | Measure-Object canvasBytes -Maximum).Maximum / 1MB, 2)
         ArchivePendingPeak = ($rows.ui.history | Measure-Object pending -Maximum).Maximum
         BufferDroppedDelta = Get-Delta $rows { param($r) $r.ui.bufferDropped }

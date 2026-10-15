@@ -129,7 +129,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
             dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
                 sc = Dashboard.SuperChats.Count, interactions = Dashboard.Interactions.Count, events = Events.Count },
-            images = Images.GetDiagnostics(), media = Media.GetDiagnostics(),
+            images = Images.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), media = Media.GetDiagnostics(),
             history = (History as SqliteLocalHistory)?.GetDiagnostics(),
             canvasBytes = PerformanceCounters.CanvasBytes, canvases = PerformanceCounters.Canvases,
             window = WindowDiagnostics?.Invoke(),

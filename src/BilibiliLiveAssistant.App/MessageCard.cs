@@ -444,6 +444,7 @@ internal sealed class BiliImageView : Grid, IDisposable
 
     public BiliImageView(BiliImageCache cache, string url, string fallback, double width, double height, bool animate, MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false)
     {
+        Interlocked.Increment(ref ImageResourceCounters.Views);
         _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible;
         Width = width; Height = height;
         if (avatar) { _person = new PersonPicture { DisplayName = fallback, Width = width, Height = height }; Children.Add(_person); }
@@ -457,6 +458,7 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal void Activate(double rasterizationScale)
     {
         if (_disposed) return;
+        if (!_active) Interlocked.Increment(ref ImageResourceCounters.ActiveViews);
         _active = true; _rasterizationScale = rasterizationScale;
         // Moving to a higher-DPI screen must request enough pixels again.
         if (_asset is not null && _asset.DecodeLimit < RequestedDecodeLimit)
@@ -583,7 +585,7 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal void Deactivate()
     {
         if (!_active) return;
-        _active = false;
+        _active = false; Interlocked.Decrement(ref ImageResourceCounters.ActiveViews);
         _clock.Remove(this);
         ReleaseImages();
     }
@@ -598,7 +600,8 @@ internal sealed class BiliImageView : Grid, IDisposable
     }
     public void Dispose()
     {
-        if (_disposed) return; _disposed = true; _active = false; _generation++; _clock.Remove(this);
+        if (_disposed) return;
+        Deactivate(); _disposed = true; Interlocked.Decrement(ref ImageResourceCounters.Views); _generation++; _clock.Remove(this);
         ReleaseImages();
     }
 }
