@@ -42,7 +42,7 @@ internal sealed class DashboardPage : Page
     private readonly AnchorSummary _anchor;
     private readonly HistoryAnchorPicker _historyAnchor;
     private readonly ToggleButton _rankExpanded = new() { Content = "榜单", Padding = new Thickness(8, 3, 8, 3), MinHeight = 28 };
-    private readonly TextBox _roomInput = new() { PlaceholderText = "房间号 / 直播链接", Width = 175, MinWidth = 100, FontSize = 13 };
+    private readonly TextBlock _headingTitle = new() { Text = "直播概览", FontSize = 18, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
     private readonly Button _monitor = new() { Content = "开启监视", Padding = new Thickness(10, 5, 10, 5), MinWidth = 92 };
     private readonly ToggleSwitch _anonymous = new() { Header = "匿名读取", OnContent = "无需登录", OffContent = "使用账号", MinWidth = 160 };
     private bool _connectionBusy, _loadingLayout;
@@ -78,8 +78,6 @@ internal sealed class DashboardPage : Page
         _rankPanel = new(vm, _animations, _visible);
         _anchor = new(vm, _animations, _visible);
         _historyAnchor = new(vm, _visible);
-        _historyAnchor.Selected += anchor => _roomInput.Text = anchor.RoomId.ToString();
-        _roomInput.TextChanged += (_, _) => _historyAnchor.MatchRoom(RoomIdParser.Parse(_roomInput.Text) ?? 0);
         _danmaku = new("弹幕", "\uE8BD", vm, _animations, () => _visible() && !_vm.Settings.Cards.Enabled, false, _cardMode);
         _cardPanel = new(vm, _animations, _visible);
         _cardMode.Click += async (_, _) => await ToggleCardModeAsync();
@@ -106,16 +104,15 @@ internal sealed class DashboardPage : Page
         top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        _roomInput.Text = vm.RoomId > 0 ? vm.RoomId.ToString() : "";
         _anonymous.IsOn = vm.Settings.AnonymousReading;
         var reading = DashboardUi.Button("\uE713", "读取模式", 28);
         reading.Flyout = new Flyout { Content = new StackPanel { Spacing = 8, MaxWidth = 270, Children = { _anonymous,
             new TextBlock { Text = "匿名读取不发送已保存的登录 Cookie。未填写账号时也以匿名方式读取。", FontSize = 12, TextWrapping = TextWrapping.Wrap } } } };
-        _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_roomInput); _roomInfo.Children.Add(_monitor); _roomInfo.Children.Add(reading);
+        _roomInfo.Children.Add(_headingTitle); _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_monitor); _roomInfo.Children.Add(reading);
         _monitor.Click += async (_, _) => await ToggleMonitorAsync();
         _durationInfo.Children.Add(DashboardUi.Icon("\uE823")); _durationInfo.Children.Add(_duration);
         _audienceInfo.Children.Add(DashboardUi.Icon("\uE890")); _audienceInfo.Children.Add(_audience);
-        top.Children.Add(new TextBlock { Text = "直播概览", FontSize = 18, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center });
+        top.Children.Add(_roomInfo);
         _ranking.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         _ranking.Children.Add(_anchor);
         Grid.SetColumn(_ranking, 1); top.Children.Add(_ranking);
@@ -158,7 +155,7 @@ internal sealed class DashboardPage : Page
         flyout.Items.Add(balance); flyout.Items.Add(clear); flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(single); flyout.Items.Add(_stressItem); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
-        heading.Children.Add(top); heading.Children.Add(_roomInfo); heading.Children.Add(_error); root.Children.Add(heading);
+        heading.Children.Add(top); heading.Children.Add(_error); root.Children.Add(heading);
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.DanmakuColumnWidth, GridUnitType.Star), MinWidth = 150 });
         _columns.ColumnDefinitions.Add(new() { Width = new(6) });
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.SuperChatColumnWidth, GridUnitType.Star), MinWidth = 150 });
@@ -207,10 +204,11 @@ internal sealed class DashboardPage : Page
         Content = root;
         SizeChanged += (_, e) =>
         {
-            _ranking.Visibility = e.NewSize.Width < 720 ? Visibility.Collapsed : Visibility.Visible;
-            _durationInfo.Visibility = e.NewSize.Width < 1080 ? Visibility.Collapsed : Visibility.Visible;
-            _audienceInfo.Visibility = e.NewSize.Width < 920 ? Visibility.Collapsed : Visibility.Visible;
-            _roomInput.Width = e.NewSize.Width < 720 ? 125 : 175;
+            _ranking.Visibility = e.NewSize.Width < 1100 ? Visibility.Collapsed : Visibility.Visible;
+            _durationInfo.Visibility = e.NewSize.Width < 1300 ? Visibility.Collapsed : Visibility.Visible;
+            _audienceInfo.Visibility = e.NewSize.Width < 1200 ? Visibility.Collapsed : Visibility.Visible;
+            _headingTitle.Visibility = e.NewSize.Width < 800 ? Visibility.Collapsed : Visibility.Visible;
+            _historyAnchor.Width = e.NewSize.Width < 900 ? 220 : 270;
         };
         vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty; vm.CardBoard.Changed += Dirty;
         vm.AuthenticationChanged += _rankPanel.AuthenticationChanged;
@@ -233,14 +231,14 @@ internal sealed class DashboardPage : Page
     private async Task ToggleMonitorAsync()
     {
         if (_connectionBusy) return;
-        _connectionBusy = true; _monitor.IsEnabled = false; _roomInput.IsEnabled = false; _anonymous.IsEnabled = false;
+        _connectionBusy = true; _monitor.IsEnabled = false; _anonymous.IsEnabled = false;
         _historyAnchor.IsEnabled = false;
         try
         {
             if (_vm.IsMonitoring) await _vm.StopAsync();
             else
             {
-                var room = RoomIdParser.Parse(_roomInput.Text);
+                var room = _historyAnchor.RoomId;
                 if (room is null) { _vm.ReportSettingsError("请输入有效的房间号或 live.bilibili.com 链接"); return; }
                 await _vm.SaveAsync(_vm.Settings with { RoomId = room.Value, AnonymousReading = _anonymous.IsOn });
                 await _vm.StartAsync(room.Value);
@@ -294,7 +292,7 @@ internal sealed class DashboardPage : Page
     private void RefreshHeader()
     {
         _monitor.Content = _vm.IsMonitoring ? "停止监视" : "开启监视";
-        _monitor.IsEnabled = !_connectionBusy; _roomInput.IsEnabled = _anonymous.IsEnabled = _historyAnchor.IsEnabled = !_vm.IsMonitoring && !_connectionBusy;
+        _monitor.IsEnabled = !_connectionBusy; _anonymous.IsEnabled = _historyAnchor.IsEnabled = !_vm.IsMonitoring && !_connectionBusy;
         _anchor.Refresh(); _rankPanel.SetActive(_rankExpanded.IsChecked == true && !_unloaded && _visible());
         _room.Text = _vm.RoomId > 0 ? _vm.RoomId.ToString() : "—";
         var roomInfo = $"{_vm.Status} · 房间 {_room.Text}\n{_vm.ConnectionModeText}\n{_vm.RoomSummary}";

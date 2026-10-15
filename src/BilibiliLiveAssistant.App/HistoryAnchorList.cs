@@ -9,20 +9,23 @@ namespace BilibiliLiveAssistant.App;
 // Avatar downloads are limited to visible rows, using the existing bounded cache.
 internal sealed class HistoryAnchorList : Grid, IDisposable
 {
-    internal ListView List { get; } = new() { SelectionMode = ListViewSelectionMode.Single, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    internal ListView List { get; }
     private readonly LiveAssistantViewModel _vm;
     private readonly MessageAnimationClock _clock;
     private readonly Dictionary<ContentControl, (HistoryAnchor Anchor, BiliImageView Image)> _images = new();
     private ScrollViewer? _scroll;
     private bool _active, _disposed, _pending;
-    public HistoryAnchorList(LiveAssistantViewModel vm)
+    public HistoryAnchorList(LiveAssistantViewModel vm, ListView? suggestions = null)
     {
+        List = suggestions ?? new() { SelectionMode = ListViewSelectionMode.Single, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         _vm = vm; _clock = new(() => _active && !_disposed);
-        List.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ContentControl HorizontalContentAlignment='Stretch' IsTabStop='False'/></DataTemplate>");
+        List.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ContentControl Content='{Binding Label}' HorizontalContentAlignment='Stretch' IsTabStop='False'/></DataTemplate>");
         List.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
-        List.ContainerContentChanging += Render; List.Loaded += LoadedList; Children.Add(List);
+        List.ContainerContentChanging += Render; List.Loaded += LoadedList;
+        if (suggestions is null) Children.Add(List);
+        else LoadedList(List, new RoutedEventArgs());
     }
-    internal static string DisplayName(HistoryAnchor anchor) => anchor.Uid is > 0 && !string.IsNullOrWhiteSpace(anchor.Name) ? anchor.Name : $"待识别房间 {anchor.RoomId}";
+    internal static string DisplayName(HistoryAnchor anchor) => !string.IsNullOrWhiteSpace(anchor.Name) ? anchor.Name : $"待识别房间 {anchor.RoomId}";
     internal static Grid Row(HistoryAnchor anchor, BiliImageView image)
     {
         var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(2, 6, 2, 6) };
@@ -67,7 +70,7 @@ internal sealed class HistoryAnchorList : Grid, IDisposable
     private void LayoutReady(object? sender, object args) { List.LayoutUpdated -= LayoutReady; _pending = false; UpdateVisible(); }
     private void UpdateVisible()
     {
-        foreach (var row in _images.Values) if (Visible(row.Anchor)) row.Image.Activate(XamlRoot?.RasterizationScale ?? 1); else row.Image.Deactivate();
+        foreach (var row in _images.Values) if (Visible(row.Anchor)) row.Image.Activate(List.XamlRoot?.RasterizationScale ?? 1); else row.Image.Deactivate();
     }
     internal void SetItems(IReadOnlyList<HistoryAnchor> anchors)
     {

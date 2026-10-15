@@ -1,73 +1,155 @@
 using BilibiliLiveAssistant.Core;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Media;
 
 namespace BilibiliLiveAssistant.App;
 
-internal sealed class HistoryAnchorPicker : Button, IDisposable
+internal sealed class HistoryAnchorPicker : UserControl, IDisposable
 {
     private readonly LiveAssistantViewModel _vm;
     private readonly Func<bool> _visible;
-    private readonly HistoryAnchorList _choices;
-    private readonly TextBox _search = new() { PlaceholderText = "搜索主播 / 曾用名 / 房间号", MaxLength = 128 };
-    private readonly TextBlock _status = new() { FontSize = 12, Opacity = 0.65, TextWrapping = TextWrapping.Wrap };
-    private readonly Flyout _flyout;
+    private readonly AutoSuggestBox _input = new() { PlaceholderText = "主播 / 房间号 / 直播链接", FontSize = 13,
+        QueryIcon = new FontIcon { Glyph = "\uE70D" }, MaxSuggestionListHeight = 340, MinWidth = 100 };
+    private readonly Grid _avatarHost = new() { Width = 30, Height = 30, Margin = new Thickness(7, 0, 0, 0), Visibility = Visibility.Collapsed };
+    private readonly DispatcherQueueTimer _debounce;
     private readonly MessageAnimationClock _clock;
+    private HistoryAnchorList? _choices;
     private CancellationTokenSource? _query;
     private BiliImageView? _avatar;
     private HistoryAnchor? _selected;
-    private bool _open, _disposed, _loading;
-    internal event Action<HistoryAnchor>? Selected;
+    private readonly long _openCallback;
+    private bool _active = true, _disposed, _updatingChoices;
+    internal int? RoomId => _selected?.RoomId ?? ParseRoom(_input.Text);
+
     public HistoryAnchorPicker(LiveAssistantViewModel vm, Func<bool> visible)
     {
-        _vm = vm; _visible = visible; _clock = new(visible); _choices = new(vm);
-        Width = 220; HorizontalContentAlignment = HorizontalAlignment.Stretch; Padding = new(8, 2, 8, 2); ClearSelection();
-        ToolTipService.SetToolTip(this, "选择以前监视过的主播，再点击开启监视");
-        var body = new Grid { Width = 320, Height = 390, RowSpacing = 8 };
-        body.RowDefinitions.Add(new() { Height = GridLength.Auto }); body.RowDefinitions.Add(new() { Height = GridLength.Auto }); body.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        var searchRow = new Grid { ColumnSpacing = 6 }; searchRow.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); searchRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        searchRow.Children.Add(_search); var find = DashboardUi.Button("\uE721", "搜索主播"); find.Click += async (_, _) => await LoadAsync(); Grid.SetColumn(find, 1); searchRow.Children.Add(find);
-        body.Children.Add(searchRow); Grid.SetRow(_status, 1); body.Children.Add(_status); Grid.SetRow(_choices, 2); body.Children.Add(_choices);
-        _flyout = new() { Content = body }; Flyout = _flyout;
-        _flyout.Opening += async (_, _) => { _open = true; _choices.SetActive(true); await LoadAsync(); };
-        _flyout.Closed += (_, _) => { _open = false; _query?.Cancel(); _choices.SetActive(false); };
-        _search.TextChanged += (_, _) => { _query?.Cancel(); _choices.List.IsEnabled = false; _status.Text = "输入完成后按 Enter 或点击搜索"; };
-        _search.KeyDown += async (_, args) => { if (args.Key == Windows.System.VirtualKey.Enter) { args.Handled = true; await LoadAsync(); } };
-        _choices.List.SelectionChanged += (_, _) =>
+        _vm = vm; _visible = visible; _clock = new(() => _active && !_disposed && _visible());
+        Width = 270; VerticalAlignment = VerticalAlignment.Center;
+        var root = new Grid { ColumnSpacing = 4, Background = MessageCard.Brush("#292D35"), CornerRadius = new CornerRadius(6) };
+        root.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); root.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        root.Children.Add(_avatarHost); Grid.SetColumn(_input, 1); root.Children.Add(_input); Content = root;
+        _input.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ContentControl Content='{Binding Label}' HorizontalContentAlignment='Stretch' IsTabStop='False'/></DataTemplate>");
+        _input.Text = vm.RoomId > 0 ? vm.RoomId.ToString() : "";
+        _input.TextMemberPath = nameof(HistoryAnchor.Name);
+        _input.Loaded += (_, _) => AttachSuggestions();
+        _debounce = DispatcherQueue.GetForCurrentThread().CreateTimer();
+        _debounce.Interval = TimeSpan.FromMilliseconds(300); _debounce.IsRepeating = false;
+        _debounce.Tick += async (_, _) => await LoadAsync();
+        _input.TextChanged += (_, args) =>
         {
-            if (_loading || !IsEnabled || _vm.IsMonitoring || _choices.List.SelectedItem is not HistoryAnchor anchor) return;
-            SetSelection(anchor); Selected?.Invoke(anchor); _flyout.Hide();
+            if (_disposed || args.Reason != AutoSuggestionBoxTextChangeReason.UserInput || !args.CheckCurrent()) return;
+            ClearSelection(); _query?.Cancel(); _debounce.Stop(); _input.ItemsSource = null;
+            if (_active && IsEnabled) _debounce.Start();
         };
+        _input.GotFocus += async (_, _) => { if (_active && !_disposed && IsEnabled) await LoadAsync(); };
+        _input.SuggestionChosen += (_, args) => { if (args.SelectedItem is HistoryAnchor anchor && CanChoose()) Select(anchor); };
+        _input.QuerySubmitted += async (_, args) =>
+        {
+            if (!CanChoose()) return;
+            if (args.ChosenSuggestion is HistoryAnchor anchor) { Select(anchor); _input.IsSuggestionListOpen = false; }
+            else await LoadAsync(true);
+        };
+        _openCallback = _input.RegisterPropertyChangedCallback(AutoSuggestBox.IsSuggestionListOpenProperty, (_, _) =>
+        {
+            AttachSuggestions();
+            if (_input.IsSuggestionListOpen) DispatcherQueue.TryEnqueue(AttachSuggestions);
+            _choices?.SetActive(_input.IsSuggestionListOpen && _active && _visible());
+            if (!_input.IsSuggestionListOpen && !_updatingChoices) _query?.Cancel();
+        });
+        IsEnabledChanged += (_, _) => { _input.IsEnabled = IsEnabled; if (!IsEnabled) CloseSuggestions(); };
         Loaded += (_, _) => Resume();
+        ToolTipService.SetToolTip(this, "输入房间号、直播链接或主播名称自动搜索；选择后点击开启监视");
     }
-    private async Task LoadAsync()
+    private void AttachSuggestions()
     {
-        if (_disposed || !_open) return; _query?.Cancel(); _query?.Dispose(); var run = _query = new(); _status.Text = "正在读取本地主播…"; _choices.List.IsEnabled = false;
+        if (_disposed) return;
+        _input.ApplyTemplate();
+        var list = FindSuggestions(_input);
+        // Popup children may be detached from the input's visual tree until the native popup opens.
+        if (list is null && _input.IsSuggestionListOpen && XamlRoot is not null)
+            foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(XamlRoot))
+                if (FindSuggestions(popup) is { } found) { list = found; break; }
+        if (list is null || ReferenceEquals(_choices?.List, list)) return;
+        _choices?.Dispose(); _choices = new(_vm, list);
+        _choices.SetActive(_active && _visible() && _input.IsSuggestionListOpen);
+    }
+    private static ListView? FindSuggestions(DependencyObject root)
+    {
+        if (root is ListView { Name: "SuggestionsList" } list) return list;
+        if (root is Microsoft.UI.Xaml.Controls.Primitives.Popup { Child: { } child }) return FindSuggestions(child);
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) if (FindSuggestions(VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+        return null;
+    }
+    private void SetCandidates(object? values)
+    {
+        _updatingChoices = true;
+        try { _input.ItemsSource = values; }
+        finally { _updatingChoices = false; }
+    }
+    private static int? ParseRoom(string text)
+    {
+        text = text.Trim();
+        if (text.Length > 0 && text.All(char.IsAsciiDigit)) return int.TryParse(text, out var room) && room > 0 ? room : null;
+        if (text.StartsWith("live.bilibili.com/", StringComparison.OrdinalIgnoreCase)) text = "https://" + text;
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !string.Equals(uri.Host, "live.bilibili.com", StringComparison.OrdinalIgnoreCase)) return null;
+        var segment = uri.AbsolutePath.Trim('/');
+        return segment.All(char.IsAsciiDigit) && int.TryParse(segment, out var number) && number > 0 ? number : null;
+    }
+    private bool CanChoose() => !_disposed && _active && IsEnabled && !_vm.IsMonitoring;
+    private bool InputHasFocus()
+    {
+        if (XamlRoot is null) return false;
+        var node = Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(XamlRoot) as DependencyObject;
+        while (node is not null) { if (ReferenceEquals(node, _input)) return true; node = VisualTreeHelper.GetParent(node); }
+        return false;
+    }
+    private async Task LoadAsync(bool showAll = false)
+    {
+        _debounce.Stop();
+        if (!CanChoose() || !_visible() || !InputHasFocus()) return;
+        _query?.Cancel(); _query?.Dispose(); var run = _query = new();
+        var sourceText = _input.Text;
+        var text = _selected is null ? _input.Text.Trim() : "";
+        var room = ParseRoom(text);
+        // Real room profiles are requested by the existing monitor connection, not on each keystroke.
+        SetCandidates(room is { } requested ? new[] { NewRoom(requested) } : null);
         try
         {
-            var anchors = await _vm.History.AnchorsAsync(run.Token, _search.Text.Trim());
-            if (_disposed || !_open || run.IsCancellationRequested || !ReferenceEquals(_query, run)) return;
-            _loading = true; _choices.SetItems(anchors); _choices.List.SelectedItem = null; _loading = false;
-            _choices.List.IsEnabled = true;
-            _status.Text = anchors.Count == 0 ? "尚无匹配主播 · 监视后会保留在这里" : $"{anchors.Count:N0} 位 · 选择后点击开启监视";
-            if (_selected is not null && string.IsNullOrWhiteSpace(_search.Text) && !anchors.Any(a => Same(a, _selected))) ClearSelection();
+            var anchors = await _vm.History.AnchorsAsync(run.Token, showAll ? "" : room?.ToString() ?? text, 50);
+            if (_disposed || !_active || !IsEnabled || !_visible() || run.IsCancellationRequested || !ReferenceEquals(_query, run) || sourceText != _input.Text || !InputHasFocus()) return;
+            var values = anchors.Take(50).ToList();
+            if (room is { } id && !values.Any(a => a.RoomId == id)) values.Add(NewRoom(id));
+            SetCandidates(values);
+            _input.IsSuggestionListOpen = values.Count > 0;
+            _choices?.SetActive(_input.IsSuggestionListOpen);
+            ToolTipService.SetToolTip(this, values.Count == 0 ? "没有匹配主播，请输入有效房间号或直播链接" : "选择历史主播或连接新房间，再点击开启监视");
         }
-        catch (OperationCanceledException) { if (_open && ReferenceEquals(_query, run)) _status.Text = "输入完成后按 Enter 或点击搜索"; }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { if (_open && !_disposed && ReferenceEquals(_query, run)) _status.Text = "读取失败：" + ex.Message; }
-        finally { _loading = false; }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!_disposed && _active && ReferenceEquals(_query, run) && !run.IsCancellationRequested)
+                ToolTipService.SetToolTip(this, "历史搜索失败：" + ex.Message + (room is not null ? "；仍可使用输入的房间号开启监视" : ""));
+        }
     }
-    private static bool Same(HistoryAnchor a, HistoryAnchor b) => a.Uid == b.Uid && (a.Uid is > 0 || a.RoomId == b.RoomId);
-    private void SetSelection(HistoryAnchor anchor)
+    private static HistoryAnchor NewRoom(int room) => new(null, room, $"连接新房间 {room}", "");
+    private void Select(HistoryAnchor anchor)
     {
-        _avatar?.Dispose(); _selected = anchor;
-        _avatar = new(_vm.Images, anchor.AvatarUrl, HistoryAnchorList.DisplayName(anchor), 30, 30, false, _clock, _visible, true);
-        var content = new Grid { ColumnSpacing = 6 }; content.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); content.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var row = HistoryAnchorList.Row(anchor, _avatar); row.Padding = new(0); content.Children.Add(row);
-        var arrow = new TextBlock { Text = "▾", VerticalAlignment = VerticalAlignment.Center, Opacity = 0.6 }; Grid.SetColumn(arrow, 1); content.Children.Add(arrow); Content = content; Resume();
+        _query?.Cancel(); _debounce.Stop(); ClearSelection(); _selected = anchor;
+        _input.Text = HistoryAnchorList.DisplayName(anchor);
+        _avatar = new(_vm.Images, anchor.AvatarUrl, HistoryAnchorList.DisplayName(anchor), 30, 30, false, _clock, () => _active && _visible(), true);
+        _avatarHost.Children.Add(_avatar); _avatarHost.Visibility = Visibility.Visible; Resume();
+        ToolTipService.SetToolTip(this, $"{HistoryAnchorList.DisplayName(anchor)} · 房间 {anchor.RoomId}");
     }
-    private void ClearSelection() { _selected = null; _avatar?.Dispose(); _avatar = null; Content = new TextBlock { Text = "选择已监视主播  ▾", FontSize = 13 }; }
-    internal void MatchRoom(int room) { if (_selected is not null && _selected.RoomId != room) ClearSelection(); }
-    internal void Suspend() { _flyout.Hide(); _query?.Cancel(); _choices.SetActive(false); _avatar?.Deactivate(); _clock.Suspend(); }
-    internal void Resume() { if (!_disposed && _visible()) _avatar?.Activate(XamlRoot?.RasterizationScale ?? 1); }
-    public void Dispose() { if (_disposed) return; Suspend(); _disposed = true; _query?.Dispose(); _choices.Dispose(); _avatar?.Dispose(); _clock.Dispose(); }
+    private void ClearSelection() { _selected = null; _avatar?.Dispose(); _avatar = null; _avatarHost.Children.Clear(); _avatarHost.Visibility = Visibility.Collapsed; }
+    private void CloseSuggestions() { _debounce.Stop(); _query?.Cancel(); _input.IsSuggestionListOpen = false; _choices?.SetActive(false); }
+    internal void Suspend() { _active = false; CloseSuggestions(); _avatar?.Deactivate(); _clock.Suspend(); }
+    internal void Resume() { if (_disposed) return; _active = true; if (_visible()) _avatar?.Activate(XamlRoot?.RasterizationScale ?? 1); }
+    public void Dispose()
+    {
+        if (_disposed) return; Suspend(); _disposed = true; _input.UnregisterPropertyChangedCallback(AutoSuggestBox.IsSuggestionListOpenProperty, _openCallback);
+        _query?.Dispose(); _choices?.Dispose(); _avatar?.Dispose(); _clock.Dispose();
+    }
 }
