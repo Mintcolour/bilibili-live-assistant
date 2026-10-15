@@ -440,6 +440,15 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         ScheduleFlush();
     }
 
+    internal void AcceptDashboardEnergyPage(LiveRoomProfile profile, DashboardRankPage page)
+    {
+        if (!_monitorRequested || !IsConnected || RoomProfile?.Uid != profile.Uid || RoomProfile?.RoomId != profile.RoomId) return;
+        var value = new LiveEvent(LiveEventType.Rank, "系统", "高能榜", "#9C27B0", Metadata: new Dictionary<string, object?>
+        { ["rank_members"] = page.Members.Take(10).ToArray(), ["rank_total"] = (long?)page.Total,
+            ["rank_sampled_at"] = page.SampledAt, ["rank_room"] = profile.RoomId, ["rank_uid"] = profile.Uid });
+        OnEvent(this, value);
+    }
+
     private void ScheduleFlush()
     {
         // Keep one scheduled wake for the entire burst, not one dispatcher work
@@ -454,8 +463,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         var batch = _pendingEvents.Drain();
         if (batch.Length > 0)
         {
+            var accepted = new List<LiveEvent>(batch.Length);
             foreach (var value in batch)
             {
+                if (value.Type == LiveEventType.Rank && value.Extra.GetValueOrDefault("rank_sampled_at") is DateTimeOffset incoming
+                    && LatestRank?.Extra.GetValueOrDefault("rank_sampled_at") is DateTimeOffset latest && incoming <= latest) continue;
+                accepted.Add(value);
                 // Local overlay examples must not replace real room metrics in the dashboard.
                 if (value.Extra.TryGetValue("sample", out var sample) && sample is true) continue;
                 if (value.Type == LiveEventType.Online)
@@ -484,6 +497,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                     if (IsListening) AddAudienceSample(value.OccurredAt, count is >= 0 ? count : null);
                 }
             }
+            batch = accepted.ToArray();
             Dashboard.AddBatch(batch, _settings.Dashboard, OverlayRegions.Get(_settings.Display, OverlayRegionKind.Gift).MergeSeconds);
             CardBoard.AddBatch(batch, _settings.Cards);
             Events.PrependBatch(batch);

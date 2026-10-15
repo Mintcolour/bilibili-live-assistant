@@ -135,8 +135,8 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         }
         if (profile.Uid > 0)
         {
-            await CollectRankAsync(profile.Uid, false, token);
-            if (_archive && DateTimeOffset.UtcNow >= _guardsDue) await CollectRankAsync(profile.Uid, true, token);
+            await CollectRankAsync(profile.RoomId, profile.Uid, false, token);
+            if (_archive && DateTimeOffset.UtcNow >= _guardsDue) await CollectRankAsync(profile.RoomId, profile.Uid, true, token);
         }
     }
 
@@ -146,7 +146,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
             new LiveEvent(LiveEventType.Rank, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["archive_analysis"] = sample }));
     }
 
-    private async Task CollectRankAsync(long uid, bool guard, CancellationToken token)
+    private async Task CollectRankAsync(int canonicalRoom, long uid, bool guard, CancellationToken token)
     {
         if (!_available) return;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -161,7 +161,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         {
             for (var page = 1; page <= 10 && rows.Count < limit; page++)
             {
-                var result = await _ranks.FetchAsync(_roomId, uid, guard ? DashboardRankKind.GuardTotal : DashboardRankKind.Energy, page, _cookies, timeout.Token);
+                var result = await _ranks.FetchAsync(canonicalRoom, uid, guard ? DashboardRankKind.GuardTotal : DashboardRankKind.Energy, page, _cookies, timeout.Token);
                 if (page == 1) { at = result.SampledAt; total = result.Total; }
                 foreach (var member in result.Members)
                     if (rows.Count < limit && (member.Uid <= 0 || rows.All(r => r.Uid != member.Uid))) rows.Add(member);
@@ -171,7 +171,8 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
             token.ThrowIfCancellationRequested();
             if (!_available) return;
             if (!guard) EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", rows.Count == 0 ? "暂无榜单" : "高能榜: " + string.Join(" | ", rows.Take(3).Select(m => $"{m.Rank}.{m.Username}")), "#9C27B0",
-                Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total }));
+                Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total,
+                    ["rank_sampled_at"] = at, ["rank_room"] = canonicalRoom, ["rank_uid"] = uid }));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { status = rows.Count > 0 ? "分页失败，部分采集" : "采集失败"; }

@@ -59,7 +59,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         UpdateTabs(); UpdateActions();
     }
     private static ToggleButton Tab(string title) => new() { Content = title, FontSize = 12, Padding = new(9, 4, 9, 4), MinWidth = 0, MinHeight = 28 };
-    private bool Eligible => !_disposed && _active && _visible() && _vm.IsListening && _vm.RoomProfile is { Uid: > 0 };
+    private bool Eligible => !_disposed && _active && _visible() && _vm.IsListening && _vm.IsConnected && _vm.RoomProfile is { Uid: > 0 };
     public void SetActive(bool value)
     {
         if (_disposed) return;
@@ -117,6 +117,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         {
             var cookies = _vm.DashboardCookies;
             var result = await _service.FetchAsync(profile.RoomId, profile.Uid, kind, nextPage, cookies, request.Token);
+            var firstPage = !append ? result : null;
             var fetched = result.Members.ToList();
             // Refresh only the pages the user has already loaded, in sequence.
             // Never prefetch all members or reset a long list to page one every minute.
@@ -128,6 +129,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
                 fetched.AddRange(result.Members);
             }
             if (request.IsCancellationRequested || generation != _generation || !Eligible) return;
+            if (kind == DashboardRankKind.Energy && firstPage is not null) _vm.AcceptDashboardEnergyPage(profile, firstPage);
             var selected = new List<LiveRankMember>(200);
             if (append) selected.AddRange(_items);
             var added = 0;
@@ -147,7 +149,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
             _page = nextPage; _hasMore = result.HasMore && _items.Count < 200 && added > 0;
             _empty.Text = "暂无榜单";
             ToolTipService.SetToolTip(_status, null);
-            _status.Text = $"{_items.Count}{(result.Total is { } total ? $" / {total}" : "")} 人 · {DateTime.Now:HH:mm:ss}{(_items.Count == 200 ? " · 已达上限" : "")}";
+            _status.Text = $"{_items.Count}{((firstPage ?? result).Total is { } total ? $" / {total}" : "")} 人 · {(firstPage ?? result).SampledAt.ToLocalTime():HH:mm:ss}{(_items.Count == 200 ? " · 已达上限" : "")}";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException)
