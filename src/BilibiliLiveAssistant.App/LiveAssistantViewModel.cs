@@ -198,6 +198,17 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         finally { _connectionGate.Release(); }
     }
 
+    internal async Task LockOverlayLayoutAsync()
+    {
+        await _connectionGate.WaitAsync();
+        try
+        {
+            if (!_settings.Display.LayoutLocked)
+                await SaveCoreAsync(_settings with { Display = _settings.Display with { LayoutLocked = true } });
+        }
+        finally { _connectionGate.Release(); }
+    }
+
     public async Task SaveAsync(AppSettings settings)
     {
         await _connectionGate.WaitAsync();

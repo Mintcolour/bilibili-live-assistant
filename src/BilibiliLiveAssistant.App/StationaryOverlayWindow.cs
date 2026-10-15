@@ -58,13 +58,14 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     {
         if (Visible) return;
         ShowSurface();
+        if (Editing) return;
         if (Kind == OverlayRegionKind.Status) { _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank; RefreshRanking(); }
         _dirty = true; Process();
     }
     public void HideRegion() { if (!Visible) return; ResetContent(); Hide(); }
     public void EnqueueBatch(IReadOnlyList<LiveEvent> batch)
     {
-        if (!Visible || _disposed || batch.Count == 0) return;
+        if (!Visible || _disposed || Editing || batch.Count == 0) return;
         var now = DateTimeOffset.UtcNow;
         foreach (var value in batch)
         {
@@ -98,7 +99,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void Process()
     {
-        _wake.Stop(); if (_disposed || !Visible) return;
+        _wake.Stop(); if (_disposed || !Visible || Editing) return;
         var now = DateTimeOffset.UtcNow;
         var changed = _dirty && (_intakeDue is null || _intakeDue <= now);
         if (changed) { _dirty = false; _intakeDue = null; if (Kind == OverlayRegionKind.Status) RefreshRanking(); }
@@ -121,7 +122,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void Schedule()
     {
-        _wake.Stop(); if (_disposed || !Visible) return;
+        _wake.Stop(); if (_disposed || !Visible || Editing) return;
         DateTimeOffset? due = _intakeDue;
         void Include(DateTimeOffset? at) { if (at is not null && (due is null || at < due)) due = at; }
         if (Timed)
@@ -210,12 +211,12 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     protected override void OnMouseWheel(Forms.MouseEventArgs e)
     {
-        base.OnMouseWheel(e); if (Timed || GridMode) return;
+        base.OnMouseWheel(e); if (Editing || Timed || GridMode) return;
         _offset += e.Delta > 0 ? -1 : 1; Rebuild();
     }
     protected override void OnMouseMove(Forms.MouseEventArgs e)
     {
-        base.OnMouseMove(e); if (!GridMode) return;
+        base.OnMouseMove(e); if (Editing || !GridMode) return;
         foreach (var item in _board.Slots) if (item is not null) item.Protected = false;
         _hover = _views.FirstOrDefault(v => v.Value.Bounds.Contains(e.Location)).Key;
         if (_views.TryGetValue(_hover, out var view) && view.Bounds.Contains(e.Location) && _board.Slots[_hover] is { } entry) entry.Protected = true;
@@ -223,12 +224,17 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); ClearHover(); }
     private void ClearHover() { _hover = -1; foreach (var entry in _board.Slots) if (entry is not null) entry.Protected = false; }
-    protected override void OnInteractionChanged() { ClearHover(); if (!ViewModel.OverlayInteractive) { _detail?.Close(); _detail = null; } }
+    protected override void OnInteractionChanged()
+    {
+        ResetContent();
+        if (!Editing && OverlayRegions.Enabled(ViewModel.Settings.Display, Kind) && Kind == OverlayRegionKind.Status)
+        { _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank; RefreshRanking(); _dirty = true; if (Visible) Process(); }
+    }
     protected override void OnMouseClick(Forms.MouseEventArgs e)
     {
         var header = Editing && e.Y < ContentTop;
         base.OnMouseClick(e);
-        if (header) return;
+        if (header || Editing) return;
         var pair = _views.FirstOrDefault(v => v.Value.Bounds.Contains(e.Location));
         if (pair.Value is not { } view)
         {
@@ -267,6 +273,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     protected override void OnResize(EventArgs e) { base.OnResize(e); if (_views is null) return; ClearViews(); _dirty = true; if (Visible) Process(); }
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
     {
+        if (Editing) return;
         if (previous.Mode != RegionSettings.Mode) { ResetContent(); return; }
         if (previous.DisplayIntervalSeconds != RegionSettings.DisplayIntervalSeconds) _nextDisplayAt = DateTimeOffset.UtcNow.AddSeconds(RegionSettings.DisplayIntervalSeconds);
         if (previous.DurationSeconds != RegionSettings.DurationSeconds || previous.GuardDurationSeconds != RegionSettings.GuardDurationSeconds)

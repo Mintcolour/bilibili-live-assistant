@@ -46,6 +46,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     {
         if (Visible) return;
         ShowSurface();
+        if (Editing) return;
         if (Kind == OverlayRegionKind.Status)
         {
             _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank;
@@ -64,7 +65,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     public void Enqueue(LiveEvent value)
     {
-        if (!Visible || IsDisposed) return;
+        if (!Visible || IsDisposed || Editing) return;
         var now = Now;
         if (Kind == OverlayRegionKind.Status)
         {
@@ -103,7 +104,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     private void Process()
     {
         _wake.Stop();
-        if (!Visible || _cleaned) return;
+        if (!Visible || _cleaned || Editing) return;
         var now = Now;
         if (Kind == OverlayRegionKind.Interaction)
         {
@@ -164,7 +165,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     private void OnFrame(double elapsed)
     {
-        if (_cleaned || !Visible) { _frames.Stop(OnFrame); return; }
+        if (_cleaned || !Visible || Editing) { _frames.Stop(OnFrame); return; }
         BeginAnimationFrame();
         try { AdvanceFrame(elapsed); }
         finally { EndAnimationFrame(); }
@@ -321,6 +322,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
     {
+        if (Editing) return;
         if (previous.DisplayIntervalSeconds != RegionSettings.DisplayIntervalSeconds) _nextDisplayAt = After(Now, RegionSettings.DisplayIntervalSeconds);
         var appearanceChanged = previous.FontFamily != RegionSettings.FontFamily || previous.FontSize != RegionSettings.FontSize
             || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
@@ -346,6 +348,13 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         if (Kind == OverlayRegionKind.Status && previous.BroadcastIntervalSeconds != RegionSettings.BroadcastIntervalSeconds)
             _broadcastAt = After(Now, RegionSettings.BroadcastIntervalSeconds);
         if (Visible) Process();
+    }
+
+    protected override void OnInteractionChanged()
+    {
+        ResetContent();
+        if (!Editing && OverlayRegions.Enabled(ViewModel.Settings.Display, Kind) && Kind == OverlayRegionKind.Status)
+        { _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank; if (Visible) Process(); }
     }
 
     private void ClearSprites() { foreach (var sprite in _sprites) sprite.Dispose(); _sprites.Clear(); }

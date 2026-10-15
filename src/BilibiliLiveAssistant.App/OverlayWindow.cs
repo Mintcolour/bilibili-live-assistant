@@ -42,7 +42,7 @@ public sealed class OverlayWindow : OverlaySurface
         _overlayVisible = true;
         ConfigureFrameRate();
         SyncRegionVisibility();
-        if (_items.Count > 0) StartAnimation();
+        if (!Editing && _items.Count > 0) StartAnimation();
     }
 
     public void HideOverlay()
@@ -63,18 +63,19 @@ public sealed class OverlayWindow : OverlaySurface
     private void SyncRegionVisibility()
     {
         if (!_overlayVisible) return;
-        if (OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
+        if ((!Editing && !OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku)) || OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
         else if (!Visible) ShowSurface();
         foreach (var region in _fixedRegions)
-            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind) && !OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
+            if ((Editing || OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind)) && !OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
             else region.HideRegion();
         foreach (var region in _stationary)
-            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind) && OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
+            if ((Editing || OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind)) && OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
             else region.HideRegion();
     }
 
     private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive)) { SyncRegionVisibility(); return; }
         if (e.PropertyName == nameof(LiveAssistantViewModel.Settings))
         {
             if (_messageStyle != _vm.Settings.Dashboard) { _messageStyle = _vm.Settings.Dashboard; ClearItems(); }
@@ -94,7 +95,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void OnEventBatch(IReadOnlyList<LiveEvent> batch)
     {
-        if (!_overlayVisible || IsDisposed) return;
+        if (!_overlayVisible || IsDisposed || Editing) return;
         static OverlayRegionKind EventKind(LiveEvent e) => e.Type switch
         { LiveEventType.Danmaku => OverlayRegionKind.Danmaku, LiveEventType.Gift or LiveEventType.Guard => OverlayRegionKind.Gift,
             LiveEventType.SuperChat => OverlayRegionKind.SuperChat, LiveEventType.Enter => OverlayRegionKind.Interaction, _ => OverlayRegionKind.Status };
@@ -151,7 +152,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void OnFrame(double elapsed)
     {
-        if (_cleaned || !Visible) { _frames.Stop(OnFrame); return; }
+        if (_cleaned || !Visible || Editing) { _frames.Stop(OnFrame); return; }
         BeginAnimationFrame();
         try { AdvanceFrame(elapsed); }
         finally { EndAnimationFrame(); }
@@ -211,6 +212,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void StartAnimation()
     {
+        if (Editing) return;
         if (_items.Count == 0 && _pendingItems.Count == 0) return;
         _frames.Start(OnFrame);
     }
@@ -265,6 +267,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
     {
+        if (Editing) return;
         if (previous.DisplayIntervalSeconds != RegionSettings.DisplayIntervalSeconds) _nextDisplayAt = DateTimeOffset.UtcNow.AddSeconds(RegionSettings.DisplayIntervalSeconds);
         if (previous.FontFamily != RegionSettings.FontFamily || previous.FontSize != RegionSettings.FontSize
             || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
@@ -291,6 +294,8 @@ public sealed class OverlayWindow : OverlaySurface
         }
         _intakeTimer.Interval = RegionSettings.UpdateIntervalMs;
     }
+
+    protected override void OnInteractionChanged() => ResetContent();
 
     private void ClearItems()
     {

@@ -25,10 +25,21 @@ public abstract class OverlaySurface : Forms.Form
     private Forms.ContextMenuStrip? _editorMenu;
     private OverlayQuickEditor? _quickEditor;
     private OverlayRegionSettings? _previewRegion;
+    private OverlayRegionSettings? _inlineRegion;
+    private bool? _inlineEnabled;
+    private bool _inlineDirty, _wasEditing, _sampleDirty = true;
+    private Task? _inlineSaveTask;
+    private int _slider = -1;
+    private readonly Forms.Timer _inlinePreviewTimer = new() { Interval = 60 };
+    private readonly OverlayEditorPreview _samplePreview = new();
+    private OverlayRegionSettings RawRegion => _previewRegion ?? _inlineRegion ?? OverlayRegions.Get(ViewModel.Settings.Display, Kind);
+    private bool ContentEnabled => _inlineEnabled ?? OverlayRegions.Enabled(ViewModel.Settings.Display, Kind);
     protected bool Editing => ViewModel.OverlayInteractive || !ViewModel.Settings.Display.LayoutLocked;
-    protected int ContentTop => Editing ? 36 : 0;
-    private Rectangle DoneBounds => new(Math.Max(8, ClientSize.Width - 52), 8, 44, 22);
-    private Rectangle ModeBounds => new(Math.Max(8, DoneBounds.Left - Math.Min(136, ClientSize.Width / 2) - 4), 8, Math.Min(136, ClientSize.Width / 2), 22);
+    protected int ContentTop => Editing ? OverlayInlineControls.ContentTop(ClientSize.Width) : 0;
+    private int ActionTop => ClientSize.Width < 360 ? 32 : 8;
+    private Rectangle DoneBounds => new(Math.Max(4, ClientSize.Width - 48), ActionTop, 40, 22);
+    private Rectangle ModeBounds => new(Math.Max(4, DoneBounds.Left - (ClientSize.Width < 280 ? 52 : 96) - 4), ActionTop, ClientSize.Width < 280 ? 52 : 96, 22);
+    private Rectangle VisibilityBounds => new(Math.Max(4, ModeBounds.Left - 52), ActionTop, 48, 22);
 
     protected OverlaySurface(LiveAssistantViewModel vm, OverlayRegionKind kind)
     {
@@ -49,6 +60,8 @@ public abstract class OverlaySurface : Forms.Form
         MinimumSize = new Size(160, 80);
         vm.PropertyChanged += OnSettingsChanged;
         ApplySurfaceSettings();
+        _wasEditing = Editing;
+        _inlinePreviewTimer.Tick += (_, _) => { _inlinePreviewTimer.Stop(); ApplyInlinePreview(); };
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -75,16 +88,17 @@ public abstract class OverlaySurface : Forms.Form
 
     private void OnSettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive))
-        {
-            if (IsDisposed) return;
-            SetClickThrough(!Editing);
-            if (!Editing) { _editorMenu?.Close(); _quickEditor?.Close(); }
-            OnInteractionChanged(); OnRegionSettingsChanged(RegionSettings); RequestRender(); return;
-        }
-        if (e.PropertyName != nameof(LiveAssistantViewModel.Settings) || IsDisposed) return;
+        if (IsDisposed || e.PropertyName is not (nameof(LiveAssistantViewModel.Settings) or nameof(LiveAssistantViewModel.OverlayInteractive))) return;
         var previous = RegionSettings;
         ApplySurfaceSettings();
+        if (_wasEditing != Editing)
+        {
+            _wasEditing = Editing;
+            _slider = -1; Capture = false;
+            OnInteractionChanged();
+            if (!Editing) { _editorMenu?.Close(); _quickEditor?.Close(); _ = SaveInlineAsync(); _samplePreview.Dispose(); }
+        }
+        _sampleDirty = true;
         OnRegionSettingsChanged(previous);
         RequestRender();
     }
@@ -94,11 +108,21 @@ public abstract class OverlaySurface : Forms.Form
 
     private void ApplySurfaceSettings()
     {
-        RegionSettings = OverlayRegions.ForRendering(_previewRegion ?? OverlayRegions.Get(ViewModel.Settings.Display, Kind));
+        RegionSettings = OverlayRegions.ForRendering(RawRegion);
         // Region opacity is applied by the alpha presenter, never via color-key attributes.
         SetClickThrough(ViewModel.Settings.Display.LayoutLocked && !ViewModel.OverlayInteractive);
         var bounds = OverlayLayout.Bounds(ViewModel.Settings.Display, Kind, RegionSettings);
-        if (_previewRegion is null && Bounds != bounds) Bounds = bounds;
+        // Very short saved regions still need room for the editing controls and
+        // a sample. This temporary expansion is not written by slider changes.
+        var minimum = new Size(160, Editing ? OverlayInlineControls.ContentTop(bounds.Width) + 72 : 80);
+        if (MinimumSize != minimum) MinimumSize = minimum;
+        if (Editing)
+        {
+            var screen = Forms.Screen.FromRectangle(bounds).WorkingArea;
+            bounds.Height = Math.Min(screen.Height, Math.Max(bounds.Height, minimum.Height));
+            bounds.Y = Math.Clamp(bounds.Y, screen.Top, Math.Max(screen.Top, screen.Bottom - bounds.Height));
+        }
+        if (_previewRegion is null && _inlineRegion is null && Bounds != bounds) Bounds = bounds;
     }
 
     protected override void OnPaintBackground(Forms.PaintEventArgs e) { }
@@ -164,6 +188,8 @@ public abstract class OverlaySurface : Forms.Form
         if (Visible) RequestRender();
         else
         {
+            _inlinePreviewTimer.Stop();
+            _samplePreview.Dispose(); _sampleDirty = true;
             _quickEditor?.Close();
             _pendingDirty = Rectangle.Empty;
             _dirtyRects.Clear();
@@ -175,6 +201,7 @@ public abstract class OverlaySurface : Forms.Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        _sampleDirty = true;
         RequestRender();
     }
 
@@ -225,11 +252,14 @@ public abstract class OverlaySurface : Forms.Form
                 using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
                     graphics.FillRectangle(background, dirty);
                 graphics.CompositingMode = CompositingMode.SourceOver;
-                DrawContent(graphics, dirty);
+                if (Editing) DrawEditorSample(graphics);
+                else DrawContent(graphics, dirty);
                 DrawEditorChrome(graphics);
             }
             finally { graphics.Restore(state); }
-            _canvas.Present(Handle, Location, RegionSettings.Opacity, dirty);
+            // Keep controls readable at low content opacity. Only samples receive
+            // content alpha while editing; live mode uses the existing presenter.
+            _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, dirty);
             _presentationErrorReported = false;
         }
         catch (ExternalException ex)
@@ -255,15 +285,17 @@ public abstract class OverlaySurface : Forms.Form
             // GDI text does not write alpha; use the same filled glyph paths as the message renderer.
             using var font = new Font("Microsoft YaHei UI", 12, FontStyle.Regular, GraphicsUnit.Pixel);
             var state = graphics.Save();
-            graphics.SetClip(new Rectangle(8, 8, Math.Max(0, ModeBounds.Left - 12), 22), CombineMode.Intersect);
-            OverlayTextRenderer.Draw(graphics, Text, font, new PointF(8, 11), Color.White, false);
+            graphics.SetClip(new Rectangle(8, 8, Math.Max(0, ClientSize.Width < 360 ? ClientSize.Width - 16 : VisibilityBounds.Left - 12), 22), CombineMode.Intersect);
+            OverlayTextRenderer.Draw(graphics, Text + " · 示例", font, new PointF(8, 11), Color.White, false);
             graphics.Restore(state);
             using var button = new SolidBrush(Color.FromArgb(76, 88, 108));
-            graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds);
+            graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds); graphics.FillRectangle(button, VisibilityBounds);
             state = graphics.Save(); graphics.SetClip(ModeBounds, CombineMode.Intersect);
-            OverlayTextRenderer.Draw(graphics, "外观 / 类型 ▾", font, new PointF(ModeBounds.X + 4, 11), Color.White, false);
+            OverlayTextRenderer.Draw(graphics, ClientSize.Width < 280 ? "样式 ▾" : "外观 / 类型 ▾", font, new PointF(ModeBounds.X + 3, ActionTop + 3), Color.White, false);
             graphics.Restore(state);
-            OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 8, 11), Color.White, false);
+            OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 6, ActionTop + 3), Color.White, false);
+            OverlayTextRenderer.Draw(graphics, ContentEnabled ? "隐藏" : "显示", font, new PointF(VisibilityBounds.X + 10, ActionTop + 3), Color.White, false);
+            OverlayInlineControls.Draw(graphics, ClientSize.Width, RawRegion);
             using var pen = new Pen(Color.FromArgb(100, 160, 210));
             graphics.DrawRectangle(pen, 0, 0, Math.Max(0, ClientSize.Width - 1), Math.Max(0, ClientSize.Height - 1));
             foreach (var p in new[] { new Point(1, 1), new Point(ClientSize.Width - 7, 1), new Point(1, ClientSize.Height - 7), new Point(ClientSize.Width - 7, ClientSize.Height - 7) })
@@ -272,6 +304,25 @@ public abstract class OverlaySurface : Forms.Form
     }
 
     protected abstract void DrawContent(Graphics graphics, Rectangle clip);
+
+    private void DrawEditorSample(Graphics graphics)
+    {
+        if (!ContentEnabled)
+        {
+            _samplePreview.Dispose();
+            using var font = OverlayTextRenderer.CreateFont("Microsoft YaHei UI", 12);
+            OverlayTextRenderer.Draw(graphics, "内容已隐藏", font, new(10, ContentTop + 8), Color.LightGray, false);
+            return;
+        }
+        if (_sampleDirty)
+        {
+            _samplePreview.Rebuild(Kind, RegionSettings, ViewModel.Settings.Dashboard, ViewModel.Images, ClientSize.Width, ClientSize.Height, ContentTop);
+            _sampleDirty = false;
+        }
+        var state = graphics.Save();
+        graphics.SetClip(new Rectangle(0, ContentTop, ClientSize.Width, Math.Max(0, ClientSize.Height - ContentTop)), CombineMode.Intersect);
+        _samplePreview.Draw(graphics, RegionSettings.Opacity); graphics.Restore(state);
+    }
 
     protected override void WndProc(ref Forms.Message m)
     {
@@ -287,13 +338,19 @@ public abstract class OverlaySurface : Forms.Form
         var p = PointToClient(new Point(unchecked((short)(packed & 0xffff)), unchecked((short)((packed >> 16) & 0xffff))));
         var left = p.X < 8; var right = p.X >= ClientSize.Width - 8;
         var top = p.Y < 8; var bottom = p.Y >= ClientSize.Height - 8;
-        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : ModeBounds.Contains(p) || DoneBounds.Contains(p) ? 1 : p.Y < ContentTop ? 2 : 1);
+        var control = ModeBounds.Contains(p) || DoneBounds.Contains(p) || VisibilityBounds.Contains(p) || p.Y >= OverlayInlineControls.HeaderHeight(ClientSize.Width);
+        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : control ? 1 : p.Y < ContentTop ? 2 : 1);
     }
 
     protected override async void OnMouseClick(Forms.MouseEventArgs e)
     {
         base.OnMouseClick(e);
         if (!Editing || e.Button != Forms.MouseButtons.Left) return;
+        if (VisibilityBounds.Contains(e.Location))
+        {
+            _quickEditor?.Close(); _inlineEnabled = !ContentEnabled; _inlineDirty = true;
+            _sampleDirty = true; RequestRender(); await SaveInlineAsync(); return;
+        }
         if (DoneBounds.Contains(e.Location)) { await FinishEditingAsync(); return; }
         if (!ModeBounds.Contains(e.Location)) return;
         _editorMenu?.Dispose(); _editorMenu = new();
@@ -305,8 +362,8 @@ public abstract class OverlaySurface : Forms.Form
                 try
                 {
                     _quickEditor?.Close();
-                    var current = OverlayRegions.Get(ViewModel.Settings.Display, Kind) with { Mode = mode, ModeVersion = 1, X = Left, Y = Top, Width = Width, Height = Height };
-                    await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind, current) });
+                    await SaveInlineAsync();
+                    await ViewModel.UpdateOverlayRegionAsync(Kind, current => current with { Mode = mode, ModeVersion = 1 });
                 }
                 catch (Exception ex) { ViewModel.ReportSettingsError("保存显示类型失败：" + ex.Message); }
             };
@@ -314,7 +371,7 @@ public abstract class OverlaySurface : Forms.Form
         }
         _editorMenu.Items.Add(new Forms.ToolStripSeparator());
         var appearance = new Forms.ToolStripMenuItem("大小、透明度、背景与时间…");
-        appearance.Click += (_, _) => OpenQuickEditor(); _editorMenu.Items.Add(appearance);
+        appearance.Click += async (_, _) => { await SaveInlineAsync(); if (!IsDisposed && Visible && Editing) OpenQuickEditor(); }; _editorMenu.Items.Add(appearance);
         AddEditorMenuItems(_editorMenu);
         _editorMenu.Show(this, new Point(ModeBounds.Left, ContentTop));
     }
@@ -326,8 +383,8 @@ public abstract class OverlaySurface : Forms.Form
         if (_quickEditor is { IsDisposed: false }) { _quickEditor.Activate(); return; }
         var editor = new OverlayQuickEditor(Kind, OverlayRegions.Get(ViewModel.Settings.Display, Kind), PreviewRegion, async draft =>
         {
-            await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind,
-                draft with { X = Left, Y = Top, Width = Width, Height = Height }) });
+            await ViewModel.UpdateOverlayRegionAsync(Kind, current => draft with
+            { X = current.X, Y = current.Y, Width = current.Width, Height = current.Height });
         });
         _quickEditor = editor;
         editor.FormClosed += (_, _) => { if (ReferenceEquals(_quickEditor, editor)) _quickEditor = null; PreviewRegion(null); };
@@ -339,15 +396,101 @@ public abstract class OverlaySurface : Forms.Form
         if (IsDisposed || Disposing) return;
         var previous = RegionSettings;
         _previewRegion = draft is null ? null : draft with { X = Left, Y = Top, Width = Width, Height = Height };
+        _sampleDirty = true;
         ApplySurfaceSettings(); OnRegionSettingsChanged(previous); RequestRender();
+    }
+
+    protected override void OnMouseDown(Forms.MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!Editing || e.Button != Forms.MouseButtons.Left) return;
+        for (var index = 0; index < 3; index++)
+        {
+            var field = OverlayInlineControls.Field(ClientSize.Width, index);
+            if (!field.Contains(e.Location)) continue;
+            _quickEditor?.Close();
+            if (OverlayInlineControls.Minus(field).Contains(e.Location) || OverlayInlineControls.Plus(field).Contains(e.Location))
+            {
+                var step = OverlayInlineControls.Range(index).Step;
+                SetInlineValue(index, OverlayInlineControls.Value(RawRegion, index) + (OverlayInlineControls.Plus(field).Contains(e.Location) ? step : -step));
+            }
+            else if (e.Y >= field.Top + 20) { _slider = index; Capture = true; DragSlider(e.X); }
+            return;
+        }
+    }
+    protected override void OnMouseMove(Forms.MouseEventArgs e)
+    {
+        base.OnMouseMove(e); if (_slider >= 0 && Editing) DragSlider(e.X);
+    }
+    protected override async void OnMouseUp(Forms.MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != Forms.MouseButtons.Left) return;
+        _slider = -1; Capture = false;
+        if (!_inlineDirty) return;
+        _inlinePreviewTimer.Stop(); ApplyInlinePreview(); await SaveInlineAsync();
+    }
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (Capture || _slider < 0) return;
+        _slider = -1; _inlinePreviewTimer.Stop(); ApplyInlinePreview(); _ = SaveInlineAsync();
+    }
+    private void DragSlider(int x)
+    {
+        var track = OverlayInlineControls.Track(OverlayInlineControls.Field(ClientSize.Width, _slider));
+        var (min, max, _) = OverlayInlineControls.Range(_slider);
+        SetInlineValue(_slider, (int)Math.Round(min + Math.Clamp((x - track.Left) / (double)Math.Max(1, track.Width - 1), 0, 1) * (max - min)));
+    }
+    private void SetInlineValue(int index, int value)
+    {
+        var next = OverlayInlineControls.Set(RawRegion, index, value);
+        if (next == RawRegion) return;
+        _inlineRegion = next; _inlineDirty = true;
+        // Coalesce mouse movement, without a permanent frame or polling clock.
+        if (!_inlinePreviewTimer.Enabled) _inlinePreviewTimer.Start();
+    }
+    private void ApplyInlinePreview()
+    {
+        if (IsDisposed || Disposing) return;
+        var previous = RegionSettings; ApplySurfaceSettings(); _sampleDirty = true;
+        OnRegionSettingsChanged(previous); RequestRender();
+    }
+    private Task SaveInlineAsync()
+    {
+        if (_inlineSaveTask is { IsCompleted: false }) return _inlineSaveTask;
+        return _inlineSaveTask = SaveInlineCoreAsync();
+    }
+    private async Task SaveInlineCoreAsync()
+    {
+        if (IsDisposed || Disposing) return;
+        try
+        {
+            while (_inlineDirty)
+            {
+                var draft = _inlineRegion; var enabled = _inlineEnabled; _inlineDirty = false;
+                try
+                {
+                    await ViewModel.UpdateOverlayRegionAsync(Kind, current => draft is null ? current : current with
+                    { ContentScale = draft.ContentScale, FontSize = draft.FontSize, Opacity = draft.Opacity }, enabled);
+                }
+                catch (Exception ex)
+                {
+                    _inlineRegion = null; _inlineEnabled = null; _inlineDirty = false;
+                    ViewModel.ReportSettingsError("保存浮窗设置失败：" + ex.Message); break;
+                }
+            }
+            if (!_inlineDirty) { _inlineRegion = null; _inlineEnabled = null; }
+        }
+        finally { ApplyInlinePreview(); }
     }
 
     private async Task FinishEditingAsync()
     {
         try
         {
-            if (!ViewModel.Settings.Display.LayoutLocked)
-                await ViewModel.SaveAsync(ViewModel.Settings with { Display = ViewModel.Settings.Display with { LayoutLocked = true } });
+            await SaveInlineAsync();
+            await ViewModel.LockOverlayLayoutAsync();
             ViewModel.EndOverlayInteraction();
         }
         catch (Exception ex) { ViewModel.ReportSettingsError("结束浮窗调整失败：" + ex.Message); }
@@ -359,15 +502,14 @@ public abstract class OverlaySurface : Forms.Form
         if (!Editing || IsDisposed) return;
         try
         {
-            var current = OverlayRegions.Get(ViewModel.Settings.Display, Kind) with { X = Left, Y = Top, Width = Width, Height = Height };
-            await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind, current) });
+            await ViewModel.UpdateOverlayRegionAsync(Kind, current => current with { X = Left, Y = Top, Width = Width, Height = Height });
         }
         catch (Exception ex) { ViewModel.ReportSettingsError($"保存区域位置失败：{ex.Message}"); }
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
+        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }
 
