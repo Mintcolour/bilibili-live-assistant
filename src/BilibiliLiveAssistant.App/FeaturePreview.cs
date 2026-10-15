@@ -1,11 +1,8 @@
-using System.Drawing.Imaging;
 using BilibiliLiveAssistant.Core;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Storage.Streams;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -16,11 +13,13 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
     private readonly Func<bool> _visible;
     private readonly MessageAnimationClock _clock;
     private readonly List<MessageCard> _cards = new();
+    private readonly List<UiPixelSource> _pixelSources = new();
     private readonly DispatcherQueueTimer _renderTimer;
     private readonly ComboBox _provider = new() { ItemsSource = new[] { "B站视频示例", "Steam 游戏示例" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Left };
     private MediaPreviewTile? _tile;
     private bool _active, _disposed;
     private int _generation;
+    private CancellationTokenSource? _renderCancellation;
     private string _kind = "media";
     private MediaPreviewSettings _media = new();
     private DanmakuCardSettings _settings = new();
@@ -38,11 +37,17 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
     private void Schedule() { if (!_disposed && _active && _visible()) { _renderTimer.Stop(); _renderTimer.Start(); } }
     public void SetActive(bool active) { if (_disposed || _active == active) return; _active = active; if (active) Schedule(); else { _renderTimer.Stop(); Clear(); } }
     private void Clear()
-    { _generation++; _tile?.Dispose(); _tile = null; foreach (var card in _cards) card.Dispose(); _cards.Clear(); Children.Clear(); _clock.Suspend(); }
+    {
+        _generation++; _renderCancellation?.Cancel(); _renderCancellation?.Dispose(); _renderCancellation = null;
+        _tile?.Dispose(); _tile = null; foreach (var card in _cards) card.Dispose(); _cards.Clear();
+        foreach (var image in Children.OfType<Image>()) image.Source = null;
+        Children.Clear(); foreach (var source in _pixelSources) source.Dispose(); _pixelSources.Clear(); _clock.Suspend();
+    }
     private async void Render()
     {
         if (_disposed || !_active || !_visible()) return;
         Clear(); var generation = _generation;
+        var cancellation = (_renderCancellation = new()).Token;
         try
         {
             if (_kind == "cards")
@@ -90,17 +95,16 @@ internal sealed class FeaturePreview : StackPanel, IDisposable
                 using var body = OverlayMessageRenderer.Render(Sample(0), region, _style, _vm.Images, maxHeight: 80);
                 using var media = new OverlayMediaAttachment(_vm, reference, 80, region, _media, details, false);
                 using var bitmap = media.Compose(body, region);
-                using var memory = new MemoryStream(); bitmap.Save(memory, ImageFormat.Png);
-                using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream.GetOutputStreamAt(0));
-                writer.WriteBytes(memory.ToArray()); await writer.StoreAsync(); await writer.FlushAsync(); writer.DetachStream(); stream.Seek(0);
-                var source = new BitmapImage(); await source.SetSourceAsync(stream);
-                if (_disposed || !_active || generation != _generation) return;
-                Children.Add(new Image { Source = source, Width = Math.Min(bitmap.Width, Math.Max(200, ActualWidth)), MaxWidth = bitmap.Width,
+                var source = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(bitmap), bitmap.Width, false, 256, cancellation);
+                if (_disposed || !_active || generation != _generation) { source.Dispose(); return; }
+                _pixelSources.Add(source);
+                Children.Add(new Image { Source = source.Source, Width = Math.Min(bitmap.Width, Math.Max(200, ActualWidth)), MaxWidth = bitmap.Width,
                     Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, Opacity = region.Opacity });
             }
             else Children.Add(new TextBlock { Text = "悬浮媒体已关闭", Opacity = 0.65 });
             Children.Add(new TextBlock { Text = "预览只使用本地资料与占位封面，不访问 B站或 Steam。", FontSize = 12, Opacity = 0.65, TextWrapping = TextWrapping.Wrap });
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed && generation == _generation) Children.Add(new TextBlock { Text = "本地预览暂不可用", FontSize = 12 }); }
     }
     private static LiveEvent Sample(int index) => new(LiveEventType.Danmaku, "示例观众", index == 0 ? "今天的直播很好看 😊" : $"第 {index + 1} 个固定位置", "#FFFFFF", index + 1,

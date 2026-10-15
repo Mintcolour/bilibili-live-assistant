@@ -199,8 +199,8 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
             {
                 if (!Current(slot, view)) return;
                 var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, url, Style, RegionSettings);
-                if (ViewModel.Images.TryGetFrame(url, limit) is not null) continue;
-                if (await ViewModel.Images.GetForViewAsync(url, false, token, limit) is null) continue;
+                if (ViewModel.Images.TryGetStaticFrame(url, limit) is not null) continue;
+                if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit) is null) continue;
                 if (!Current(slot, view)) return;
                 UpdateBitmap(view); RequestRender(view.Bounds);
             }

@@ -37,7 +37,7 @@ internal sealed class OverlayMediaAttachment : IDisposable
             await Task.WhenAll(urls.Select(LoadImage));
             async Task LoadImage(string url)
             {
-                if (await _vm.Images.GetForViewAsync(url, false, _cancel.Token) is not null && !_disposed) changed();
+                if (await _vm.Images.GetStaticForViewAsync(url, _cancel.Token) is not null && !_disposed) changed();
             }
         }
         catch (OperationCanceledException) { }
@@ -73,11 +73,11 @@ internal sealed class OverlayMediaAttachment : IDisposable
     }
     private void DrawImage(Graphics graphics, string url, RectangleF bounds)
     {
-        var bytes = _vm.Images.TryGetFrame(url);
-        if (bytes is null) { using var brush = new SolidBrush(Color.FromArgb(255, 54, 64, 83)); graphics.FillRectangle(brush, bounds); return; }
+        var pixels = _vm.Images.TryGetStaticFrame(url);
+        if (pixels is null) { using var brush = new SolidBrush(Color.FromArgb(255, 54, 64, 83)); graphics.FillRectangle(brush, bounds); return; }
         try
         {
-            using var stream = new MemoryStream(bytes); using var bitmap = new Bitmap(stream);
+            using var bitmap = pixels.CreateDrawingBitmap();
             var ratio = Math.Min(bounds.Width / bitmap.Width, bounds.Height / bitmap.Height);
             var width = bitmap.Width * ratio; var height = bitmap.Height * ratio;
             graphics.DrawImage(bitmap, new RectangleF(bounds.X + (bounds.Width - width) / 2, bounds.Y + (bounds.Height - height) / 2, width, height));

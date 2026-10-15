@@ -253,8 +253,8 @@ internal static class OverlayMessageRenderer
         {
             if (images.TryGetValue(url, out var found)) return found;
             images[url] = null;
-            if (cache.TryGetFrame(url, ImageDecodeLimit(value, url, imageStyle, region)) is not { } bytes) return null;
-            try { using var stream = new MemoryStream(bytes); using var raw = Image.FromStream(stream); return images[url] = new Bitmap(raw); }
+            if (cache.TryGetStaticFrame(url, ImageDecodeLimit(value, url, imageStyle, region)) is not { } frame) return null;
+            try { return images[url] = frame.CreateDrawingBitmap(); }
             catch (ArgumentException) { return null; }
         }
         Bitmap MakeGiftIcon(bool guard)

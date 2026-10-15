@@ -259,14 +259,14 @@ public sealed class OverlayWindow : OverlaySurface
     private async Task LoadImagesAsync(OverlayItem item)
     {
         var urls = OverlayMessageRenderer.ImageUrls(item.Event, _vm.Settings.Dashboard).Distinct().Take(16)
-            .Where(url => _vm.Images.TryGetFrame(url, DecodeLimit(url)) is null).ToArray();
+            .Where(url => _vm.Images.TryGetStaticFrame(url, DecodeLimit(url)) is null).ToArray();
         if (urls.Length == 0) return;
         var cancellation = item.Cancellation.Token;
         try { await Task.WhenAll(urls.Select(LoadOneAsync)); }
         catch (OperationCanceledException) { return; }
         async Task LoadOneAsync(string url)
         {
-            if (await _vm.Images.GetForViewAsync(url, false, cancellation, DecodeLimit(url)) is null
+            if (await _vm.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url)) is null
                 || _cleaned || !Visible || !_items.Contains(item)) return;
             var before = item.Bounds;
             item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);

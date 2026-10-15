@@ -254,12 +254,12 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         {
             var cancellation = sprite.Cancellation.Token;
             var urls = OverlayMessageRenderer.ImageUrls(sprite.Event, _style).Distinct().Take(Kind == OverlayRegionKind.Status ? 32 : 16)
-                .Where(url => ViewModel.Images.TryGetFrame(url, DecodeLimit(url)) is null).ToArray();
+                .Where(url => ViewModel.Images.TryGetStaticFrame(url, DecodeLimit(url)) is null).ToArray();
             if (urls.Length == 0) return;
             await Task.WhenAll(urls.Select(LoadOneAsync));
             async Task LoadOneAsync(string url)
             {
-                if (await ViewModel.Images.GetForViewAsync(url, false, cancellation, DecodeLimit(url)) is null
+                if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url)) is null
                     || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
                 // A slow avatar must not hold back an emote that is already available.
                 var before = sprite.Bounds;

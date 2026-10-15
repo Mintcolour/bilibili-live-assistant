@@ -423,26 +423,22 @@ internal sealed class BiliImageView : Grid, IDisposable
     private readonly Image? _image;
     private readonly PersonPicture? _person;
     private readonly TextBlock? _fallback;
-    private BiliImageAsset? _asset;
-    private BiliImageAsset? _staticAsset;
-    private BitmapImage?[]? _sources;
-    private BitmapImage? _firstSource;
-    private bool _playing;
-    private bool _loadingAnimation;
-    private bool _loadingStatic;
-    private CancellationTokenSource? _loadCancellation;
-    private int _generation;
-    private bool _disposed;
-    private bool _busy;
-    private bool _active;
+    private UiImageSourceService.Lease? _first;
+    private BiliAnimationAsset? _animation;
+    private BitmapImage?[]? _animationSources;
+    private CancellationTokenSource? _loadCancellation, _animationCancellation;
+    private int _generation, _animationGeneration, _frame;
+    private bool _disposed, _active, _loading, _busy, _playing;
     private double _rasterizationScale = 1;
-    private int _frame;
     private DateTimeOffset _nextFrame;
     private int RequestedDecodeLimit => BiliImageCache.SizeTier(Math.Max(
         double.IsFinite(Width) ? Width : ActualWidth > 0 ? ActualWidth : 256,
         double.IsFinite(Height) ? Height : ActualHeight > 0 ? ActualHeight : 256) * _rasterizationScale);
+    private int RequestedWidth => Math.Clamp((int)Math.Ceiling(
+        (double.IsFinite(Width) ? Width : ActualWidth > 0 ? ActualWidth : 256) * _rasterizationScale), 1, 256);
 
-    public BiliImageView(BiliImageCache cache, string url, string fallback, double width, double height, bool animate, MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false)
+    public BiliImageView(BiliImageCache cache, string url, string fallback, double width, double height, bool animate,
+        MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false)
     {
         Interlocked.Increment(ref ImageResourceCounters.Views);
         _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible;
@@ -458,83 +454,40 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal void Activate(double rasterizationScale)
     {
         if (_disposed) return;
+        var sizeChanged = Math.Abs(_rasterizationScale - rasterizationScale) > 0.001;
         if (!_active) Interlocked.Increment(ref ImageResourceCounters.ActiveViews);
         _active = true; _rasterizationScale = rasterizationScale;
-        // Moving to a higher-DPI screen must request enough pixels again.
-        if (_asset is not null && _asset.DecodeLimit < RequestedDecodeLimit)
-        { _clock.Remove(this); ReleaseImages(); }
+        if (sizeChanged) { _clock.Remove(this); ReleaseImages(); }
         RestoreVisuals();
     }
     internal async void RestoreVisuals()
     {
-        if (_disposed || !_active || _loadingStatic) return;
-        _loadingStatic = true;
-        var generation = _generation;
+        if (_disposed || !_active || _loading) return;
+        if (_first is not null) { if (_animate && _first.Value.CanAnimate) _clock.Add(this); return; }
+        _loading = true; var generation = _generation;
         var cancellation = (_loadCancellation ??= new()).Token;
+        UiImageSourceService.Lease? acquired = null;
         try
         {
-            if (_asset is null)
-            {
-                var asset = await _cache.GetForViewAsync(_url, false, cancellation, RequestedDecodeLimit);
-                if (_disposed || !_active || generation != _generation || asset is null) return;
-                _asset = asset; _staticAsset = asset;
-                _sources = new BitmapImage?[asset.Frames.Length];
-            }
-            // A short layout detach keeps its source. After a real unload the
-            // shared, bounded first-frame cache restores it without destroying the view.
-            if (_image is { Source: null } || _person is { ProfilePicture: null }) await SetFrameAsync(0);
-            _firstSource ??= _sources?[0];
-            if (!_disposed && _active && generation == _generation && _animate && _asset?.CanAnimate == true) _clock.Add(this);
+            acquired = await _cache.Sources.AcquireStaticSourceAsync(_url, RequestedWidth, RequestedDecodeLimit, cancellation);
+            if (_disposed || !_active || generation != _generation || acquired is null) return;
+            _first = acquired; acquired = null;
+            Bind(_first.Value.Source);
+            if (_animate && _first.Value.CanAnimate) _clock.Add(this);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { BiliImageDiagnostics.Record(_url, "view-restore", ex); }
         finally
         {
-            _loadingStatic = false;
+            acquired?.Dispose(); _loading = false;
             if (!_disposed && _active && generation != _generation) RestoreVisuals();
         }
     }
-    private async Task SetFrameAsync(int index)
+    private void Bind(ImageSource source)
     {
-        if (_busy || _disposed || _asset is null) return;
-        _busy = true;
-        var generation = _generation;
-        var asset = _asset;
-        var sources = _sources;
-        var cancellation = _loadCancellation?.Token ?? CancellationToken.None;
-        try
-        {
-            var source = sources?[index];
-            if (source is null)
-            {
-                var displayWidth = double.IsFinite(Width) ? Width : ActualWidth > 0 ? ActualWidth : asset.Width;
-                var pixelWidth = Math.Clamp((int)Math.Ceiling(displayWidth * _rasterizationScale), 1, asset.Width);
-                if (index == 0) source = await _clock.GetFirstFrameAsync(_url, asset, pixelWidth, cancellation);
-                else
-                {
-                    using var stream = await BiliImageCache.ToStreamAsync(asset.Frames[index]);
-                    if (_disposed || generation != _generation) return;
-                    source = new BitmapImage { DecodePixelWidth = pixelWidth };
-                    await source.SetSourceAsync(stream);
-                }
-                if (_disposed || generation != _generation || source is null) return;
-                if (sources is not null) sources[index] = source;
-            }
-            if (_disposed || generation != _generation) return;
-            if (_image is not null) _image.Source = source;
-            if (_person is not null) _person.ProfilePicture = source;
-            if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
-            if (index == 0) _firstSource = source;
-            _frame = index; _nextFrame = DateTimeOffset.UtcNow.AddMilliseconds(asset.Delays[index]);
-        }
-        finally
-        {
-            _busy = false;
-            // A decode may finish after an unload/reload. Retry on the UI queue
-            // once its old generation has finished and the loader flag is clear.
-            if (!_disposed && _active && generation != _generation)
-                DispatcherQueue.TryEnqueue(RestoreVisuals);
-        }
+        if (_image is not null) _image.Source = source;
+        if (_person is not null) _person.ProfilePicture = source;
+        if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
     }
     internal bool InViewport()
     {
@@ -552,42 +505,55 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal async void Tick(DateTimeOffset now)
     {
         _playing = true;
-        if (_asset is null || _busy || _loadingAnimation || now < _nextFrame || !InViewport()) return;
-        var generation = _generation;
+        if (_first is null || _busy || now < _nextFrame || !InViewport()) return;
+        _busy = true; var generation = _animationGeneration;
+        var cancellation = (_animationCancellation ??= CancellationTokenSource.CreateLinkedTokenSource(
+            _loadCancellation?.Token ?? CancellationToken.None)).Token;
         try
         {
-            if (_asset.Frames.Length == 1)
+            if (_animation is null)
             {
-                _loadingAnimation = true;
-                var animated = await _cache.GetForViewAsync(_url, true, _loadCancellation?.Token ?? CancellationToken.None, RequestedDecodeLimit);
-                _loadingAnimation = false;
-                if (_disposed || !_playing || !_active || generation != _generation) return;
-                if (animated is null) { _clock.Remove(this); return; }
-                if (animated.Frames.Length <= 1) { _clock.Remove(this); return; }
-                _asset = animated; _sources = new BitmapImage?[animated.Frames.Length]; _sources[0] = _firstSource;
+                var animation = await _cache.GetAnimationForViewAsync(_url, cancellation, RequestedDecodeLimit);
+                if (!CurrentAnimation(generation)) return;
+                if (animation is null || animation.Frames.Length <= 1) { _clock.Remove(this); return; }
+                _animation = animation; _animationSources = new BitmapImage?[animation.Frames.Length];
             }
-            await SetFrameAsync((_frame + 1) % _asset.Frames.Length);
+            var asset = _animation; var sources = _animationSources!;
+            var index = (_frame + 1) % asset.Frames.Length;
+            if (index == 0) { if (_first is not null) Bind(_first.Value.Source); }
+            else
+            {
+                var source = sources[index];
+                if (source is null)
+                {
+                    using var stream = await BiliImageCache.ToStreamAsync(asset.Frames[index]);
+                    if (!CurrentAnimation(generation)) return;
+                    source = new BitmapImage { DecodePixelWidth = Math.Min(RequestedWidth, asset.Width) };
+                    await source.SetSourceAsync(stream);
+                    if (!CurrentAnimation(generation)) return;
+                    sources[index] = source;
+                }
+                Bind(source);
+            }
+            _frame = index; _nextFrame = DateTimeOffset.UtcNow.AddMilliseconds(asset.Delays[index]);
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            if (generation == _generation) _clock.Remove(this);
-        }
-        finally { _loadingAnimation = false; }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { if (CurrentAnimation(generation)) _clock.Remove(this); }
+        finally { _busy = false; }
     }
+    private bool CurrentAnimation(int generation) => !_disposed && _active && _playing && generation == _animationGeneration;
     internal void PauseAnimation()
     {
-        _playing = false;
-        if (_disposed || _staticAsset is null || _asset == _staticAsset) return;
-        _generation++;
-        _asset = _staticAsset; _frame = 0; _sources = new[] { _firstSource };
-        if (_image is not null) _image.Source = _firstSource;
+        _playing = false; _animationGeneration++;
+        _animationCancellation?.Cancel(); _animationCancellation?.Dispose(); _animationCancellation = null;
+        _animation = null; _animationSources = null; _frame = 0; _nextFrame = default;
+        if (!_disposed && _first is not null) Bind(_first.Value.Source);
     }
     internal void Deactivate()
     {
-        if (!_active) return;
-        _active = false; Interlocked.Decrement(ref ImageResourceCounters.ActiveViews);
-        _clock.Remove(this);
-        ReleaseImages();
+        if (!_active) return; _active = false;
+        Interlocked.Decrement(ref ImageResourceCounters.ActiveViews);
+        _clock.Remove(this); ReleaseImages();
     }
     private void ReleaseImages()
     {
@@ -596,24 +562,18 @@ internal sealed class BiliImageView : Grid, IDisposable
         if (_image is not null) _image.Source = null;
         if (_person is not null) _person.ProfilePicture = null;
         if (_fallback is not null) _fallback.Visibility = Visibility.Visible;
-        _asset = null; _staticAsset = null; _sources = null; _firstSource = null; _frame = 0;
+        _first?.Dispose(); _first = null;
     }
     public void Dispose()
     {
-        if (_disposed) return;
-        Deactivate(); _disposed = true; Interlocked.Decrement(ref ImageResourceCounters.Views); _generation++; _clock.Remove(this);
-        ReleaseImages();
+        if (_disposed) return; Deactivate(); _disposed = true;
+        _clock.Remove(this); ReleaseImages(); Interlocked.Decrement(ref ImageResourceCounters.Views);
     }
 }
 
+// Animation scheduling only: static source ownership belongs to the shared service.
 internal sealed class MessageAnimationClock : IDisposable
 {
-    private const long FirstFrameLimit = 8 * 1024 * 1024;
-    private readonly Dictionary<(string Url, int Width), (BitmapImage Source, long Bytes, long Used)> _firstFrames = new();
-    private readonly Dictionary<(string Url, int Width), Task<BitmapImage?>> _pendingFrames = new();
-    private readonly SemaphoreSlim _frameSlots = new(32, 32);
-    private long _frameBytes;
-    private long _frameSequence;
     private readonly List<BiliImageView> _views = new();
     private readonly DispatcherQueueTimer _timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
     private readonly Func<bool> _visible;
@@ -635,79 +595,5 @@ internal sealed class MessageAnimationClock : IDisposable
     internal void Remove(BiliImageView view) { _views.Remove(view); view.PauseAnimation(); if (_views.Count == 0) _timer.Stop(); }
     internal void Wake() { if (!_disposed && _visible() && _views.Count > 0) _timer.Start(); }
     internal void Suspend() { _timer.Stop(); foreach (var view in _views) view.PauseAnimation(); }
-    // UI-thread cache: share decoded static images, including concurrent loads,
-    // across message rows. Keys do not retain the encoded/multiframe asset.
-    internal async Task<BitmapImage?> GetFirstFrameAsync(string url, BiliImageAsset asset, int width, CancellationToken cancellation)
-    {
-        cancellation.ThrowIfCancellationRequested();
-        if (_disposed) return null;
-        var key = (BiliImageCache.NormalizeUrl(url)?.AbsoluteUri ?? url, width);
-        if (_firstFrames.TryGetValue(key, out var cached))
-        {
-            _firstFrames[key] = (cached.Source, cached.Bytes, ++_frameSequence);
-            return cached.Source;
-        }
-        if (_pendingFrames.TryGetValue(key, out var pending)) return await pending.WaitAsync(cancellation);
-        // Wait for a decode slot instead of leaving a permanent text fallback.
-        // Views cancel this wait when detached; the shared decode stays bounded.
-        await _frameSlots.WaitAsync(cancellation);
-        var transferredSlot = false;
-        Task<BitmapImage?> shared;
-        try
-        {
-            if (_disposed) return null;
-            if (_firstFrames.TryGetValue(key, out cached))
-            {
-                _firstFrames[key] = (cached.Source, cached.Bytes, ++_frameSequence);
-                return cached.Source;
-            }
-            if (_pendingFrames.TryGetValue(key, out pending)) shared = pending;
-            else
-            {
-                var completion = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
-                shared = completion.Task; _pendingFrames.Add(key, shared);
-                transferredSlot = true;
-                _ = DecodeFirstFrameAsync(key, asset, completion);
-            }
-        }
-        finally { if (!transferredSlot) _frameSlots.Release(); }
-        return await shared.WaitAsync(cancellation);
-    }
-    private async Task DecodeFirstFrameAsync((string Url, int Width) key, BiliImageAsset asset, TaskCompletionSource<BitmapImage?> completion)
-    {
-        try
-        {
-            using var stream = await BiliImageCache.ToStreamAsync(asset.Frames[0]);
-            if (_disposed) { completion.TrySetResult(null); return; }
-            var source = new BitmapImage { DecodePixelWidth = key.Width };
-            await source.SetSourceAsync(stream);
-            if (_disposed) { completion.TrySetResult(null); return; }
-            var bytes = (long)key.Width * Math.Max(1, (int)Math.Ceiling((double)asset.Height * key.Width / asset.Width)) * 4;
-            while (_firstFrames.Count > 0 && (_frameBytes + bytes > FirstFrameLimit || _firstFrames.Count >= 256))
-            {
-                var oldest = _firstFrames.MinBy(x => x.Value.Used);
-                _frameBytes -= oldest.Value.Bytes; _firstFrames.Remove(oldest.Key);
-            }
-            if (bytes <= FirstFrameLimit)
-            {
-                _firstFrames.Add(key, (source, bytes, ++_frameSequence)); _frameBytes += bytes;
-            }
-            completion.TrySetResult(source);
-        }
-        catch (Exception ex)
-        {
-            if (ex is OutOfMemoryException) completion.TrySetException(ex);
-            else
-            {
-                BiliImageDiagnostics.Record(key.Url, "ui-first-frame", ex);
-                completion.TrySetResult(null);
-            }
-        }
-        finally { _pendingFrames.Remove(key); _frameSlots.Release(); }
-    }
-    public void Dispose()
-    {
-        _disposed = true; Suspend(); _views.Clear();
-        _firstFrames.Clear(); _frameBytes = 0;
-    }
+    public void Dispose() { _disposed = true; Suspend(); _views.Clear(); }
 }

@@ -1,0 +1,165 @@
+using Microsoft.UI.Dispatching;
+
+namespace BilibiliLiveAssistant.App;
+
+// Every dictionary, lease and native source is owned by the main UI thread.
+// Pending consumers share one factory; idle and leased sources are disjoint.
+internal sealed class UiImageSourceService : IDisposable
+{
+    private readonly BiliImageCache _images;
+    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    private readonly Dictionary<Key, Entry> _sources = new();
+    private readonly Dictionary<Key, Pending> _pending = new();
+    private readonly SemaphoreSlim _slots = new(2, 2);
+    private readonly DispatcherQueueTimer _idleTimer;
+    private TaskCompletionSource _capacity = NewSignal();
+    private long _sequence, _cancelled, _stale, _hits, _created, _released;
+    private bool _disposed;
+    internal readonly record struct Key(string Url, int Width, int Limit);
+    internal sealed class Entry(UiPixelSource value) { public UiPixelSource Value = value; public int Leases; public long Used; }
+    private sealed class Pending
+    {
+        public readonly CancellationTokenSource Cancel = new();
+        public readonly TaskCompletionSource<Entry?> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Waiters;
+        public bool Finished;
+    }
+    internal UiImageSourceService(BiliImageCache images)
+    {
+        _images = images; _idleTimer = _dispatcher.CreateTimer();
+        _idleTimer.Interval = TimeSpan.FromSeconds(15); _idleTimer.IsRepeating = false;
+        _idleTimer.Tick += (_, _) => { if (!HasConsumers) ClearIdle(); };
+    }
+    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool HasConsumers => _pending.Count > 0 || _sources.Values.Any(e => e.Leases > 0);
+    private void CheckThread() { if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("图片显示资源必须由 UI 线程管理"); }
+
+    internal async Task<Lease?> AcquireStaticSourceAsync(string url, int width, int limit, CancellationToken cancellation)
+    {
+        CheckThread();
+        if (BiliImageCache.NormalizeUrl(url) is not { } uri) return null;
+        var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit));
+        while (true)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (_disposed) return null;
+            _idleTimer.Stop();
+            if (_sources.TryGetValue(key, out var cached)) { _hits++; return Borrow(key, cached); }
+            if (_pending.TryGetValue(key, out var pending) && pending.Cancel.IsCancellationRequested)
+            { await _capacity.Task.WaitAsync(cancellation); continue; }
+            if (pending is null)
+            {
+                if (_pending.Count >= 32) { await _capacity.Task.WaitAsync(cancellation); continue; }
+                pending = new(); _pending.Add(key, pending);
+                // Acquire a consumer before the factory can complete synchronously.
+                pending.Waiters++;
+                _ = CreateAsync(key, pending);
+            }
+            else pending.Waiters++;
+            try
+            {
+                var entry = await pending.Completion.Task.WaitAsync(cancellation);
+                cancellation.ThrowIfCancellationRequested();
+                if (_disposed || entry is null) return null;
+                return Borrow(key, entry);
+            }
+            finally
+            {
+                if (--pending.Waiters == 0)
+                {
+                    if (pending.Finished) { _pending.Remove(key); pending.Cancel.Dispose(); SignalCapacity(); TrimIdle(); }
+                    else { _cancelled++; pending.Cancel.Cancel(); }
+                }
+                ScheduleIdle();
+            }
+        }
+    }
+    private Lease Borrow(Key key, Entry entry) { entry.Leases++; entry.Used = ++_sequence; _idleTimer.Stop(); return new(this, key, entry); }
+    private async Task CreateAsync(Key key, Pending pending)
+    {
+        var entered = false; UiPixelSource? value = null;
+        try
+        {
+            var token = pending.Cancel.Token;
+            await _slots.WaitAsync(token); entered = true;
+            var asset = await _images.GetStaticForViewAsync(key.Url, token, key.Limit);
+            if (asset is null) { pending.Completion.TrySetResult(null); return; }
+            value = await UiPixelSource.CreateAsync(asset.Frame, key.Width, asset.CanAnimate, asset.DecodeLimit, token);
+            if (_disposed || token.IsCancellationRequested || pending.Waiters == 0)
+            { _stale++; pending.Completion.TrySetResult(null); return; }
+            var entry = new Entry(value) { Used = ++_sequence };
+            _sources.Add(key, entry); _created++; value = null;
+            pending.Completion.TrySetResult(entry);
+        }
+        catch (OperationCanceledException) { _stale++; pending.Completion.TrySetResult(null); }
+        catch (Exception ex)
+        {
+            if (ex is OutOfMemoryException) pending.Completion.TrySetException(ex);
+            else { BiliImageDiagnostics.Record(key.Url, "ui-pixel-source", ex); pending.Completion.TrySetResult(null); }
+        }
+        finally
+        {
+            value?.Dispose();
+            if (entered) _slots.Release();
+            pending.Finished = true;
+            if (pending.Waiters == 0) { _pending.Remove(key); pending.Cancel.Dispose(); }
+            SignalCapacity(); TrimIdle(); ScheduleIdle();
+        }
+    }
+    private void SignalCapacity() { var signal = _capacity; _capacity = NewSignal(); signal.TrySetResult(); }
+    private void Release(Key key, Entry entry)
+    {
+        CheckThread();
+        if (--entry.Leases != 0) return;
+        entry.Used = ++_sequence;
+        if (_disposed) Remove(key, entry);
+        else TrimIdle();
+        ScheduleIdle();
+    }
+    private void TrimIdle()
+    {
+        if (_disposed) { ClearIdle(); return; }
+        // A completed factory's waiters have not yet received their leases.
+        var idle = _sources.Where(p => p.Value.Leases == 0 && !_pending.ContainsKey(p.Key)).OrderByDescending(p => p.Value.Used).ToArray();
+        long bytes = 0; var count = 0;
+        foreach (var pair in idle)
+        {
+            if (++count <= 256 && bytes + pair.Value.Value.Bytes <= 8 * 1024 * 1024) bytes += pair.Value.Value.Bytes;
+            else Remove(pair.Key, pair.Value);
+        }
+    }
+    private void ScheduleIdle()
+    { if (!_disposed && !HasConsumers && _sources.Count > 0 && !_idleTimer.IsRunning) _idleTimer.Start(); }
+    internal void ClearIdle()
+    {
+        CheckThread(); _idleTimer.Stop();
+        foreach (var pair in _sources.Where(p => p.Value.Leases == 0 && !_pending.ContainsKey(p.Key)).ToArray())
+            Remove(pair.Key, pair.Value);
+    }
+    private void Remove(Key key, Entry entry) { _sources.Remove(key); entry.Value.Dispose(); _released++; }
+    internal object GetDiagnostics() => new
+    {
+        sources = _sources.Count, leases = _sources.Values.Sum(e => e.Leases),
+        idleBytes = _sources.Values.Where(e => e.Leases == 0).Sum(e => e.Value.Bytes),
+        activeBytes = _sources.Values.Where(e => e.Leases > 0).Sum(e => e.Value.Bytes),
+        pending = _pending.Count, waiters = _pending.Values.Sum(p => p.Waiters),
+        hits = _hits, cancelled = _cancelled, stale = _stale,
+        created = _created, released = _released,
+    };
+    public void Dispose()
+    {
+        CheckThread(); if (_disposed) return; _disposed = true; _idleTimer.Stop();
+        foreach (var pending in _pending.Values) pending.Cancel.Cancel();
+        ClearIdle(); SignalCapacity();
+        // Leased sources are disposed after their controls detach, not while bound.
+    }
+    internal sealed class Lease : IDisposable
+    {
+        private UiImageSourceService? _owner;
+        private readonly Key _key;
+        private readonly Entry _entry;
+        internal UiPixelSource Value => _entry.Value;
+        internal Lease(UiImageSourceService owner, Key key, Entry entry) { _owner = owner; _key = key; _entry = entry; }
+        public void Dispose() { var owner = _owner; if (owner is null) return; _owner = null; owner.Release(_key, _entry); }
+    }
+}

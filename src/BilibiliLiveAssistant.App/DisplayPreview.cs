@@ -6,8 +6,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Storage.Streams;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -22,7 +20,9 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private readonly DispatcherQueueTimer _renderTimer;
     private readonly List<MessageCard> _cardViews = new();
     private readonly List<Visual> _visuals = new();
+    private readonly List<UiPixelSource> _pixelSources = new();
     private CancellationTokenSource? _downloads;
+    private CancellationTokenSource? _renderCancellation;
     private int _generation;
     private bool _active, _disposed;
     private OverlayRegionKind? _kind;
@@ -37,7 +37,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         _vm = vm; _visible = visible; _clock = new(() => _active && _visible());
         _renderTimer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _renderTimer.Interval = TimeSpan.FromMilliseconds(100); _renderTimer.IsRepeating = false;
         _renderTimer.Tick += async (_, _) =>
-        { try { await RenderAsync(); } catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed) _hint.Text = $"预览暂不可用：{ex.Message}"; } };
+        { try { await RenderAsync(); } catch (OperationCanceledException) { } catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed) _hint.Text = $"预览暂不可用：{ex.Message}"; } };
         RowDefinitions.Add(new() { Height = GridLength.Auto }); RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); RowDefinitions.Add(new() { Height = GridLength.Auto });
         Children.Add(_sample); Grid.SetRow(_canvas, 1); Grid.SetRow(_cards, 1); Children.Add(_canvas); Children.Add(_cards); Grid.SetRow(_hint, 2); Children.Add(_hint);
         _sample.SelectionChanged += (_, _) => Schedule();
@@ -55,13 +55,18 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private void Clear()
     {
         _generation++; _downloads?.Cancel(); _downloads?.Dispose(); _downloads = null;
+        _renderCancellation?.Cancel(); _renderCancellation?.Dispose(); _renderCancellation = null;
         foreach (var visual in _visuals) { visual.StopAnimation("Translation.X"); visual.StopAnimation("Opacity"); } _visuals.Clear();
-        foreach (var card in _cardViews) card.Dispose(); _cardViews.Clear(); _cards.Children.Clear(); _canvas.Children.Clear();
+        foreach (var card in _cardViews) card.Dispose(); _cardViews.Clear(); _cards.Children.Clear();
+        foreach (var image in _canvas.Children.OfType<Image>()) image.Source = null;
+        _canvas.Children.Clear();
+        foreach (var source in _pixelSources) source.Dispose(); _pixelSources.Clear();
     }
     private async Task RenderAsync()
     {
         if (_disposed || !_active || !_visible() || _canvas.ActualWidth <= 0) return;
         Clear(); var generation = _generation;
+        var cancellation = (_renderCancellation = new()).Token;
         var messages = PreviewSamples.For(_kind);
         _sample.Visibility = _kind is null or OverlayRegionKind.Danmaku or OverlayRegionKind.SuperChat ? Visibility.Visible : Visibility.Collapsed;
         if (_sample.Visibility == Visibility.Visible) messages = new[] { messages[Math.Clamp(_sample.SelectedIndex, 0, messages.Length - 1)] };
@@ -107,12 +112,10 @@ internal sealed class DisplayPreview : Grid, IDisposable
                 if (stationary) OverlayMessageRenderer.DrawBackground(graphics, bitmap.Size, region, OverlayTextRenderer.Color(region.Color));
                 graphics.DrawImageUnscaled(rendered, 0, 0);
             }
-            using var memory = new MemoryStream(); bitmap.Save(memory, ImageFormat.Png);
-            using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream.GetOutputStreamAt(0));
-            writer.WriteBytes(memory.ToArray()); await writer.StoreAsync(); await writer.FlushAsync(); writer.DetachStream(); stream.Seek(0);
-            var source = new BitmapImage(); await source.SetSourceAsync(stream);
-            if (_disposed || generation != _generation || !_active || !_visible()) return;
-            var image = new Image { Source = source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
+            var source = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(bitmap), bitmap.Width, false, 256, cancellation);
+            if (_disposed || generation != _generation || !_active || !_visible()) { source.Dispose(); return; }
+            _pixelSources.Add(source);
+            var image = new Image { Source = source.Source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
             if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(region.CardHeight, region.FontSize * 3 + 24) + 8);
             Canvas.SetTop(image, y); Canvas.SetLeft(image, stationary ? 12 + slot % columns * (cellWidth + 8) : 0); _canvas.Children.Add(image);
             if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : stationary ? OverlayBulletinRenderer.PanelRowHeight(region, _style) : bitmap.Height) + (stationary && kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelGap : 8);
@@ -142,7 +145,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             : kind == OverlayRegionKind.Interaction ? $"进房 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
         var download = new CancellationTokenSource(); _downloads = download;
-        var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)).Distinct().Take(16).Where(url => _vm.Images.TryGetFrame(url) is null).ToArray();
+        var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)).Distinct().Take(16).Where(url => _vm.Images.TryGetStaticFrame(url) is null).ToArray();
         if (urls.Length > 0) _ = LoadAsync(urls, download.Token, generation);
     }
     private async Task LoadAsync(string[] urls, CancellationToken token, int generation)
@@ -150,7 +153,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         try
         {
             var updated = false;
-            foreach (var url in urls) { if (await _vm.Images.GetForViewAsync(url, false, token) is not null) updated = true; }
+            foreach (var url in urls) { if (await _vm.Images.GetStaticForViewAsync(url, token) is not null) updated = true; }
             if (updated && !_disposed && generation == _generation && _active && _visible()) Schedule();
         }
         catch (OperationCanceledException) { }

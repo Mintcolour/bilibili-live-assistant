@@ -66,6 +66,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public DanmakuCardBoard CardBoard { get; } = new();
     internal MediaDetailsService Media { get; } = new();
     internal BiliImageCache Images { get; } = new();
+    internal UiImageSourceService UiImages => Images.Sources;
     public event Action<IReadOnlyList<LiveEvent>>? EventBatchReceived;
     public event Action? RoomHistoryReset;
     internal LiveEvent? LatestOnline { get; private set; }
@@ -129,7 +130,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
             dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
                 sc = Dashboard.SuperChats.Count, interactions = Dashboard.Interactions.Count, events = Events.Count },
-            images = Images.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), media = Media.GetDiagnostics(),
+            images = Images.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), uiImages = UiImages.GetDiagnostics(), media = Media.GetDiagnostics(),
             history = (History as SqliteLocalHistory)?.GetDiagnostics(),
             canvasBytes = PerformanceCounters.CanvasBytes, canvases = PerformanceCounters.Canvases,
             window = WindowDiagnostics?.Invoke(),
