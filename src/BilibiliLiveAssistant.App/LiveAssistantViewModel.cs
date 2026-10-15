@@ -183,6 +183,21 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         OnPropertyChanged(nameof(IsListening));
     }
 
+    // Resolve the current settings only after entering the gate: edits from separate
+    // overlay frames must not overwrite each other's regions or account settings.
+    internal async Task UpdateOverlayRegionAsync(OverlayRegionKind kind,
+        Func<OverlayRegionSettings, OverlayRegionSettings> update, bool? enabled = null)
+    {
+        await _connectionGate.WaitAsync();
+        try
+        {
+            var display = OverlayRegions.With(_settings.Display, kind, update(OverlayRegions.Get(_settings.Display, kind)).Normalize());
+            if (enabled is { } visible) display = OverlayRegions.WithEnabled(display, kind, visible);
+            await SaveCoreAsync(_settings with { Display = display });
+        }
+        finally { _connectionGate.Release(); }
+    }
+
     public async Task SaveAsync(AppSettings settings)
     {
         await _connectionGate.WaitAsync();

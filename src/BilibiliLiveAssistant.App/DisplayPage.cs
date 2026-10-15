@@ -155,7 +155,7 @@ internal sealed class DisplayPage : Page
         _preview.Visibility = _layout.Visibility = _layoutLabel.Visibility = _feature is null ? Visibility.Visible : Visibility.Collapsed;
         _featurePreview.Visibility = _feature is "media" or "cards" ? Visibility.Visible : Visibility.Collapsed;
         _editor.Visibility = _shared.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
-        _enabled.Visibility = _selected is null or OverlayRegionKind.Danmaku ? Visibility.Collapsed : Visibility.Visible;
+        _enabled.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
         _tracks.Visibility = _selected == OverlayRegionKind.Danmaku ? Visibility.Visible : Visibility.Collapsed;
         _frameRate.Visibility = _selected is not null and not OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
         _locked.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
@@ -175,11 +175,9 @@ internal sealed class DisplayPage : Page
         if (_feature == "history") { _historyDraft = _historyEditor.Read(); return; }
         if (_selected is { } kind)
         {
-            var previous = _drafts[kind]; var next = _editor.Read(previous); _drafts[kind] = next;
+            var previous = _drafts[kind]; var next = _editor.Read(previous) with { Enabled = _enabled.IsOn }; _drafts[kind] = next;
             if (previous.X != next.X || previous.Y != next.Y || previous.Width != next.Width || previous.Height != next.Height) _layoutDirty.Add(kind);
-            _displayDraft = kind switch { OverlayRegionKind.Gift => _displayDraft with { ShowGift = _enabled.IsOn },
-                OverlayRegionKind.SuperChat => _displayDraft with { ShowSuperChat = _enabled.IsOn }, OverlayRegionKind.Interaction => _displayDraft with { ShowEnter = _enabled.IsOn },
-                OverlayRegionKind.Status => _displayDraft with { ShowOnline = _enabled.IsOn }, _ => _displayDraft };
+            _displayDraft = OverlayRegions.WithEnabled(_displayDraft, kind, _enabled.IsOn);
             _dashboardDraft = _dashboardDraft with { ShowAvatars = _avatars.IsChecked == true, ShowMedals = _medals.IsChecked == true, ShowIdentity = _identity.IsChecked == true };
         }
         else _dashboardDraft = _dashboard.Read(_dashboardDraft);

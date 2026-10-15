@@ -5,6 +5,7 @@ public enum OverlayDisplayMode { Scrolling, List, Grid, Cards, Panel }
 
 public sealed record OverlayRegionSettings
 {
+    public bool Enabled { get; init; } = true;
     public OverlayDisplayMode Mode { get; init; }
     public int ModeVersion { get; init; }
     public double GuardDurationSeconds { get; init; } = 30;
@@ -148,9 +149,21 @@ public static class OverlayRegions
         _ => display with { StatusRegion = settings },
     };
 
-    public static bool Enabled(DisplaySettings display, OverlayRegionKind kind) => kind switch
+    public static bool Enabled(DisplaySettings display, OverlayRegionKind kind) => Get(display, kind).Enabled && (kind switch
     {
         OverlayRegionKind.Gift => display.ShowGift, OverlayRegionKind.SuperChat => display.ShowSuperChat,
         OverlayRegionKind.Interaction => display.ShowEnter, OverlayRegionKind.Status => display.ShowOnline, _ => true,
-    };
+    });
+
+    public static DisplaySettings WithEnabled(DisplaySettings display, OverlayRegionKind kind, bool enabled)
+    {
+        display = With(display, kind, Get(display, kind) with { Enabled = enabled });
+        return kind switch
+        {
+            OverlayRegionKind.Gift => display with { ShowGift = enabled },
+            OverlayRegionKind.SuperChat => display with { ShowSuperChat = enabled },
+            OverlayRegionKind.Interaction => display with { ShowEnter = enabled },
+            OverlayRegionKind.Status => display with { ShowOnline = enabled }, _ => display,
+        };
+    }
 }
