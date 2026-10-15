@@ -20,6 +20,7 @@ internal sealed record BiliAnimationAsset(byte[][] Frames, int[] Delays, int W, 
 internal sealed class BiliImageCache : IDisposable
 {
     internal UiImageSourceService Sources { get; }
+    internal BiliAvatarResolver Avatars { get; } = new();
     private static readonly (string Host, string Suffix)[] AllowedHosts =
     [
         ("hdslb.com", ".hdslb.com"), ("biliimg.com", ".biliimg.com"), ("bilivideo.com", ".bilivideo.com"),
@@ -416,6 +417,7 @@ internal sealed class BiliImageCache : IDisposable
     public void Dispose()
     {
         Sources.Dispose();
+        Avatars.Dispose();
         lock (_gate)
         {
             if (_disposed) return;

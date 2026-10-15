@@ -255,8 +255,14 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             var cancellation = sprite.Cancellation.Token;
             var urls = OverlayMessageRenderer.ImageUrls(sprite.Event, _style).Distinct().Take(Kind == OverlayRegionKind.Status ? 32 : 16)
                 .Where(url => ViewModel.Images.TryGetStaticFrame(url, DecodeLimit(url)) is null).ToArray();
-            if (urls.Length == 0) return;
-            await Task.WhenAll(urls.Select(LoadOneAsync));
+            await Task.WhenAll(urls.Select(LoadOneAsync).Append(LoadAvatarAsync()));
+            async Task LoadAvatarAsync()
+            {
+                var enriched = await OverlayMessageRenderer.ResolveAvatarAsync(sprite.Event, _style, ViewModel.Images, cancellation);
+                if (_cleaned || !Visible || !_sprites.Contains(sprite) || ReferenceEquals(enriched, sprite.Event)) return;
+                sprite.Event = enriched;
+                await LoadOneAsync(enriched.Appearance!.AvatarUrl);
+            }
             async Task LoadOneAsync(string url)
             {
                 if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url)) is null
@@ -404,7 +410,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     }
     private sealed class Sprite : IDisposable
     {
-        public LiveEvent Event { get; }
+        public LiveEvent Event { get; set; }
         public int Lane { get; }
         public double X;
         public int Y;

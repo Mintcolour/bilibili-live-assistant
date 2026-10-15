@@ -18,7 +18,8 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private sealed class CardView(LiveEvent value, Rectangle bounds, string caption) : IDisposable
     {
-        public LiveEvent Value { get; } = value;
+        public LiveEvent SourceValue { get; } = value;
+        public LiveEvent Value { get; set; } = value;
         public Rectangle Bounds { get; } = bounds;
         public string Caption { get; } = caption;
         public Bitmap? Image;
@@ -157,7 +158,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 var width = Math.Max(120, (ClientSize.Width - 16 - (Columns - 1) * 8) / Columns);
                 var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + CellGap), width, CellHeight);
                 keep.Add(i);
-                if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.Value, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
+                if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.SourceValue, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
                 Release(i); var view = new CardView(value, bounds, caption); _views.Add(i, view);
                 AdmitMedia(view); UpdateBitmap(view); _ = LoadImagesAsync(i, view);
                 if (view.Media is { } media) _ = media.LoadAsync(() => { if (Current(i, view)) { UpdateBitmap(view); RequestRender(view.Bounds); } });
@@ -195,12 +196,26 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         try
         {
             var token = view.Cancellation.Token;
-            foreach (var url in OverlayMessageRenderer.ImageUrls(view.Value, Style).Distinct().Take(16))
+            await Task.WhenAll(LoadKnownAsync(), LoadAvatarAsync());
+            async Task LoadKnownAsync()
             {
-                if (!Current(slot, view)) return;
-                var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, url, Style, RegionSettings);
-                if (ViewModel.Images.TryGetStaticFrame(url, limit) is not null) continue;
-                if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit) is null) continue;
+                foreach (var url in OverlayMessageRenderer.ImageUrls(view.Value, Style).Distinct().Take(16))
+                {
+                    if (!Current(slot, view)) return;
+                    var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, url, Style, RegionSettings);
+                    if (ViewModel.Images.TryGetStaticFrame(url, limit) is not null) continue;
+                    if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit) is null) continue;
+                    if (!Current(slot, view)) return;
+                    UpdateBitmap(view); RequestRender(view.Bounds);
+                }
+            }
+            async Task LoadAvatarAsync()
+            {
+                var enriched = await OverlayMessageRenderer.ResolveAvatarAsync(view.Value, Style, ViewModel.Images, token);
+                if (!Current(slot, view) || ReferenceEquals(enriched, view.Value)) return;
+                view.Value = enriched;
+                var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, enriched.Appearance!.AvatarUrl, Style, RegionSettings);
+                await ViewModel.Images.GetStaticForViewAsync(enriched.Appearance.AvatarUrl, token, limit);
                 if (!Current(slot, view)) return;
                 UpdateBitmap(view); RequestRender(view.Bounds);
             }

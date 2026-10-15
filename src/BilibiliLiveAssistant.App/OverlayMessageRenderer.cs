@@ -64,6 +64,13 @@ internal static class OverlayMessageRenderer
         return BiliImageCache.SizeTier(Math.Ceiling(style.AvatarSize * region.ContentScale));
     }
 
+    internal static async Task<LiveEvent> ResolveAvatarAsync(LiveEvent value, DashboardSettings style, BiliImageCache cache, CancellationToken cancellation)
+    {
+        if (!style.ShowAvatars || MessageCard.AvatarUid(value) <= 0 || BiliImageCache.NormalizeUrl(value.Appearance?.AvatarUrl) is not null) return value;
+        var avatar = await cache.Avatars.ResolveAsync(value.Uid, value.Appearance?.AvatarUrl, cancellation);
+        return avatar.Length == 0 ? value : value with { Appearance = (value.Appearance ?? new()) with { AvatarUrl = avatar } };
+    }
+
     public static IEnumerable<string> ImageUrls(LiveEvent value, DashboardSettings style)
     {
         if (value.HistoryFields?.GiftIconUrl is { Length: > 0 } giftIcon) yield return giftIcon;

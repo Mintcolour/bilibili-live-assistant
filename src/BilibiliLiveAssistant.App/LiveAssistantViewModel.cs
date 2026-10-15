@@ -130,7 +130,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
             dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
                 sc = Dashboard.SuperChats.Count, interactions = Dashboard.Interactions.Count, events = Events.Count },
-            images = Images.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), uiImages = UiImages.GetDiagnostics(), media = Media.GetDiagnostics(),
+            images = Images.GetDiagnostics(), avatars = Images.Avatars.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), uiImages = UiImages.GetDiagnostics(), media = Media.GetDiagnostics(),
             history = (History as SqliteLocalHistory)?.GetDiagnostics(),
             canvasBytes = PerformanceCounters.CanvasBytes, canvases = PerformanceCounters.Canvases,
             window = WindowDiagnostics?.Invoke(),
@@ -520,6 +520,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 accepted.Add(value);
                 // Local overlay examples must not replace real room metrics in the dashboard.
                 if (value.Extra.TryGetValue("sample", out var sample) && sample is true) continue;
+                Images.Avatars.Observe(value.Uid, value.Appearance?.AvatarUrl);
+                if (value.Extra.GetValueOrDefault("rank_members") is IReadOnlyList<LiveRankMember> observedMembers)
+                    foreach (var member in observedMembers) Images.Avatars.Observe(member.Uid, member.Appearance?.AvatarUrl);
                 if (value.Type == LiveEventType.Online)
                 {
                     if (value.Extra.TryGetValue("popularity", out var popularity) && popularity is string p) _popularity = p;
@@ -576,6 +579,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         RoomProfile = null; AudienceHistory.Clear(); OnPropertyChanged(nameof(RoomProfile));
         _popularity = ""; _watched = "";
         RoomHistoryReset?.Invoke();
+        Images.Avatars.Reset();
         UiImages.ClearIdle();
         OnlineText = "--"; RankText = "暂无榜单"; RoomSummary = "房间状态暂无数据";
     }

@@ -51,7 +51,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         if (style.ShowAvatars)
         {
-            var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, style.AvatarSize, style.AvatarSize, false, animations, visible, true);
+            var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, style.AvatarSize, style.AvatarSize, false, animations, visible, true, avatarUid: AvatarUid(message));
             avatar.VerticalAlignment = VerticalAlignment.Top; _images.Add(avatar); layout.Children.Add(avatar);
         }
         var content = new StackPanel { Spacing = 5 };
@@ -119,7 +119,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
             var size = Math.Clamp(style.AvatarSize, 28, 40);
             var frame = style.ShowIdentity && appearance?.AvatarFrameUrl is { Length: > 0 };
             var avatarLayout = new Grid { Width = size + (frame ? 6 : 0), Height = size + (frame ? 6 : 0), VerticalAlignment = VerticalAlignment.Top };
-            var avatar = new BiliImageView(vm.Images, appearance?.AvatarUrl ?? "", message.Username, size, size, false, animations, visible, true);
+            var avatar = new BiliImageView(vm.Images, appearance?.AvatarUrl ?? "", message.Username, size, size, false, animations, visible, true, avatarUid: AvatarUid(message));
             _images.Add(avatar); avatarLayout.Children.Add(avatar);
             if (frame)
             {
@@ -241,7 +241,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
         if (style.ShowAvatars)
         {
             var size = Math.Clamp(style.AvatarSize, 24, 32);
-            var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, size, size, false, animations, visible, true);
+            var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, size, size, false, animations, visible, true, avatarUid: AvatarUid(message));
             avatar.VerticalAlignment = VerticalAlignment.Top;
             _images.Add(avatar); layout.Children.Add(avatar);
         }
@@ -377,6 +377,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
         } });
         paragraph.Inlines.Add(new Run { Text = " " });
     }
+    internal static long AvatarUid(LiveEvent value) => value.Extra.GetValueOrDefault("sample") is true ? 0 : value.Uid;
     internal static SolidColorBrush Brush(string hex, double opacity = 1)
     {
         if (!OverlayRegionSettings.IsColor(hex)) hex = "#FFFFFF";
@@ -417,6 +418,8 @@ internal sealed class BiliImageView : Grid, IDisposable
 {
     private readonly BiliImageCache _cache;
     private readonly string _url;
+    private readonly long _avatarUid;
+    private string _displayUrl;
     private readonly bool _animate;
     private readonly MessageAnimationClock _clock;
     private readonly Func<bool> _visible;
@@ -438,10 +441,11 @@ internal sealed class BiliImageView : Grid, IDisposable
         (double.IsFinite(Width) ? Width : ActualWidth > 0 ? ActualWidth : 256) * _rasterizationScale), 1, 256);
 
     public BiliImageView(BiliImageCache cache, string url, string fallback, double width, double height, bool animate,
-        MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false)
+        MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false, long avatarUid = 0)
     {
         Interlocked.Increment(ref ImageResourceCounters.Views);
         _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible;
+        _avatarUid = avatar ? avatarUid : 0; _displayUrl = url;
         Width = width; Height = height;
         if (avatar) { _person = new PersonPicture { DisplayName = fallback, Width = width, Height = height }; Children.Add(_person); }
         else
@@ -470,14 +474,20 @@ internal sealed class BiliImageView : Grid, IDisposable
         UiImageSourceService.Lease? acquired = null;
         try
         {
-            acquired = await _cache.Sources.AcquireStaticSourceAsync(_url, RequestedWidth, RequestedDecodeLimit, cancellation);
+            if (_person is not null)
+            {
+                _displayUrl = await _cache.Avatars.ResolveAsync(_avatarUid, _url, cancellation);
+                if (_disposed || !_active || !_visible() || generation != _generation) return;
+                if (_displayUrl.Length == 0) { Interlocked.Increment(ref ImageResourceCounters.MissingAvatars); return; }
+            }
+            acquired = await _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation);
             if (_disposed || !_active || !_visible() || generation != _generation || acquired is null) return;
             _first = acquired; acquired = null;
             Bind(_first.Value.Source);
             if (_animate && _first.Value.CanAnimate) _clock.Add(this);
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { BiliImageDiagnostics.Record(_url, "view-restore", ex); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { BiliImageDiagnostics.Record(_displayUrl, "view-restore", ex); }
         finally
         {
             acquired?.Dispose(); _loading = false;
@@ -487,7 +497,7 @@ internal sealed class BiliImageView : Grid, IDisposable
     private void Bind(ImageSource source)
     {
         if (_image is not null) _image.Source = source;
-        if (_person is not null) _person.ProfilePicture = source;
+        if (_person is not null) { _person.ProfilePicture = source; Interlocked.Increment(ref ImageResourceCounters.AvatarBindings); }
         if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
     }
     internal bool InViewport()

@@ -260,10 +260,16 @@ public sealed class OverlayWindow : OverlaySurface
     {
         var urls = OverlayMessageRenderer.ImageUrls(item.Event, _vm.Settings.Dashboard).Distinct().Take(16)
             .Where(url => _vm.Images.TryGetStaticFrame(url, DecodeLimit(url)) is null).ToArray();
-        if (urls.Length == 0) return;
         var cancellation = item.Cancellation.Token;
-        try { await Task.WhenAll(urls.Select(LoadOneAsync)); }
+        try { await Task.WhenAll(urls.Select(LoadOneAsync).Append(LoadAvatarAsync())); }
         catch (OperationCanceledException) { return; }
+        async Task LoadAvatarAsync()
+        {
+            var enriched = await OverlayMessageRenderer.ResolveAvatarAsync(item.Event, _vm.Settings.Dashboard, _vm.Images, cancellation);
+            if (_cleaned || !Visible || !_items.Contains(item) || ReferenceEquals(enriched, item.Event)) return;
+            item.Event = enriched;
+            await LoadOneAsync(enriched.Appearance!.AvatarUrl);
+        }
         async Task LoadOneAsync(string url)
         {
             if (await _vm.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url)) is null
@@ -347,7 +353,7 @@ public sealed class OverlayWindow : OverlaySurface
         }
         public OverlayMediaAttachment? Media { get; private set; }
         public int TrackSpan { get; private set; }
-        public LiveEvent Event { get; }
+        public LiveEvent Event { get; set; }
         public CancellationTokenSource Cancellation { get; } = new();
         public void RefreshImage(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
         {

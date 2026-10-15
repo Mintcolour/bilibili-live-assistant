@@ -6,6 +6,7 @@ namespace BilibiliLiveAssistant.App;
 internal static class ImageResourceCounters
 {
     internal static long Views, ActiveViews, Sources, SourceBytes, BackingBitmapBytes, Created, Released, PendingUploads, ActiveUploads, StaleUploads;
+    internal static long AvatarBindings, MissingAvatars;
     private static readonly long[] Counts = new long[4], Ticks = new long[4];
     internal static Timing Measure(int kind) => new(kind, PerformanceCounters.Enabled ? Stopwatch.GetTimestamp() : 0);
     internal readonly struct Timing(int kind, long started) : IDisposable
@@ -26,6 +27,7 @@ internal static class ImageResourceCounters
         pixelAccounting = "backing-plus-surface-v2",
         created = Interlocked.Read(ref Created), released = Interlocked.Read(ref Released),
         pendingUploads = Interlocked.Read(ref PendingUploads), activeUploads = Interlocked.Read(ref ActiveUploads), staleUploads = Interlocked.Read(ref StaleUploads),
+        avatarBindings = Interlocked.Read(ref AvatarBindings), missingAvatars = Interlocked.Read(ref MissingAvatars),
         decodeCount = Interlocked.Read(ref Counts[0]), decodeMs = Interlocked.Read(ref Ticks[0]) * 1000d / Stopwatch.Frequency,
         conversionCount = Interlocked.Read(ref Counts[1]), conversionMs = Interlocked.Read(ref Ticks[1]) * 1000d / Stopwatch.Frequency,
         uploadCount = Interlocked.Read(ref Counts[2]), uploadMs = Interlocked.Read(ref Ticks[2]) * 1000d / Stopwatch.Frequency,
