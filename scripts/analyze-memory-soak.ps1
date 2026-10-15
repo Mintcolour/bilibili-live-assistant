@@ -10,9 +10,10 @@ $completedPath = Join-Path $runPath 'completed.json'
 $completed = if (Test-Path -LiteralPath $completedPath) { Get-Content -LiteralPath $completedPath -Raw | ConvertFrom-Json } else { $null }
 $assertions = $rows | Where-Object kind -eq assertions | Select-Object -Last 1
 $eligible = $header.config.View -eq 'both' -and $header.config.Images -eq 'unique' -and !$header.config.Snapshot -and
-    $header.config.AttachImages -ne $false -and $header.config.CreateSources -ne $false -and !$header.config.DrawingDecode
+    $header.config.AttachImages -ne $false -and $header.config.CreateSources -ne $false -and !$header.config.DrawingDecode -and !$header.config.ScrollProbe
 $retentionPassed = $null -ne $assertions -and $assertions.stopRetainsContent -and $assertions.sameRoomRetainsContent -and
     $assertions.offlineRetainsContent -and $assertions.switchClearsContent
+$buildVerified = $null -ne $header.build -and !$header.build.alternateSource
 function Get-MemorySummary([string]$Field) {
     $values = @($samples | ForEach-Object { $_.$Field } | Where-Object { $null -ne $_ })
     if ($values.Count -eq 0) { return $null }
@@ -37,6 +38,8 @@ $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Su
     name = $header.config.Name
     configuration = $header.config
     winUiVersion = $header.winUiVersion
+    build = $header.build
+    runtimeBuildVerified = $buildVerified
     renderingAcceptanceEligible = $eligible
     retentionChecksPassed = $retentionPassed
     finished = $null -ne $completed
@@ -44,7 +47,7 @@ $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Su
     produced = $last.produced
     completedTrafficSeconds = if ($completed) { $header.config.Seconds } else { $null }
     twoHourTrafficCompleted = $null -ne $completed -and $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
-    twoHourRenderingRunCompleted = $eligible -and $retentionPassed -and $null -ne $completed -and
+    twoHourRenderingRunCompleted = $eligible -and $buildVerified -and $retentionPassed -and $null -ne $completed -and
         $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
     privateCommit = Get-MemorySummary 'privateBytes'
     totalWorkingSet = Get-MemorySummary 'workingSetBytes'

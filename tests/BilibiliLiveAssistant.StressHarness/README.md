@@ -10,6 +10,8 @@
 
 使用 Visual Studio MSBuild，保持与正式发布相同的 Release x64、SelfContained 与 ReadyToRun；压力项目会复制 PRI/XBF 资源。
 
+推荐通过 `scripts/build-memory-soak.ps1 -Name <唯一名称>` 构建。它只清理压力项目的 bin/obj，防止切换 SDK 后 MSIX 解压缓存保留旧 DLL，并逐项核对发布的 WinUI 主 DLL 与指定 NuGet 包的 SHA-256。构建成功后返回独立目录，传给下面的 `-BinarySource`。直接执行 MSBuild 的旧方法仍可用于开发，但未经原生文件核对的运行不标记为两小时完整显示验收。`-SourceRoot` 仅用于隔离实现对照，生成的清单会标记替代源。
+
 ```powershell
 $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 $buildExe = & $vswherePath -latest -prerelease -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild/Current/Bin/MSBuild.exe' | Select-Object -First 1
@@ -35,6 +37,8 @@ if ($LASTEXITCODE -ne 0) { throw '压力程序发布失败' }
 - `-View pipeline`：隐藏主窗口，不生成消息界面，按指定速率单独调用图片管线；配合 `-NoImageSources` 可单独检查静态解码。此模式不验证存档、显示和保留内容的语义。
 
 压力项目可通过 MSBuild 参数 `AppSdkVersion` 对照框架补丁，默认仍与正式应用一致。不同框架或诊断模式的结果不得混入同一次验收。日志头记录实际加载的 WinUI 原生模块版本，新分析字段单独标记完整显示场景和内容保留断言；旧日志字段继续保留。
+
+`-ScrollProbe` 会在持续流量下滚动 SC 和普通弹幕，检查首个可见记录及行内像素偏移能否保持，并写入 `scroll-check.json`。该诊断会改变可见内容，不作为最终性能验收。
 
 ## 分析结果
 

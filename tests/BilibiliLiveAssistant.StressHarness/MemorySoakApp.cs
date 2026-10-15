@@ -33,6 +33,7 @@ public partial class App : Application
     private double _previousSeconds, _previousCpu;
     private bool _finishing;
     private Task _snapshot = Task.CompletedTask;
+    private Task _scrollProbe = Task.CompletedTask;
     private readonly List<WeakReference> _retired = new();
     public App()
     {
@@ -72,6 +73,8 @@ public partial class App : Application
                 runtime = Environment.Version.ToString(), processors = Environment.ProcessorCount,
                 assembly = typeof(App).Assembly.GetName().Name, dpi = _window.Content.XamlRoot?.RasterizationScale,
                 winUiVersion = _process.Modules.Cast<ProcessModule>().FirstOrDefault(m => m.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))?.FileVersionInfo.FileVersion,
+                build = File.Exists(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))
+                    ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))) : (JsonElement?)null,
                 timestamp = DateTimeOffset.UtcNow, simulatedImages = true, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
                 note = "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
             Sample();
@@ -79,6 +82,7 @@ public partial class App : Application
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
             if (_config.Snapshot) _snapshot = CaptureOverviewAsync();
+            if (_config.ScrollProbe) _scrollProbe = VerifyScrollAsync();
             if (_config.View == "pipeline")
             {
                 // Diagnostic only: exercise exactly the production cache/decode
@@ -207,12 +211,57 @@ public partial class App : Application
     }
     private async Task FinishAsync()
     {
-        await _snapshot;
+        await _snapshot; await _scrollProbe;
         _phase = "finished"; Sample(); _finishing = true; _stop.Cancel(); _sampling?.Stop();
         _window?.AllowClose(); await ViewModel.DisposeAsync(); _window?.Close();
         _log?.Dispose(); _process?.Dispose();
         File.WriteAllText(Path.Combine(_config.Output, "completed.json"), JsonSerializer.Serialize(new { seconds = _elapsed.Elapsed.TotalSeconds, produced = _produced }));
         Exit();
+    }
+    private async Task VerifyScrollAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(25));
+            var results = new List<object>();
+            foreach (var title in new[] { "SC", "弹幕" })
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var target = FindChildren<DashboardList>((DependencyObject)_window!.Content)
+                    .First(row => (string?)typeof(DashboardList).GetField("_title", flags)!.GetValue(row) == title);
+                var list = (Microsoft.UI.Xaml.Controls.ListView)typeof(DashboardList).GetField("_list", flags)!.GetValue(target)!;
+                var items = (System.Collections.IList)typeof(DashboardList).GetField("_items", flags)!.GetValue(target)!;
+                var viewer = FindChildren<Microsoft.UI.Xaml.Controls.ScrollViewer>(list).First();
+                list.ScrollIntoView(items[title == "SC" ? 3 : 30], Microsoft.UI.Xaml.Controls.ScrollIntoViewAlignment.Leading);
+                await Task.Delay(700);
+                viewer.ChangeView(null, viewer.VerticalOffset + (title == "SC" ? 120 : 20), null, true);
+                await Task.Delay(300);
+                (Guid Id, double Pixels) ReadAnchor()
+                {
+                    var panel = (Microsoft.UI.Xaml.Controls.ItemsStackPanel)list.ItemsPanelRoot;
+                    var index = panel.FirstVisibleIndex;
+                    var slot = items[index]!;
+                    var record = slot is DashboardRecord direct ? direct : (DashboardRecord)slot.GetType().GetField("Record")!.GetValue(slot)!;
+                    var container = (FrameworkElement)list.ContainerFromIndex(index);
+                    return (record.Id, viewer.VerticalOffset - container.ActualOffset.Y);
+                }
+                var before = ReadAnchor();
+                await Task.Delay(TimeSpan.FromSeconds(title == "SC" ? 8 : 3));
+                var after = ReadAnchor();
+                results.Add(new { title, sameRecord = before.Id == after.Id, beforePixels = before.Pixels,
+                    afterPixels = after.Pixels, samePixelOffset = Math.Abs(before.Pixels - after.Pixels) < 2 });
+                list.ScrollIntoView(items[0], Microsoft.UI.Xaml.Controls.ScrollIntoViewAlignment.Leading);
+                viewer.ChangeView(null, 0, null, true);
+            }
+            File.WriteAllText(Path.Combine(_config.Output, "scroll-check.json"), JsonSerializer.Serialize(results));
+        }
+        catch (Exception error) { File.WriteAllText(Path.Combine(_config.Output, "scroll-error.txt"), error.ToString()); }
+    }
+    private static IEnumerable<T> FindChildren<T>(DependencyObject node) where T : DependencyObject
+    {
+        if (node is T match) yield return match;
+        for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(node); i++)
+            foreach (var child in FindChildren<T>(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(node, i))) yield return child;
     }
     private async Task CaptureOverviewAsync(string filename = "overview.png", int delaySeconds = 20)
     {
@@ -246,7 +295,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
