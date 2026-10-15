@@ -4,7 +4,7 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>BilibiliLiveAssistant.App</RootNamespace>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationManifest>../../src/BilibiliLiveAssistant.App/app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
@@ -19,28 +19,13 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/BilibiliLiveAssistant.Core/BilibiliLiveAssistant.Core.csproj" />
+    <ProjectReference Include="../../src/BilibiliLiveAssistant.Infrastructure/BilibiliLiveAssistant.Infrastructure.csproj" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250401001" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
-    <Compile Include="StressApp.cs" />
-    <Compile Include="TraySmokeApp.cs" Condition="'$(TraySmoke)' == 'true'" />
-    <Compile Include="$(SourceRoot)/TrayService.cs" Condition="'$(TraySmoke)' == 'true'" />
-    <Compile Include="$(SourceRoot)/MainWindow.cs" />
-    <Compile Include="$(SourceRoot)/OverlayWindow.cs" />
-    <Compile Include="$(SourceRoot)/OverlaySurface.cs" />
-    <Compile Include="$(SourceRoot)/LayeredOverlayCanvas.cs" />
-    <Compile Include="$(SourceRoot)/OverlayTextRenderer.cs" />
-    <Compile Include="$(SourceRoot)/FixedOverlayWindow.cs" />
-    <Compile Include="$(SourceRoot)/DisplayPage.cs" />
-    <Compile Include="$(SourceRoot)/DashboardPage.cs" />
-    <Compile Include="$(SourceRoot)/DashboardUi.cs" />
-    <Compile Include="$(SourceRoot)/DashboardSettingsEditor.cs" />
-    <Compile Include="$(SourceRoot)/MessageCard.cs" />
-    <Compile Include="$(SourceRoot)/BiliImageCache.cs" />
-    <Compile Include="$(SourceRoot)/OverlayMessageRenderer.cs" />
-    <Compile Include="$(SourceRoot)/LiveAssistantViewModel.cs" />
-    <Compile Include="$(SourceRoot)/AudioTestService.cs" />
+    <Compile Include="MemorySoakApp.cs" />
+    <Compile Include="$(SourceRoot)/*.cs" Exclude="$(SourceRoot)/App.xaml.cs" />
     <Content Include="../../assets/icons/app.ico" Link="Assets/app.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -68,7 +68,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public DashboardHistory Dashboard { get; } = new();
     public DanmakuCardBoard CardBoard { get; } = new();
     internal MediaDetailsService Media { get; } = new();
-    internal BiliImageCache Images { get; } = new();
+    internal BiliImageCache Images { get; }
     internal UiImageSourceService UiImages => Images.Sources;
     public event Action<IReadOnlyList<LiveEvent>>? EventBatchReceived;
     public event Action? RoomHistoryReset;
@@ -98,7 +98,10 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private CookieOptions EffectiveCookies(AppSettings settings) => settings.AnonymousReading || _runtimeCookies.Sessdata.Length == 0 ? new() : _runtimeCookies;
 
     public LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info)
+        : this(settings, store, client, info, null) { }
+    internal LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info, BiliImageCache? images)
     {
+        Images = images ?? new();
         HistorySettings historySettings;
         try { historySettings = (settings.History ?? new()).Normalize(); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
@@ -124,7 +127,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         Diagnostics = new(_dispatcher, CapturePerformanceSnapshot);
     }
 
-    private object CapturePerformanceSnapshot()
+    internal object CapturePerformanceSnapshot()
     {
         return new
         {

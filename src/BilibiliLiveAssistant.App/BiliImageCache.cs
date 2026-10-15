@@ -45,8 +45,8 @@ internal sealed class BiliImageCache : IDisposable
     private readonly SemaphoreSlim _downloads = new(2, 2);
     private readonly SemaphoreSlim _diskGate = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
-    private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
-    private readonly string _directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "image-cache");
+    private readonly HttpClient _http;
+    private readonly string _directory;
     private long _bytes;
     private int _generation;
     private long _useSequence;
@@ -67,8 +67,10 @@ internal sealed class BiliImageCache : IDisposable
             generation = _generation, pipeline = "pixel-static-v1" };
     }
 
-    public BiliImageCache()
+    public BiliImageCache(HttpMessageHandler? handler = null, string? directory = null)
     {
+        _http = new(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
+        _directory = directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "image-cache");
         Sources = new(this);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 BilibiliLiveAssistant/1.0");
         _http.DefaultRequestHeaders.Referrer = new Uri("https://live.bilibili.com/");
