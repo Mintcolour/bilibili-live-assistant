@@ -403,6 +403,9 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly ListView _list = new() { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = null };
     private readonly RecordCollection _items = new();
     private readonly HashSet<MessageCard> _cards = new();
+    private readonly Dictionary<Guid, DashboardRecord> _visibleRecords = new();
+    private readonly ListImageVisibility _visibility;
+    private bool _active = true;
     private readonly TextBlock _heading = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _total = new() { FontSize = 12, Opacity = 0.65, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _unreadTotal = new() { FontSize = 12, Foreground = MessageCard.Brush("#FFD878"), VerticalAlignment = VerticalAlignment.Center };
@@ -424,6 +427,7 @@ internal sealed class DashboardList : Grid, IDisposable
     public DashboardList(string title, string glyph, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, UIElement? extraAction = null)
     {
         _title = title; _vm = vm; _animations = animations; _visible = visible; _important = important;
+        _visibility = new(_list, () => _active && _visible(), UpdateVisibleImages);
         RowDefinitions.Add(new() { Height = GridLength.Auto });
         RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         RowSpacing = 3;
@@ -495,10 +499,13 @@ internal sealed class DashboardList : Grid, IDisposable
         if (_list.ItemsPanelRoot is ItemsStackPanel panel)
             panel.ItemsUpdatingScrollMode = _scrollViewer is null || _scrollViewer.VerticalOffset < 8 ? ItemsUpdatingScrollMode.KeepScrollOffset : ItemsUpdatingScrollMode.KeepItemsInView;
         _items.Synchronize(selected);
+        _visibleRecords.Clear();
+        foreach (var record in selected) _visibleRecords[record.Id] = record;
         foreach (var record in selected)
             if (_list.ContainerFromItem(record) is ListViewItem container && container.ContentTemplateRoot is ContentControl host)
                 BindCard(host, record);
         UpdateActions(source.Count, unread);
+        _visibility.Request();
     }
     private void RenderContainer(ListViewBase sender, ContainerContentChangingEventArgs e)
     {
@@ -519,6 +526,7 @@ internal sealed class DashboardList : Grid, IDisposable
             host.Content = null;
         }
         e.Handled = true;
+        _visibility.Request();
     }
     private void OnListLoaded(object sender, RoutedEventArgs e)
     {
@@ -581,7 +589,7 @@ internal sealed class DashboardList : Grid, IDisposable
             }
             ReleaseCard(old);
         }
-        var card = new MessageCard(record, _vm, _animations, _visible, _important);
+        var card = new MessageCard(record, _vm, _animations, () => _visibility.IsVisible(record), _important);
         _cards.Add(card); host.Content = card;
         card.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
     }
@@ -589,10 +597,18 @@ internal sealed class DashboardList : Grid, IDisposable
     {
         card.Dispose(); _cards.Remove(card);
     }
-    public void Suspend() { foreach (var card in _cards) card.Deactivate(); }
-    public void Resume() { foreach (var card in _cards) card.Activate(_list.XamlRoot?.RasterizationScale ?? 1); }
+    private void UpdateVisibleImages()
+    {
+        foreach (var card in _cards)
+            if (_visibleRecords.TryGetValue(card.RecordId, out var record) && _visibility.IsVisible(record)) card.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
+            else card.Deactivate();
+        _animations.Wake();
+    }
+    public void Suspend() { _active = false; foreach (var card in _cards) card.Deactivate(); }
+    public void Resume() { _active = true; _visibility.RefreshNow(); }
     public void Dispose()
     {
+        _visibility.Dispose(); _visibleRecords.Clear();
         _list.ContainerContentChanging -= RenderContainer;
         _list.Loaded -= OnListLoaded;
         if (_scrollViewer is not null) _scrollViewer.ViewChanged -= OnScrolled;

@@ -19,6 +19,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
     private readonly ObservableCollection<LiveRankMember> _items = new();
     private readonly ListView _list = new() { SelectionMode = ListViewSelectionMode.None, Padding = new(0), Background = null };
     private readonly HashSet<RankRow> _rows = new();
+    private readonly ListImageVisibility _visibility;
     private readonly ToggleButton _energy = Tab("高能榜"), _guard = Tab("大航海");
     private readonly ToggleButton _total = Tab("总榜"), _month = Tab("月榜"), _week = Tab("周榜");
     private readonly StackPanel _periods = new() { Orientation = Orientation.Horizontal, Spacing = 4 };
@@ -34,6 +35,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
     public DashboardRankPanel(LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible)
     {
         _vm = vm; _animations = animations; _visible = visible; _kind = vm.Settings.Dashboard.RankKind;
+        _visibility = new(_list, () => Eligible, UpdateVisibleImages);
         _timer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _timer.IsRepeating = false;
         _timer.Tick += async (_, _) => await FetchAsync(false);
         RowSpacing = 3;
@@ -69,6 +71,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
             CancelRequest(); _timer.Stop(); ReleaseRows(); _list.ItemsSource = null; UpdateActions(); return;
         }
         if (_list.ItemsSource is null) _list.ItemsSource = _items;
+        _visibility.RefreshNow();
         if (changed || !_timer.IsRunning) Schedule();
         UpdateActions();
     }
@@ -148,6 +151,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
             }
             _page = nextPage; _hasMore = result.HasMore && _items.Count < 200 && added > 0;
             _empty.Text = "暂无榜单";
+            _visibility.Request();
             ToolTipService.SetToolTip(_status, null);
             _status.Text = $"{_items.Count}{((firstPage ?? result).Total is { } total ? $" / {total}" : "")} 人 · {(firstPage ?? result).SampledAt.ToLocalTime():HH:mm:ss}{(_items.Count == 200 ? " · 已达上限" : "")}";
         }
@@ -182,20 +186,28 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         { if (!e.InRecycleQueue && e.Phase == 0) e.RegisterUpdateCallback(RenderContainer); return; }
         if (host.Content is RankRow old) { old.Dispose(); _rows.Remove(old); } host.Content = null;
         if (!e.InRecycleQueue && e.Item is LiveRankMember member)
-        { var row = new RankRow(member, _kind, _vm, _animations, () => Eligible); _rows.Add(row); host.Content = row; }
+        { var row = new RankRow(member, _kind, _vm, _animations, () => _visibility.IsVisible(member)); _rows.Add(row); host.Content = row; }
         e.Handled = true;
+        _visibility.Request();
+    }
+    private void UpdateVisibleImages()
+    {
+        foreach (var row in _rows) row.SetActive(_visibility.IsVisible(row.Member));
+        _animations.Wake();
     }
     private void ReleaseRows() { foreach (var row in _rows) row.Dispose(); _rows.Clear(); }
     public void Dispose()
     {
-        if (_disposed) return; _disposed = true; CancelRequest(); _timer.Stop(); _service.Dispose();
+        if (_disposed) return; _disposed = true; _visibility.Dispose(); CancelRequest(); _timer.Stop(); _service.Dispose();
         _list.ContainerContentChanging -= RenderContainer; ReleaseRows(); _list.ItemsSource = null; _items.Clear();
     }
     private sealed class RankRow : Grid, IDisposable
     {
         private readonly MessageCard _card;
+        internal LiveRankMember Member { get; }
         public RankRow(LiveRankMember member, DashboardRankKind kind, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible)
         {
+            Member = member;
             ColumnSpacing = 3; ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             var style = vm.Settings.Dashboard with { FontSize = 14, UsernameFontSize = 14, CompactMessages = false,
                 Padding = 4, MessageSpacing = 2, BackgroundOpacity = 0, AvatarSize = 32, LineSpacing = 0, CornerRadius = 0 };
@@ -210,5 +222,6 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
             Grid.SetColumn(numbers, 1); Children.Add(numbers); Loaded += (_, _) => _card.Activate();
         }
         public void Dispose() => _card.Dispose();
+        internal void SetActive(bool active) { if (active) _card.Activate(XamlRoot?.RasterizationScale ?? 1); else _card.Deactivate(); }
     }
 }
