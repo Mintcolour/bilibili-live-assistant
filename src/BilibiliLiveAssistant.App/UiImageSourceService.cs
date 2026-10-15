@@ -10,6 +10,7 @@ internal sealed class UiImageSourceService : IDisposable
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly Dictionary<Key, Entry> _sources = new();
     private readonly Dictionary<Key, Pending> _pending = new();
+    private readonly List<KeyValuePair<Key, Entry>> _idleSort = new(288);
     private readonly SemaphoreSlim _slots = new(2, 2);
     private readonly DispatcherQueueTimer _idleTimer;
     private TaskCompletionSource _capacity = NewSignal();
@@ -124,14 +125,20 @@ internal sealed class UiImageSourceService : IDisposable
     {
         if (_disposed) { ClearIdle(); return; }
         // A completed factory's waiters have not yet received their leases.
-        var idle = _sources.Where(p => p.Value.Leases == 0 && !_pending.ContainsKey(p.Key)).OrderByDescending(p => p.Value.Used).ToArray();
+        // This runs for every borrow completion/release. Reuse one bounded sort
+        // buffer instead of allocating a dictionary-sized LINQ array each time.
+        _idleSort.Clear();
+        foreach (var pair in _sources)
+            if (pair.Value.Leases == 0 && !_pending.ContainsKey(pair.Key)) _idleSort.Add(pair);
+        _idleSort.Sort(static (a, b) => b.Value.Used.CompareTo(a.Value.Used));
         // Charge both the native input bitmap and one estimated display surface.
         long bytes = 0; var count = 0;
-        foreach (var pair in idle)
+        foreach (var pair in _idleSort)
         {
             if (pair.Key.Generation == _generation && ++count <= 256 && bytes + pair.Value.Value.Bytes <= 8 * 1024 * 1024) bytes += pair.Value.Value.Bytes;
             else Remove(pair.Key, pair.Value);
         }
+        _idleSort.Clear();
     }
     private void ScheduleIdle()
     { if (!_disposed && !HasConsumers && _sources.Count > 0 && !_idleTimer.IsRunning) _idleTimer.Start(); }

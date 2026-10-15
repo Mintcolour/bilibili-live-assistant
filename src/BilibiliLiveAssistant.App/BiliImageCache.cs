@@ -50,7 +50,10 @@ internal sealed class BiliImageCache : IDisposable
     private long _bytes;
     private int _generation;
     private long _useSequence;
-    private int _diskWrites;
+    private Dictionary<string, (long Length, LinkedListNode<string> Node)>? _diskIndex;
+    private readonly LinkedList<string> _diskOrder = new();
+    private DateTime _nextDiskScan;
+    private long _diskScans, _diskEvictions;
     private long _diskSize;
     private int _diskCount;
     private bool _disposed;
@@ -61,6 +64,7 @@ internal sealed class BiliImageCache : IDisposable
             leases = _leases.Count, failureEntries = _failures.Count, hits = _hits, loads = _loads,
             evicted = _evicted, loadFailures = _loadFailures, frameHits = _frameHits, frameMisses = _frameMisses,
             diskHits = Interlocked.Read(ref _diskHits), networkRequests = Interlocked.Read(ref _networkRequests),
+            diskScans = Interlocked.Read(ref _diskScans), diskEvictions = Interlocked.Read(ref _diskEvictions),
             staticPixelBytes = _memory.Values.Sum(v => v.Asset is BiliStaticImageAsset s ? s.Frame.Bytes : 0),
             animationEncodedBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.Frames.Sum(f => (long)f.Length) : 0),
             animationPixelBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.FirstFrame.Bytes : 0),
@@ -324,34 +328,48 @@ internal sealed class BiliImageCache : IDisposable
         try
         {
             Directory.CreateDirectory(_directory);
-            var previous = new FileInfo(path);
-            var previousLength = previous.Exists ? previous.Length : 0;
-            var wasPresent = previous.Exists;
+            if (_diskIndex is null || DateTime.UtcNow >= _nextDiskScan) LoadDiskIndex();
             // Each key is written once under the disk gate; bounded reads reject an interrupted write.
             await File.WriteAllBytesAsync(path, data, token).ConfigureAwait(false);
-            _diskSize += data.Length - previousLength;
-            if (!wasPresent) _diskCount++;
-            if (_diskWrites++ % 16 == 0 || _diskSize > DiskLimit || _diskCount > 512) TrimDisk();
+            if (_diskIndex!.Remove(path, out var previous))
+            { _diskSize -= previous.Length; _diskOrder.Remove(previous.Node); }
+            _diskIndex.Add(path, (data.Length, _diskOrder.AddLast(path)));
+            _diskSize += data.Length; _diskCount = _diskIndex.Count;
+            TrimDisk();
         }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        catch (IOException) { _diskIndex = null; _diskOrder.Clear(); }
+        catch (UnauthorizedAccessException) { _diskIndex = null; _diskOrder.Clear(); }
         finally { _diskGate.Release(); }
         return data;
     }
 
     private string DiskPath(Uri uri) => Path.Combine(_directory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(uri.AbsoluteUri))) + ".img");
 
+    // Serialized by _diskGate. Enumerate once, then reconcile at most once per
+    // minute for external changes. Normal insertion/eviction touches one file,
+    // rather than allocating 512 FileInfo objects and paths for every new image.
+    private void LoadDiskIndex()
+    {
+        var files = new DirectoryInfo(_directory).EnumerateFiles("*.img").OrderBy(file => file.LastWriteTimeUtc).ToArray();
+        _diskIndex = new(StringComparer.OrdinalIgnoreCase); _diskOrder.Clear(); _diskSize = 0;
+        foreach (var file in files)
+        {
+            _diskIndex.Add(file.FullName, (file.Length, _diskOrder.AddLast(file.FullName)));
+            _diskSize += file.Length;
+        }
+        _diskCount = _diskIndex.Count;
+        _nextDiskScan = DateTime.UtcNow.AddMinutes(1); Interlocked.Increment(ref _diskScans);
+        TrimDisk();
+    }
     private void TrimDisk()
     {
-        var files = new DirectoryInfo(_directory).EnumerateFiles("*.img").OrderByDescending(file => file.LastWriteTimeUtc).ToArray();
-        long size = 0;
-        var kept = 0;
-        for (var i = 0; i < files.Length; i++)
+        while ((_diskSize > DiskLimit || _diskCount > 512) && _diskOrder.First is { } oldest)
         {
-            if (kept >= 512 || size + files[i].Length > DiskLimit) files[i].Delete();
-            else { size += files[i].Length; kept++; }
+            var entry = _diskIndex![oldest.Value];
+            File.Delete(oldest.Value);
+            _diskIndex.Remove(oldest.Value); _diskOrder.RemoveFirst();
+            _diskSize -= entry.Length; _diskCount--; Interlocked.Increment(ref _diskEvictions);
         }
-        _diskSize = size; _diskCount = kept;
     }
 
     private static async Task<BiliImageAsset> DecodeAsync(byte[] raw, bool animate, int maxDimension, CancellationToken token)
