@@ -165,14 +165,19 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
                 if (page == 1) { at = result.SampledAt; total = result.Total; }
                 foreach (var member in result.Members)
                     if (rows.Count < limit && (member.Uid <= 0 || rows.All(r => r.Uid != member.Uid))) rows.Add(member);
+                token.ThrowIfCancellationRequested();
+                if (!_available) return;
+                // The first page already contains the authoritative total and overlay top ten.
+                // A later member page failing must not freeze the room's visible count.
+                if (page == 1 && !guard) EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统",
+                    rows.Count == 0 ? "暂无榜单" : "高能榜: " + string.Join(" | ", rows.Take(3).Select(m => $"{m.Rank}.{m.Username}")), "#9C27B0",
+                    Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total,
+                        ["rank_sampled_at"] = at, ["rank_room"] = canonicalRoom, ["rank_uid"] = uid }));
                 if (!result.HasMore) break;
                 if (!_available) return;
             }
             token.ThrowIfCancellationRequested();
             if (!_available) return;
-            if (!guard) EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", rows.Count == 0 ? "暂无榜单" : "高能榜: " + string.Join(" | ", rows.Take(3).Select(m => $"{m.Rank}.{m.Username}")), "#9C27B0",
-                Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total,
-                    ["rank_sampled_at"] = at, ["rank_room"] = canonicalRoom, ["rank_uid"] = uid }));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { status = rows.Count > 0 ? "分页失败，部分采集" : "采集失败"; }
