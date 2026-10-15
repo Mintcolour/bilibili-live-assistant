@@ -15,7 +15,8 @@ internal sealed class UiImageSourceService : IDisposable
     private TaskCompletionSource _capacity = NewSignal();
     private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released;
     private bool _disposed;
-    internal readonly record struct Key(string Url, int Width, int Limit);
+    private int _generation;
+    internal readonly record struct Key(string Url, int Width, int Limit, int Generation);
     internal sealed class Entry(UiPixelSource value) { public UiPixelSource Value = value; public int Leases; public long Used; }
     private sealed class Pending
     {
@@ -38,11 +39,12 @@ internal sealed class UiImageSourceService : IDisposable
     {
         CheckThread();
         if (BiliImageCache.NormalizeUrl(url) is not { } uri) return null;
-        var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit));
+        var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit), _generation);
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
             if (_disposed) return null;
+            if (key.Generation != _generation) key = key with { Generation = _generation };
             _idleTimer.Stop();
             if (_sources.TryGetValue(key, out var cached)) { _hits++; return Borrow(key, cached); }
             if (_pending.TryGetValue(key, out var pending) && pending.Cancel.IsCancellationRequested)
@@ -60,7 +62,9 @@ internal sealed class UiImageSourceService : IDisposable
             {
                 var entry = await pending.Completion.Task.WaitAsync(cancellation);
                 cancellation.ThrowIfCancellationRequested();
-                if (_disposed || entry is null) return null;
+                if (_disposed) return null;
+                if (key.Generation != _generation) continue;
+                if (entry is null) return null;
                 return Borrow(key, entry);
             }
             finally
@@ -85,7 +89,7 @@ internal sealed class UiImageSourceService : IDisposable
             var asset = await _images.GetStaticForViewAsync(key.Url, token, key.Limit);
             if (asset is null) { pending.Completion.TrySetResult(null); return; }
             value = await UiPixelSource.CreateAsync(asset.Frame, key.Width, asset.CanAnimate, asset.DecodeLimit, token);
-            if (_disposed || token.IsCancellationRequested || pending.Waiters == 0)
+            if (_disposed || key.Generation != _generation || token.IsCancellationRequested || pending.Waiters == 0)
             { _stale++; pending.Completion.TrySetResult(null); return; }
             var entry = new Entry(value) { Used = ++_sequence };
             _sources.Add(key, entry); _created++; value = null;
@@ -112,7 +116,7 @@ internal sealed class UiImageSourceService : IDisposable
         CheckThread();
         if (--entry.Leases != 0) return;
         entry.Used = ++_sequence;
-        if (_disposed) Remove(key, entry);
+        if (_disposed || key.Generation != _generation) Remove(key, entry);
         else TrimIdle();
         ScheduleIdle();
     }
@@ -125,7 +129,7 @@ internal sealed class UiImageSourceService : IDisposable
         long bytes = 0; var count = 0;
         foreach (var pair in idle)
         {
-            if (++count <= 256 && bytes + pair.Value.Value.Bytes <= 8 * 1024 * 1024) bytes += pair.Value.Value.Bytes;
+            if (pair.Key.Generation == _generation && ++count <= 256 && bytes + pair.Value.Value.Bytes <= 8 * 1024 * 1024) bytes += pair.Value.Value.Bytes;
             else Remove(pair.Key, pair.Value);
         }
     }
@@ -136,6 +140,15 @@ internal sealed class UiImageSourceService : IDisposable
         CheckThread(); _idleTimer.Stop();
         foreach (var pair in _sources.Where(p => p.Value.Leases == 0 && !_pending.ContainsKey(p.Key)).ToArray())
             Remove(pair.Key, pair.Value);
+    }
+    internal void ResetRoom()
+    {
+        CheckThread(); if (_disposed) return;
+        _generation++;
+        foreach (var pending in _pending.Values) pending.Cancel.Cancel();
+        ClearIdle(); SignalCapacity();
+        // Other pages may still have bound sources. Their last lease disposes
+        // the old generation instead of destroying an image while it is bound.
     }
     private void Remove(Key key, Entry entry) { _sources.Remove(key); entry.Value.Dispose(); _released++; }
     internal object GetDiagnostics()
@@ -151,7 +164,9 @@ internal sealed class UiImageSourceService : IDisposable
         }
         return new
         {
-            sources = _sources.Count, leases = _sources.Values.Sum(e => e.Leases),
+            generation = _generation, sources = _sources.Count, leases = _sources.Values.Sum(e => e.Leases),
+            retiredSources = _sources.Count(p => p.Key.Generation != _generation),
+            retiredLeases = _sources.Where(p => p.Key.Generation != _generation).Sum(p => p.Value.Leases),
             idleSources = idle, activeSources = active, reservedSources = reserved,
             idleBytes, activeBytes, reservedBytes,
             pending = _pending.Count, queued = _pending.Values.Count(p => !p.Started && !p.Finished),

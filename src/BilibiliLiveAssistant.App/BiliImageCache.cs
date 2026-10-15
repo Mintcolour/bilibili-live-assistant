@@ -48,6 +48,7 @@ internal sealed class BiliImageCache : IDisposable
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
     private readonly string _directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "image-cache");
     private long _bytes;
+    private int _generation;
     private long _useSequence;
     private int _diskWrites;
     private long _diskSize;
@@ -63,7 +64,7 @@ internal sealed class BiliImageCache : IDisposable
             staticPixelBytes = _memory.Values.Sum(v => v.Asset is BiliStaticImageAsset s ? s.Frame.Bytes : 0),
             animationEncodedBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.Frames.Sum(f => (long)f.Length) : 0),
             animationPixelBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.FirstFrame.Bytes : 0),
-            pipeline = "pixel-static-v1" };
+            generation = _generation, pipeline = "pixel-static-v1" };
     }
 
     public BiliImageCache()
@@ -93,18 +94,30 @@ internal sealed class BiliImageCache : IDisposable
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
+            int generation;
             Task<BiliImageAsset?>? pending;
             DownloadLease? lease;
             Task capacityChanged;
             lock (_gate)
             {
+                generation = _generation;
                 pending = GetOrStart(key, uri, animate, maxDimension, out lease);
                 if (lease is not null) lease.Consumers++;
                 capacityChanged = _capacityChanged.Task;
             }
             if (pending is not null)
             {
-                try { return await pending.WaitAsync(cancellation).ConfigureAwait(false); }
+                try
+                {
+                    var result = await pending.WaitAsync(cancellation).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        if (generation == _generation) return result;
+                    }
+                    // A still-visible history/settings consumer may outlive a
+                    // room switch. Only that consumer retries in the new scope.
+                    continue;
+                }
                 finally
                 {
                     if (lease is not null)
@@ -170,6 +183,22 @@ internal sealed class BiliImageCache : IDisposable
         }
     }
 
+    // Keep the bounded disk cache, but do not retain the previous room's decoded
+    // pixels or let an old download repopulate memory after its consumers leave.
+    internal void ResetRoom()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _generation++;
+            _memory.Clear(); _failures.Clear(); _bytes = 0;
+            foreach (var lease in _leases.Values) lease.Cancellation.Cancel();
+            var signal = _capacityChanged; _capacityChanged = NewCapacitySignal(); signal.TrySetResult(true);
+        }
+        Avatars.Reset();
+        Sources.ResetRoom();
+    }
+
     internal static Uri? NormalizeUrl(string? value)
     {
         if (string.IsNullOrEmpty(value) || value.Length > 2048) return null;
@@ -228,6 +257,7 @@ internal sealed class BiliImageCache : IDisposable
                 BiliImageDiagnostics.Record(uri.AbsoluteUri, stage, ex, diagnosticData);
             lock (_gate)
             {
+                if (_disposed || token.IsCancellationRequested) return null;
                 if (_failures.Count >= 256) _failures.Remove(_failures.MinBy(x => x.Value).Key);
                 if (ex is not OperationCanceledException || !token.IsCancellationRequested)
                 { _loadFailures++; _failures[key] = DateTimeOffset.UtcNow.AddMinutes(5); }

@@ -16,9 +16,10 @@ public sealed class MediaDetailsService : IDisposable
     private readonly Dictionary<string, Cached> _cache = new();
     private TaskCompletionSource<bool> _capacity = Signal();
     private long _sequence;
+    private int _generation;
     private bool _disposed;
     public object GetDiagnostics()
-    { lock (_gate) return new { cached = _cache.Count, inflight = _inflight.Count }; }
+    { lock (_gate) return new { generation = _generation, cached = _cache.Count, inflight = _inflight.Count }; }
     private sealed record Cached(MediaDetails Details, DateTimeOffset Until, long Used);
     private sealed class Pending
     {
@@ -26,6 +27,7 @@ public sealed class MediaDetailsService : IDisposable
         public Task<MediaDetails> Task { get; set; } = null!;
         public int Consumers;
         public bool Completed;
+        public int Generation;
     }
     public MediaDetailsService()
     {
@@ -33,6 +35,20 @@ public sealed class MediaDetailsService : IDisposable
     }
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public async Task<MediaDetails> GetForViewAsync(MediaReference reference, CancellationToken cancellation)
+    {
+        while (true)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var generation = Volatile.Read(ref _generation);
+            try { return await GetForGenerationAsync(reference, cancellation, generation).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested && generation != Volatile.Read(ref _generation))
+            {
+                // A historical preview that remains visible is still a valid
+                // consumer. Old room controls have already cancelled their token.
+            }
+        }
+    }
+    private async Task<MediaDetails> GetForGenerationAsync(MediaReference reference, CancellationToken cancellation, int generation)
     {
         Pending? pending = null;
         while (pending is null)
@@ -42,6 +58,7 @@ public sealed class MediaDetailsService : IDisposable
             lock (_gate)
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
+                if (generation != _generation) throw new OperationCanceledException();
                 if (_cache.TryGetValue(reference.Key, out var cached) && cached.Until > DateTimeOffset.UtcNow)
                 { _cache[reference.Key] = cached with { Used = ++_sequence }; return cached.Details; }
                 _cache.Remove(reference.Key);
@@ -50,7 +67,7 @@ public sealed class MediaDetailsService : IDisposable
                 if (!existing && _inflight.Count >= 18) return new(reference, reference.Id, Error: "媒体请求繁忙，暂不加载");
                 if (!existing && _inflight.Count < 18)
                 {
-                    pending = new(); _inflight.Add(reference.Key, pending);
+                    pending = new() { Generation = _generation }; _inflight.Add(reference.Key, pending);
                     var owned = pending;
                     pending.Task = Task.Run(() => LoadAsync(reference, owned));
                 }
@@ -59,7 +76,15 @@ public sealed class MediaDetailsService : IDisposable
             }
             if (pending is null) await capacity.WaitAsync(cancellation).ConfigureAwait(false);
         }
-        try { return await pending.Task.WaitAsync(cancellation).ConfigureAwait(false); }
+        try
+        {
+            var result = await pending.Task.WaitAsync(cancellation).ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (generation != _generation) throw new OperationCanceledException();
+                return result;
+            }
+        }
         finally
         {
             lock (_gate)
@@ -79,13 +104,13 @@ public sealed class MediaDetailsService : IDisposable
             await _requests.WaitAsync(token).ConfigureAwait(false); entered = true;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(10));
             var result = await FetchAsync(reference, timeout.Token).ConfigureAwait(false);
-            Store(reference, result); return result;
+            Store(reference, result, pending); return result;
         }
         catch (OperationCanceledException) when (pending.Cancellation.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             var result = new MediaDetails(reference, reference.Id, Error: ex is OperationCanceledException ? "加载超时" : "资料暂不可用");
-            Store(reference, result); return result;
+            Store(reference, result, pending); return result;
         }
         finally
         {
@@ -99,11 +124,11 @@ public sealed class MediaDetailsService : IDisposable
             }
         }
     }
-    private void Store(MediaReference reference, MediaDetails details)
+    private void Store(MediaReference reference, MediaDetails details, Pending pending)
     {
         lock (_gate)
         {
-            if (_disposed) return;
+            if (_disposed || pending.Generation != _generation || pending.Cancellation.IsCancellationRequested) return;
             if (_cache.Count >= 128 && !_cache.ContainsKey(reference.Key)) _cache.Remove(_cache.MinBy(x => x.Value.Used).Key);
             _cache[reference.Key] = new(details, DateTimeOffset.UtcNow.AddMinutes(details.IsSuccess ? 10 : 5), ++_sequence);
         }
@@ -141,6 +166,16 @@ public sealed class MediaDetailsService : IDisposable
             Summary: price.Length > 0 ? price : "价格暂无数据");
     }
     private static JsonElement Get(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var result) ? result : default;
+    public void ResetRoom()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _generation++; _cache.Clear();
+            foreach (var pending in _inflight.Values) pending.Cancellation.Cancel();
+            var signal = _capacity; _capacity = Signal(); signal.TrySetResult(true);
+        }
+    }
     private static string Text(JsonElement value, string key)
     { var item = Get(value, key); var text = item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : ""; return text.Length > 512 ? text[..512] : text; }
     public void Dispose()
