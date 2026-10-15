@@ -41,6 +41,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private Forms.Form? _detail;
     public OverlayRegionKind RegionKind => Kind;
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
+    protected override bool HasLiveContent => _views.Count > 0;
     private bool GridMode => RegionSettings.Mode == OverlayDisplayMode.Grid;
     private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, (ClientSize.Width - 8) / 208)) : 1;
     private int CellGap => Kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelGap : 8;

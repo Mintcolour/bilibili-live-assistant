@@ -318,6 +318,7 @@ public sealed class OverlayWindow : OverlaySurface
         foreach (var item in _items) item.Dispose();
         _items.Clear();
     }
+    protected override bool HasLiveContent => _items.Count > 0;
 
     private void ResetContent()
     {

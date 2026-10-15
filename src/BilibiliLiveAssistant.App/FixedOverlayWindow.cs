@@ -389,6 +389,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     }
 
     private void ClearSprites() { foreach (var sprite in _sprites) sprite.Dispose(); _sprites.Clear(); }
+    protected override bool HasLiveContent => _sprites.Count > 0;
     protected override void Dispose(bool disposing)
     {
         if (disposing && !_cleaned)

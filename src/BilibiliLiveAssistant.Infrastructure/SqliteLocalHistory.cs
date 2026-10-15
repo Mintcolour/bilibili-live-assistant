@@ -74,7 +74,16 @@ public sealed partial class SqliteLocalHistory
     }
     public void End(HistoryContext context)
     {
-        lock (_sync) { if (_current?.Id == context.Id) { SaveObservationLocked(); _current = null; _snapshots.Change(Timeout.Infinite, Timeout.Infinite); } }
+        lock (_sync)
+        {
+            if (_current?.Id == context.Id)
+            {
+                SaveObservationLocked(); _current = null;
+                _profile = null; _rank = null; _popularity = _watchedCount = _rankTotal = null;
+                _hasObservation = _observationDirty = false;
+                _snapshots.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+        }
         var ended = DateTimeOffset.UtcNow;
         ObserveControl(QueueCommand(c => Execute(c, "UPDATE sessions SET ended=$at,status='stopped',heartbeat=MAX(heartbeat,$at),last_day=MAX(last_day,$day) WHERE id=$id", ("$at", Millis(ended)), ("$day", Day(ended)), ("$id", context.Id)), false));
     }

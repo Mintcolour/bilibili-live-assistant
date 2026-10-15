@@ -61,7 +61,7 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         UpdateTabs(); UpdateActions();
     }
     private static ToggleButton Tab(string title) => new() { Content = title, FontSize = 12, Padding = new(9, 4, 9, 4), MinWidth = 0, MinHeight = 28 };
-    private bool Eligible => !_disposed && _active && _visible() && _vm.IsListening && _vm.IsConnected && _vm.RoomProfile is { Uid: > 0 };
+    private bool Eligible => !_disposed && _active && _visible() && _vm.IsListening && _vm.IsConnected && _vm.RoomProfile is { Uid: > 0, LiveStatus: not (0 or 2) };
     public void SetActive(bool value)
     {
         if (_disposed) return;

@@ -231,6 +231,7 @@ public abstract class OverlaySurface : Forms.Form
         _dirtyRects.Clear();
         _pendingDirty = Rectangle.Empty;
         if (IsDisposed || Disposing || !IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0 || !Visible) return;
+        if (_canvas is null && !Editing && !HasLiveContent) return;
         using var timing = PerformanceCounters.Measure(3 + (int)Kind);
         try
         {
@@ -269,6 +270,9 @@ public abstract class OverlaySurface : Forms.Form
             // Keep controls readable at low content opacity. Only samples receive
             // content alpha while editing; live mode uses the existing presenter.
             _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, dirty);
+            // Present the final clear before releasing the native backing store.
+            // Empty, still-visible windows need no persistent full-size canvas.
+            if (!Editing && !HasLiveContent) { _canvas.Dispose(); _canvas = null; }
             _presentationErrorReported = false;
         }
         catch (ExternalException ex)
@@ -316,6 +320,7 @@ public abstract class OverlaySurface : Forms.Form
     }
 
     protected abstract void DrawContent(Graphics graphics, Rectangle clip);
+    protected abstract bool HasLiveContent { get; }
 
     private void DrawEditorSample(Graphics graphics)
     {

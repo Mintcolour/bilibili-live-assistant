@@ -22,6 +22,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     internal BrowserAccountController AccountSync { get; }
     internal event Action? AuthenticationChanged;
     private readonly LiveEventBuffer _pendingEvents = new(256);
+    private readonly object _roomEvents = new();
+    private int _resourceResets, _lastResetReason;
+    private bool _roomOffline;
     private int _flushScheduled;
     private long _receivedEvents;
     private long _overlayDropped;
@@ -126,6 +129,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         return new
         {
             monitoring = IsMonitoring, connected = IsConnected, editing = OverlayInteractive, animatedEmotes = _settings.Dashboard.AnimateEmotes,
+            roomResources = new { resets = _resourceResets, reason = _lastResetReason, offline = _roomOffline },
             received = ReceivedEventCount, pending = _pendingEvents.Count, bufferDropped = BufferedDroppedCount,
             overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
             dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
@@ -142,7 +146,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_disposed) return;
         await _connectionGate.WaitAsync();
         try { await StartCoreAsync(roomId, true); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring)); ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _monitorRequested = false; await StopCoreAsync(); CloseHistorySegment(); ResetRoomHistory(4); OnPropertyChanged(nameof(IsMonitoring)); ErrorText = "开启监视失败，请检查账号迁移提示或网络后重试"; }
         finally { _connectionGate.Release(); }
     }
     private async Task StartCoreAsync(int roomId, bool newMonitoring)
@@ -151,6 +155,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_client.IsRunning) return;
         if (newMonitoring)
         {
+            ResetRoomHistory();
             AudienceHistory.Clear();
             CloseHistorySegment();
             _historyContext = History.Begin(roomId);
@@ -158,7 +163,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _monitorRequested = true;
         OnPropertyChanged(nameof(IsMonitoring));
         ErrorText = string.Empty;
-        if (_settings.RoomId != roomId) ResetRoomHistory();
+        if (!newMonitoring && _settings.RoomId != roomId) ResetRoomHistory();
         _settings = _settings with { RoomId = roomId };
         await _store.SaveAsync(_settings);
         if (_disposed || !_monitorRequested) return;
@@ -168,12 +173,15 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             var run = _connectionRun; var context = _historyContext;
             _networkHandler = (sender, value) =>
             {
-                if (_disposed || run.IsCancellationRequested || !ReferenceEquals(run, _connectionRun)) return;
-                // Captured session and room travel with the event before display overflow or merging.
-                if (context is not null && !(value.Extra.GetValueOrDefault("sample") is true))
-                    History.Capture(context, value, DateTimeOffset.UtcNow);
-                if (value.Extra.ContainsKey("archive_analysis")) return;
-                OnEvent(sender, value);
+                lock (_roomEvents)
+                {
+                    if (_disposed || run.IsCancellationRequested || !ReferenceEquals(run, _connectionRun)) return;
+                    // Captured session and room travel with the event before display overflow or merging.
+                    if (context is not null && !(value.Extra.GetValueOrDefault("sample") is true))
+                        History.Capture(context, value, DateTimeOffset.UtcNow);
+                    if (value.Extra.ContainsKey("archive_analysis")) return;
+                    OnEvent(sender, value);
+                }
             };
             _client.EventReceived += _networkHandler; _info.EventReceived += _networkHandler;
             await _client.StartAsync(roomId, _startedCookies, _connectionRun.Token);
@@ -183,6 +191,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             await StopCoreAsync();
+            _monitorRequested = false; CloseHistorySegment(); ResetRoomHistory(4); OnPropertyChanged(nameof(IsMonitoring));
             ErrorText = "连接失败，请检查网络后重新开启监视";
             Status = "连接失败";
         }
@@ -192,7 +201,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     {
         _monitorRequested = false; _authTimer.Stop(); _connectionRun?.Cancel();
         await _connectionGate.WaitAsync();
-        try { await StopCoreAsync(); CloseHistorySegment(); OnPropertyChanged(nameof(IsMonitoring)); } finally { _connectionGate.Release(); }
+        try
+        {
+            try { await StopCoreAsync(); }
+            finally { CloseHistorySegment(); ResetRoomHistory(2); OnPropertyChanged(nameof(IsMonitoring)); }
+        }
+        finally { _connectionGate.Release(); }
     }
     private async Task StopCoreAsync()
     {
@@ -502,7 +516,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         // Keep one scheduled wake for the entire burst, not one dispatcher work
         // item per message. The timer stops as soon as the buffer is empty.
         if (Interlocked.CompareExchange(ref _flushScheduled, 1, 0) != 0) return;
-        if (!_dispatcher.TryEnqueue(() => { if (!_disposed) _eventTimer.Start(); }))
+        if (!_dispatcher.TryEnqueue(() => { if (!_disposed && _pendingEvents.Count > 0) _eventTimer.Start(); }))
             Interlocked.Exchange(ref _flushScheduled, 0);
     }
 
@@ -515,9 +529,23 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             var accepted = new List<LiveEvent>(batch.Length);
             foreach (var value in batch)
             {
+                var example = value.Extra.GetValueOrDefault("sample") is true;
+                if (!example && value.Type == LiveEventType.Online
+                    && value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile liveProfile
+                    && liveProfile.LiveStatus is { } liveState)
+                {
+                    if (RoomProfile?.LiveStatus == 1 && liveState is 0 or 2)
+                    {
+                        // A confirmed live -> offline transition is different from
+                        // a network outage. Keep monitoring and the archive segment.
+                        ResetRoomHistory(3); accepted.Clear();
+                    }
+                    _roomOffline = liveState is 0 or 2;
+                }
+                if (!example && _roomOffline && value.Type == LiveEventType.Rank) continue;
                 if (value.Type == LiveEventType.Rank && value.Extra.GetValueOrDefault("rank_sampled_at") is DateTimeOffset incoming
                     && LatestRank?.Extra.GetValueOrDefault("rank_sampled_at") is DateTimeOffset latest && incoming <= latest) continue;
-                accepted.Add(value);
+                if (example || !_roomOffline || value.Type != LiveEventType.Online) accepted.Add(value);
                 // Local overlay examples must not replace real room metrics in the dashboard.
                 if (value.Extra.TryGetValue("sample", out var sample) && sample is true) continue;
                 Images.Avatars.Observe(value.Uid, value.Appearance?.AvatarUrl);
@@ -531,7 +559,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                     if (_popularity.Length > 0) metrics.Add("人气: " + _popularity);
                     if (_watched.Length > 0) metrics.Add("看过: " + _watched.Replace("人看过", "", StringComparison.Ordinal));
                     OnlineText = metrics.Count > 0 ? string.Join(" · ", metrics) : value.Content;
-                    LatestOnline = value with { Content = OnlineText,
+                    LatestOnline = _roomOffline ? null : value with { Content = OnlineText,
                         Metadata = new Dictionary<string, object?>(value.Extra) { ["popularity"] = _popularity, ["watched"] = _watched } };
                     if (value.Extra.TryGetValue("room_summary", out var summary) && summary is string text) RoomSummary = text;
                     if (value.Extra.TryGetValue("room_profile", out var profile) && profile is LiveRoomProfile suppliedProfile)
@@ -572,15 +600,18 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         OnPropertyChanged(nameof(AudienceHistory));
     }
 
-    private void ResetRoomHistory()
+    private void ResetRoomHistory(int reason = 1)
     {
-        _pendingEvents.Clear(); Events.Clear(); Dashboard.Clear();
+        // Serialize with ingress so an old callback cannot enqueue after clearing.
+        lock (_roomEvents) _pendingEvents.Clear();
+        _eventTimer.Stop(); Interlocked.Exchange(ref _flushScheduled, 0);
+        _resourceResets++; _lastResetReason = reason; _roomOffline = false;
+        Events.Clear(); Dashboard.Clear();
         LatestOnline = null; LatestRank = null;
         RoomProfile = null; AudienceHistory.Clear(); OnPropertyChanged(nameof(RoomProfile));
         _popularity = ""; _watched = "";
         RoomHistoryReset?.Invoke();
-        Images.Avatars.Reset();
-        UiImages.ClearIdle();
+        Images.ResetRoom(); Media.ResetRoom(); BiliDashboardRankService.InvalidateCache();
         OnlineText = "--"; RankText = "暂无榜单"; RoomSummary = "房间状态暂无数据";
     }
 
@@ -593,9 +624,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _eventTimer.Tick -= FlushEvents;
         _client.StatusChanged -= OnStatus;
         _pendingEvents.Clear();
+        await StopAsync();
         Images.Dispose();
         Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
-        await StopAsync();
         History.StatusChanged -= OnHistoryStatus;
         await History.DisposeAsync();
         _connectionRun?.Dispose();
