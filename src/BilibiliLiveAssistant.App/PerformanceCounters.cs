@@ -10,6 +10,12 @@ internal static class PerformanceCounters
     internal static long CanvasBytes;
     internal static int Canvases;
     private static long _intervals, _lateFrames, _maxFrameTicks;
+    private static long _blits, _sourcePixels, _blitPixels;
+    internal static void Blit(long sourcePixels, long blitPixels)
+    {
+        if (!Enabled) return;
+        _blits++; _sourcePixels += sourcePixels; _blitPixels += blitPixels;
+    }
     internal static void FrameInterval(long ticks, int targetFps)
     {
         if (!Enabled || ticks <= 0) return;
@@ -36,7 +42,9 @@ internal static class PerformanceCounters
         Array.Clear(Counts); Array.Clear(Ticks); Array.Clear(MaxTicks);
         var cadence = new { intervals = _intervals, lateFrames = _lateFrames, maxGapMs = _maxFrameTicks * 1000d / Stopwatch.Frequency };
         _intervals = _lateFrames = _maxFrameTicks = 0;
-        return new { operations = result, frameCadence = cadence };
+        var blits = new { count = _blits, sourcePixels = _sourcePixels, submittedPixels = _blitPixels };
+        _blits = _sourcePixels = _blitPixels = 0;
+        return new { operations = result, frameCadence = cadence, blits };
     }
     internal static void Reset() => _ = Drain();
 }

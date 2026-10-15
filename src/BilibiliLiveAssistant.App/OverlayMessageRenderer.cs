@@ -49,6 +49,21 @@ internal static class OverlayMessageRenderer
             text.Append(atom); used += width;
         }
     }
+    internal static int ImageDecodeLimit(LiveEvent value, string url, DashboardSettings style, OverlayRegionSettings region)
+    {
+        if (value.Extra.GetValueOrDefault("room_bulletin") is LiveRoomBulletin bulletin)
+        {
+            foreach (var member in bulletin.Members.Take(10))
+                if (member.Appearance?.AvatarUrl == url)
+                    return ImageDecodeLimit(OverlayBulletinRenderer.MemberEvent(member, region.Color), url, style, region);
+        }
+        // Keep large emotes, media and decorative resources at the existing limit.
+        if (value.Appearance is not { } appearance || appearance.AvatarUrl != url || appearance.FullEmote?.Url == url
+            || appearance.EntryEffect?.BackgroundUrl == url || appearance.Emotes.Any(e => e.Url == url)) return 256;
+        // Overlay coordinates are physical pixels, unlike WinUI's DPI-scaled DIPs.
+        return BiliImageCache.SizeTier(Math.Ceiling(style.AvatarSize * region.ContentScale));
+    }
+
     public static IEnumerable<string> ImageUrls(LiveEvent value, DashboardSettings style)
     {
         if (value.HistoryFields?.GiftIconUrl is { Length: > 0 } giftIcon) yield return giftIcon;
@@ -74,6 +89,7 @@ internal static class OverlayMessageRenderer
         int width = 0, int maxHeight = 128, bool card = false, bool background = true)
     {
         using var timing = PerformanceCounters.Measure(2);
+        var imageStyle = style;
         if (!card && value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
             return OverlayBulletinRenderer.Render(bulletin, background ? region : region with { BackgroundOpacity = 0 }, style, cache, maxHeight);
         style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };
@@ -237,7 +253,7 @@ internal static class OverlayMessageRenderer
         {
             if (images.TryGetValue(url, out var found)) return found;
             images[url] = null;
-            if (cache.TryGetFrame(url) is not { } bytes) return null;
+            if (cache.TryGetFrame(url, ImageDecodeLimit(value, url, imageStyle, region)) is not { } bytes) return null;
             try { using var stream = new MemoryStream(bytes); using var raw = Image.FromStream(stream); return images[url] = new Bitmap(raw); }
             catch (ArgumentException) { return null; }
         }

@@ -438,6 +438,9 @@ internal sealed class BiliImageView : Grid, IDisposable
     private double _rasterizationScale = 1;
     private int _frame;
     private DateTimeOffset _nextFrame;
+    private int RequestedDecodeLimit => BiliImageCache.SizeTier(Math.Max(
+        double.IsFinite(Width) ? Width : ActualWidth > 0 ? ActualWidth : 256,
+        double.IsFinite(Height) ? Height : ActualHeight > 0 ? ActualHeight : 256) * _rasterizationScale);
 
     public BiliImageView(BiliImageCache cache, string url, string fallback, double width, double height, bool animate, MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false)
     {
@@ -455,6 +458,9 @@ internal sealed class BiliImageView : Grid, IDisposable
     {
         if (_disposed) return;
         _active = true; _rasterizationScale = rasterizationScale;
+        // Moving to a higher-DPI screen must request enough pixels again.
+        if (_asset is not null && _asset.DecodeLimit < RequestedDecodeLimit)
+        { _clock.Remove(this); ReleaseImages(); }
         RestoreVisuals();
     }
     internal async void RestoreVisuals()
@@ -467,7 +473,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         {
             if (_asset is null)
             {
-                var asset = await _cache.GetForViewAsync(_url, false, cancellation);
+                var asset = await _cache.GetForViewAsync(_url, false, cancellation, RequestedDecodeLimit);
                 if (_disposed || !_active || generation != _generation || asset is null) return;
                 _asset = asset; _staticAsset = asset;
                 _sources = new BitmapImage?[asset.Frames.Length];
@@ -551,7 +557,7 @@ internal sealed class BiliImageView : Grid, IDisposable
             if (_asset.Frames.Length == 1)
             {
                 _loadingAnimation = true;
-                var animated = await _cache.GetForViewAsync(_url, true, _loadCancellation?.Token ?? CancellationToken.None);
+                var animated = await _cache.GetForViewAsync(_url, true, _loadCancellation?.Token ?? CancellationToken.None, RequestedDecodeLimit);
                 _loadingAnimation = false;
                 if (_disposed || !_playing || !_active || generation != _generation) return;
                 if (animated is null) { _clock.Remove(this); return; }

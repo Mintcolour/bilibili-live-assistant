@@ -99,9 +99,7 @@ public sealed class OverlayWindow : OverlaySurface
     protected override void DrawContent(Graphics graphics, Rectangle clip)
     {
         foreach (var item in _items)
-            if (clip.IntersectsWith(item.Bounds)) graphics.DrawImage(item.Image,
-                new RectangleF((float)item.X, item.Y, item.Image.Width, item.Image.Height),
-                new RectangleF(0, 0, item.Image.Width, item.Image.Height), GraphicsUnit.Pixel);
+            if (clip.IntersectsWith(item.Bounds)) OverlayBitmapBlitter.Draw(graphics, item.Image, (float)item.X, item.Y, clip);
     }
 
     private void OnEventBatch(IReadOnlyList<LiveEvent> batch)
@@ -261,19 +259,20 @@ public sealed class OverlayWindow : OverlaySurface
     private async Task LoadImagesAsync(OverlayItem item)
     {
         var urls = OverlayMessageRenderer.ImageUrls(item.Event, _vm.Settings.Dashboard).Distinct().Take(16)
-            .Where(url => _vm.Images.TryGetFrame(url) is null).ToArray();
+            .Where(url => _vm.Images.TryGetFrame(url, DecodeLimit(url)) is null).ToArray();
         if (urls.Length == 0) return;
         var cancellation = item.Cancellation.Token;
         try { await Task.WhenAll(urls.Select(LoadOneAsync)); }
         catch (OperationCanceledException) { return; }
         async Task LoadOneAsync(string url)
         {
-            if (await _vm.Images.GetForViewAsync(url, false, cancellation) is null
+            if (await _vm.Images.GetForViewAsync(url, false, cancellation, DecodeLimit(url)) is null
                 || _cleaned || !Visible || !_items.Contains(item)) return;
             var before = item.Bounds;
             item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
             RequestRender(Rectangle.Union(before, item.Bounds));
         }
+        int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(item.Event, url, _vm.Settings.Dashboard, RegionSettings);
     }
 
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)

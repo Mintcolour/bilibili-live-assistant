@@ -254,12 +254,12 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         {
             var cancellation = sprite.Cancellation.Token;
             var urls = OverlayMessageRenderer.ImageUrls(sprite.Event, _style).Distinct().Take(Kind == OverlayRegionKind.Status ? 32 : 16)
-                .Where(url => ViewModel.Images.TryGetFrame(url) is null).ToArray();
+                .Where(url => ViewModel.Images.TryGetFrame(url, DecodeLimit(url)) is null).ToArray();
             if (urls.Length == 0) return;
             await Task.WhenAll(urls.Select(LoadOneAsync));
             async Task LoadOneAsync(string url)
             {
-                if (await ViewModel.Images.GetForViewAsync(url, false, cancellation) is null
+                if (await ViewModel.Images.GetForViewAsync(url, false, cancellation, DecodeLimit(url)) is null
                     || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
                 // A slow avatar must not hold back an emote that is already available.
                 var before = sprite.Bounds;
@@ -270,6 +270,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
                 sprite.Image.Dispose(); sprite.Image = image;
                 RequestRender(Rectangle.Union(before, sprite.Bounds));
             }
+            int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(sprite.Event, url, _style, RegionSettings);
         }
         catch (OperationCanceledException) { }
         finally { sprite.ImagesLoading = false; }
@@ -298,8 +299,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         {
             if (!clip.IntersectsWith(sprite.Bounds)) continue;
             if (Kind == OverlayRegionKind.Interaction) graphics.DrawImageUnscaled(sprite.Image, (int)sprite.X, sprite.Y);
-            else graphics.DrawImage(sprite.Image, new RectangleF((float)sprite.X, sprite.Y, sprite.Image.Width, sprite.Image.Height),
-                new RectangleF(0, 0, sprite.Image.Width, sprite.Image.Height), GraphicsUnit.Pixel);
+            else OverlayBitmapBlitter.Draw(graphics, sprite.Image, (float)sprite.X, sprite.Y, clip);
         }
     }
 
