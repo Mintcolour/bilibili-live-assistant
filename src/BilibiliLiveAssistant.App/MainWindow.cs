@@ -56,6 +56,7 @@ public sealed class MainWindow : Window
         _navigation.MenuItems.Add(Item("可视化设置", "display", Symbol.Setting));
         _navigation.MenuItems.Add(Item("音频测试", "audio", Symbol.Microphone));
         _navigation.MenuItems.Add(Item("账号设置", "account", Symbol.Contact));
+        _navigation.MenuItems.Add(Item("性能诊断", "performance", Symbol.Repair));
         _navigation.MenuItems.Add(Item("关于", "about", Symbol.Help));
         _navigation.FooterMenuItems.Add(Item("退出软件", "exit", Symbol.Cancel));
         _navigation.Content = _frame;
@@ -64,6 +65,8 @@ public sealed class MainWindow : Window
         _navigation.SelectedItem = _navigation.MenuItems[0];
         Activated += (_, _) => UpdatePageVisibility();
         _appWindow.Changed += (_, _) => UpdatePageVisibility();
+        vm.WindowDiagnostics = () => new { mainVisible = IsMainVisible(),
+            page = (_navigation.SelectedItem as NavigationViewItem)?.Tag?.ToString(), overlay = _overlay?.GetDiagnostics() };
     }
 
     private void ConfigureTitleBar()
@@ -107,6 +110,7 @@ public sealed class MainWindow : Window
             "history" => new HistoryPage(_vm, IsMainVisible),
             "audio" => new AudioTestPage(),
             "account" => new AccountPage(_vm),
+            "performance" => new PerformancePage(_vm.Diagnostics),
             "about" => new AboutPage(),
             _ => new DashboardPage(_vm, _overlay?.OverlayVisible == true, SetOverlayVisible,
                 IsMainVisible),

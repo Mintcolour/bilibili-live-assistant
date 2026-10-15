@@ -17,6 +17,8 @@ public sealed class MediaDetailsService : IDisposable
     private TaskCompletionSource<bool> _capacity = Signal();
     private long _sequence;
     private bool _disposed;
+    public object GetDiagnostics()
+    { lock (_gate) return new { cached = _cache.Count, inflight = _inflight.Count }; }
     private sealed record Cached(MediaDetails Details, DateTimeOffset Until, long Used);
     private sealed class Pending
     {

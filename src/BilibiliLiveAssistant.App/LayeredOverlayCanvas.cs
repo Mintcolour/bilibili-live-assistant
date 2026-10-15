@@ -19,6 +19,7 @@ internal sealed class LayeredOverlayCanvas : IDisposable
     private Bitmap? _bitmap;
     private bool _presented;
     private bool _indirect = true;
+    private long _trackedBytes;
     public Graphics Graphics { get; private set; } = null!;
     public int Width { get; }
     public int Height { get; }
@@ -49,6 +50,8 @@ internal sealed class LayeredOverlayCanvas : IDisposable
             _dirty = Marshal.AllocHGlobal(Marshal.SizeOf<NativeRect>());
             Marshal.StructureToPtr(new NativePoint(), _source, false);
             Marshal.StructureToPtr(new NativeSize { Width = width, Height = height }, _size, false);
+            _trackedBytes = (long)width * height * 4;
+            PerformanceCounters.CanvasBytes += _trackedBytes; PerformanceCounters.Canvases++;
         }
         catch { Dispose(); throw; }
     }
@@ -78,6 +81,10 @@ internal sealed class LayeredOverlayCanvas : IDisposable
 
     public void Dispose()
     {
+        if (_trackedBytes > 0)
+        {
+            PerformanceCounters.CanvasBytes -= _trackedBytes; PerformanceCounters.Canvases--; _trackedBytes = 0;
+        }
         Graphics?.Dispose(); _bitmap?.Dispose(); _bitmap = null;
         if (_dc != 0 && _originalBitmap != 0 && _originalBitmap != new nint(-1)) SelectObject(_dc, _originalBitmap);
         if (_dib != 0) { DeleteObject(_dib); _dib = 0; }

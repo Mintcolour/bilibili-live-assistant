@@ -29,6 +29,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private volatile bool _disposed;
     private AppSettings _settings;
     internal ILocalHistory History { get; }
+    internal PerformanceLog Diagnostics { get; }
+    internal Func<object>? WindowDiagnostics { get; set; }
     private HistoryContext? _historyContext;
     private EventHandler<LiveEvent>? _networkHandler;
     private int _historyNoticeScheduled;
@@ -115,6 +117,23 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         History = new SqliteLocalHistory(_settings.History);
         History.StatusChanged += OnHistoryStatus;
         _client.StatusChanged += OnStatus;
+        Diagnostics = new(_dispatcher, CapturePerformanceSnapshot);
+    }
+
+    private object CapturePerformanceSnapshot()
+    {
+        return new
+        {
+            monitoring = IsMonitoring, connected = IsConnected, editing = OverlayInteractive, animatedEmotes = _settings.Dashboard.AnimateEmotes,
+            received = ReceivedEventCount, pending = _pendingEvents.Count, bufferDropped = BufferedDroppedCount,
+            overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
+            dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
+                sc = Dashboard.SuperChats.Count, interactions = Dashboard.Interactions.Count, events = Events.Count },
+            images = Images.GetDiagnostics(), media = Media.GetDiagnostics(),
+            history = (History as SqliteLocalHistory)?.GetDiagnostics(),
+            canvasBytes = PerformanceCounters.CanvasBytes, canvases = PerformanceCounters.Canvases,
+            window = WindowDiagnostics?.Invoke(),
+        };
     }
 
     public async Task StartAsync(int roomId)
@@ -488,6 +507,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     private void FlushEvents(DispatcherQueueTimer sender, object args)
     {
+        using var timing = PerformanceCounters.Measure(0);
         var batch = _pendingEvents.Drain();
         if (batch.Length > 0)
         {
@@ -561,6 +581,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        await Diagnostics.DisposeAsync(); WindowDiagnostics = null;
         _authTimer.Stop(); await AccountSync.DisposeAsync();
         _eventTimer.Stop();
         _eventTimer.Tick -= FlushEvents;

@@ -7,6 +7,9 @@ namespace BilibiliLiveAssistant.App;
 // Cached, event-driven surfaces. Queues carry data; only visible slots own bitmaps or downloads.
 internal sealed class StationaryOverlayWindow : OverlaySurface
 {
+    internal object GetDiagnostics() => new { kind = Kind.ToString(), visible = Visible, appearance = DiagnosticAppearance, views = _views.Count,
+        queued = _queue.Count, listItems = _list.Count, rankItems = _ranking.Count,
+        bitmapBytes = _views.Values.Sum(view => view.Image is { } image ? (long)image.Width * image.Height * 4 : 0) };
     private sealed class TimedCard(LiveEvent value, DateTimeOffset displayed, DateTimeOffset expires)
     {
         public LiveEvent Value { get; } = value;

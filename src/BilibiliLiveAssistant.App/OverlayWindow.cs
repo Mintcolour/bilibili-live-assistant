@@ -15,6 +15,14 @@ public sealed class OverlayWindow : OverlaySurface
     private readonly FixedOverlayWindow[] _fixedRegions;
     private readonly StationaryOverlayWindow[] _stationary;
     public bool OverlayVisible => _overlayVisible;
+    internal object GetDiagnostics() => new
+    {
+        visible = _overlayVisible, appearance = DiagnosticAppearance, clock = _frames.GetDiagnostics(), movingItems = _items.Count,
+        incoming = _incoming.Count, pending = _pendingItems.Count,
+        bitmapBytes = _items.Sum(item => (long)item.Image.Width * item.Image.Height * 4),
+        scrolling = _fixedRegions.Select(region => region.GetDiagnostics()).ToArray(),
+        stationary = _stationary.Select(region => region.GetDiagnostics()).ToArray(),
+    };
     private int _nextTrack;
     private bool _overlayVisible;
     private bool _cleaned;

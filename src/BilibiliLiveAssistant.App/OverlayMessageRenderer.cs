@@ -73,6 +73,7 @@ internal static class OverlayMessageRenderer
     public static Bitmap Render(LiveEvent value, OverlayRegionSettings region, DashboardSettings style, BiliImageCache cache,
         int width = 0, int maxHeight = 128, bool card = false, bool background = true)
     {
+        using var timing = PerformanceCounters.Measure(2);
         if (!card && value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
             return OverlayBulletinRenderer.Render(bulletin, background ? region : region with { BackgroundOpacity = 0 }, style, cache, maxHeight);
         style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };

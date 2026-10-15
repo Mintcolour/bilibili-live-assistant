@@ -23,6 +23,9 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     private DashboardSettings _style;
     private MediaPreviewSettings _mediaStyle;
     public OverlayRegionKind RegionKind => Kind;
+    internal object GetDiagnostics() => new { kind = Kind.ToString(), visible = Visible, appearance = DiagnosticAppearance, sprites = _sprites.Count,
+        waiting = _waiting.Count, scParts = _scParts?.Count ?? 0, bulletinParts = _bulletinParts?.Count ?? 0,
+        bitmapBytes = _sprites.Sum(sprite => (long)sprite.Image.Width * sprite.Image.Height * 4) };
 
     public FixedOverlayWindow(LiveAssistantViewModel vm, OverlayRegionKind kind, OverlayFrameClock frames) : base(vm, kind)
     {

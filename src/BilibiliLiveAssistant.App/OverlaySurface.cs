@@ -14,6 +14,9 @@ public abstract class OverlaySurface : Forms.Form
     protected readonly LiveAssistantViewModel ViewModel;
     protected OverlayRegionSettings RegionSettings { get; private set; }
     protected OverlayRegionKind Kind { get; }
+    protected object DiagnosticAppearance => new { mode = RegionSettings.Mode.ToString(), width = ClientSize.Width,
+        height = ClientSize.Height, RegionSettings.FontSize, RegionSettings.EmoteSize,
+        RegionSettings.ContentScale, RegionSettings.Opacity, RegionSettings.BackgroundOpacity, RegionSettings.Shadow };
     private bool _clickThrough;
     private LayeredOverlayCanvas? _canvas;
     private bool _presentationErrorReported;
@@ -228,6 +231,7 @@ public abstract class OverlaySurface : Forms.Form
         _dirtyRects.Clear();
         _pendingDirty = Rectangle.Empty;
         if (IsDisposed || Disposing || !IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0 || !Visible) return;
+        using var timing = PerformanceCounters.Measure(3 + (int)Kind);
         try
         {
             dirty = Rectangle.Intersect(ClientRectangle, dirty);

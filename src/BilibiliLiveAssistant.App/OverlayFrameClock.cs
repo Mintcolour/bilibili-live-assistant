@@ -21,8 +21,10 @@ internal sealed class OverlayFrameClock : IDisposable
     private volatile bool _disposed;
     private volatile bool _workerEnded;
     private int _cleanedEvents;
+    private long _lastDiagnosticFrame;
 
     public OverlayFrameClock() => _deliverFrame = DeliverFrame;
+    internal object GetDiagnostics() => new { activeRegions = _subscriptions.Count, targetFps = Volatile.Read(ref _frameRate) };
 
     public void Configure(int requestedRate, string displayName)
     {
@@ -41,6 +43,7 @@ internal sealed class OverlayFrameClock : IDisposable
         if (_disposed || IsRunning(callback)) return;
         if (_subscriptions.Count == _snapshot.Length) throw new InvalidOperationException("滚动区域数量超出动画时钟上限。");
         _subscriptions.Add(new Subscription(callback));
+        if (_subscriptions.Count == 1) _lastDiagnosticFrame = 0;
         Volatile.Write(ref _activeCount, _subscriptions.Count);
         _worker ??= Task.Factory.StartNew(Run, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         _changed.Set();
@@ -124,10 +127,13 @@ internal sealed class OverlayFrameClock : IDisposable
 
     private void DeliverFrame()
     {
+        using var timing = PerformanceCounters.Measure(1);
         try
         {
             if (_disposed) return;
             var now = Stopwatch.GetTimestamp();
+            if (_lastDiagnosticFrame > 0) PerformanceCounters.FrameInterval(now - _lastDiagnosticFrame, Volatile.Read(ref _frameRate));
+            _lastDiagnosticFrame = now;
             var count = _subscriptions.Count;
             _subscriptions.CopyTo(_snapshot!);
             for (var i = 0; i < count; i++)

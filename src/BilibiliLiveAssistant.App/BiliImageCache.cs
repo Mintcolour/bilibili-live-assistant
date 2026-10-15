@@ -39,6 +39,13 @@ internal sealed class BiliImageCache : IDisposable
     private long _diskSize;
     private int _diskCount;
     private bool _disposed;
+    private long _hits, _loads, _evicted, _loadFailures;
+    internal object GetDiagnostics()
+    {
+        lock (_gate) return new { items = _memory.Count, estimatedBytes = _bytes, inflight = _inflight.Count,
+            leases = _leases.Count, failureEntries = _failures.Count, hits = _hits, loads = _loads,
+            evicted = _evicted, loadFailures = _loadFailures };
+    }
 
     public BiliImageCache()
     {
@@ -91,12 +98,13 @@ internal sealed class BiliImageCache : IDisposable
     {
         if (_disposed) return Task.FromResult<BiliImageAsset?>(null);
         if (_memory.TryGetValue(key, out var entry))
-        { _memory[key] = (entry.Asset, ++_useSequence); return Task.FromResult<BiliImageAsset?>(entry.Asset); }
+        { _hits++; _memory[key] = (entry.Asset, ++_useSequence); return Task.FromResult<BiliImageAsset?>(entry.Asset); }
         if (_inflight.TryGetValue(key, out var pending)) return _leases[key].Cancellation.IsCancellationRequested ? null : pending;
         if (_failures.TryGetValue(key, out var failed) && failed > DateTimeOffset.UtcNow)
             return Task.FromResult<BiliImageAsset?>(null);
         if (_inflight.Count >= 32) return null;
         var lease = new DownloadLease(_shutdown.Token); _leases.Add(key, lease);
+        _loads++;
         var task = Task.Run(() => LoadAsync(key, uri, animate, lease.Cancellation.Token));
         _inflight.Add(key, task);
         return task;
@@ -150,7 +158,7 @@ internal sealed class BiliImageCache : IDisposable
                 while (_bytes + asset.Size > MemoryLimit && _memory.Count > 0)
                 {
                     var oldest = _memory.MinBy(item => item.Value.Used);
-                    _bytes -= oldest.Value.Asset.Size; _memory.Remove(oldest.Key);
+                    _bytes -= oldest.Value.Asset.Size; _memory.Remove(oldest.Key); _evicted++;
                 }
                 if (asset.Size <= MemoryLimit) { _memory[key] = (asset, ++_useSequence); _bytes += asset.Size; }
             }
@@ -163,7 +171,8 @@ internal sealed class BiliImageCache : IDisposable
             lock (_gate)
             {
                 if (_failures.Count >= 256) _failures.Remove(_failures.MinBy(x => x.Value).Key);
-                if (ex is not OperationCanceledException || !token.IsCancellationRequested) _failures[key] = DateTimeOffset.UtcNow.AddMinutes(5);
+                if (ex is not OperationCanceledException || !token.IsCancellationRequested)
+                { _loadFailures++; _failures[key] = DateTimeOffset.UtcNow.AddMinutes(5); }
             }
             return null;
         }

@@ -21,6 +21,15 @@ public sealed partial class SqliteLocalHistory
     private int _bytes, _ordinaryBytes;
     private int _inflightCount, _inflightBytes, _inflightOrdinaryBytes, _inflightOrdinaryCount;
     private long _dropped;
+    private long _writtenEvents, _writeBatches, _writeTicks, _writeMaxTicks, _writeFailures;
+    public object GetDiagnostics()
+    {
+        lock (_sync) return new { pending = _ordinary.Count + _important.Count + _inflightCount, queuedBytes = _bytes,
+            commands = _commands.Count, gapGroups = _gaps.Count, dropped = _dropped, writtenEvents = _writtenEvents,
+            writeBatches = _writeBatches, writeMs = _writeTicks * 1000d / Stopwatch.Frequency,
+            writeMaxMs = _writeMaxTicks * 1000d / Stopwatch.Frequency, writeFailures = _writeFailures,
+            bytes = Status.Bytes, faulted = Status.Faulted };
+    }
     private bool _closing;
     private HistoryContext? _current;
     private LiveRoomProfile? _profile;
@@ -223,12 +232,14 @@ public sealed partial class SqliteLocalHistory
                     }
                     if (batch.Count > 0 || gaps.Length > 0)
                     {
+                        var writeAt = Stopwatch.GetTimestamp();
+                        var committed = false;
                         try
                         {
                             using var transaction = new HistoryTransaction(connection);
                             foreach (var item in batch) WriteEnvelope(connection, item);
                             foreach (var entry in gaps) { EnsureSession(connection, entry.Context); WriteGap(connection, entry.Gap); }
-                            transaction.Commit(); Committed?.Invoke();
+                            transaction.Commit(); committed = true; Committed?.Invoke();
                             TryRemoveJournal();
                         }
                         catch
@@ -243,7 +254,14 @@ public sealed partial class SqliteLocalHistory
                         }
                         finally
                         {
-                            lock (_sync) { _bytes -= _inflightBytes; _ordinaryBytes -= _inflightOrdinaryBytes; _inflightCount = _inflightBytes = _inflightOrdinaryBytes = _inflightOrdinaryCount = 0; }
+                            var writeTicks = Stopwatch.GetTimestamp() - writeAt;
+                            lock (_sync)
+                            {
+                                _writeBatches++; _writeTicks += writeTicks; _writeMaxTicks = Math.Max(_writeMaxTicks, writeTicks);
+                                if (committed) _writtenEvents += batch.Count; else _writeFailures++;
+                                _bytes -= _inflightBytes; _ordinaryBytes -= _inflightOrdinaryBytes;
+                                _inflightCount = _inflightBytes = _inflightOrdinaryBytes = _inflightOrdinaryCount = 0;
+                            }
                         }
                     }
                     Work? work = null;
