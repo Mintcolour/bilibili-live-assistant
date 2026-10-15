@@ -20,7 +20,7 @@ public sealed partial class SqliteLocalHistory
             {
                 token.ThrowIfCancellationRequested();
                 raw.sqlite3_progress_handler(connection.Handle, 1000, _ => token.IsCancellationRequested ? 1 : 0, null);
-                try { action(connection); }
+                try { _medalStates.Clear(); action(connection); }
                 finally { raw.sqlite3_progress_handler(connection.Handle, 0, null, null); }
             }).ConfigureAwait(false);
         }

@@ -80,7 +80,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         _canvas.Visibility = Visibility.Visible; _cards.Visibility = Visibility.Collapsed;
         var kind = _kind.Value;
         var stationary = _region.Mode != OverlayDisplayMode.Scrolling;
-        var renderStyle = stationary ? _style with { BackgroundColor = _region.BackgroundColor, BackgroundOpacity = _region.BackgroundOpacity, TextColor = _region.Color } : _style;
+        var renderStyle = stationary ? _style with { BackgroundColor = _region.BackgroundColor, BackgroundOpacity = _region.BackgroundOpacity, TextColor = _region.Color, TextOpacity = 1 } : _style;
         if (kind == OverlayRegionKind.Status)
         {
             var members = Enumerable.Range(1, _region.RankCount).Select(i => new LiveRankMember(i, i, $"示例观众{i}", PreviewSamples.Appearance with { GuardLevel = i == 1 ? 3 : 0 })).ToArray();
@@ -97,10 +97,16 @@ internal sealed class DisplayPreview : Grid, IDisposable
         foreach (var message in messages)
         {
             var region = stationary && kind == OverlayRegionKind.Gift ? _region with { Bold = true } : _region;
-            using var bitmap = OverlayMessageRenderer.Render(message, region, renderStyle, _vm.Images,
+            using var rendered = OverlayMessageRenderer.Render(message, region, renderStyle, _vm.Images,
                 width: stationary ? cellWidth : kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0,
                 maxHeight: stationary ? kind == OverlayRegionKind.Status ? Math.Max(48, region.FontSize * 2 + 12) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
                 card: stationary && kind != OverlayRegionKind.Status);
+            using var bitmap = new System.Drawing.Bitmap(rendered.Width, stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : rendered.Height, PixelFormat.Format32bppPArgb);
+            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+            {
+                if (stationary) { using var fill = new System.Drawing.SolidBrush(OverlayTextRenderer.Color(region.BackgroundColor, region.BackgroundOpacity)); graphics.FillRectangle(fill, 0, 0, bitmap.Width, bitmap.Height); }
+                graphics.DrawImageUnscaled(rendered, 0, 0);
+            }
             using var memory = new MemoryStream(); bitmap.Save(memory, ImageFormat.Png);
             using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream.GetOutputStreamAt(0));
             writer.WriteBytes(memory.ToArray()); await writer.StoreAsync(); await writer.FlushAsync(); writer.DetachStream(); stream.Seek(0);

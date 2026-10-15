@@ -15,9 +15,22 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
     private CookieOptions _cookies = new();
     private int _interval;
     private readonly BiliDashboardRankService _ranks = new();
-    private HistoryAnalysisSettings _analysis = new();
-    private bool _archive = true;
+    private volatile HistoryAnalysisSettings _analysis = new();
+    private volatile bool _archive = true;
     private DateTimeOffset _countsDue, _energyDue, _guardsDue;
+    private readonly object _availabilitySync = new();
+    private volatile bool _available;
+    private int _refreshAfterReconnect;
+    private TaskCompletionSource _connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public void SetConnectionAvailable(bool available)
+    {
+        lock (_availabilitySync)
+        {
+            if (_available == available) return; _available = available; BiliDashboardRankService.InvalidateCache();
+            if (available) { Interlocked.Exchange(ref _refreshAfterReconnect, 1); _connected.TrySetResult(); }
+            else _connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
     public void ConfigureAnalysis(HistoryAnalysisSettings settings, bool enabled) { _analysis = settings.Normalize(); _archive = enabled; }
 
     public BiliLiveInfoService(HttpClient? http = null)
@@ -58,24 +71,28 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         {
             try
             {
+                Task connected; lock (_availabilitySync) connected = _connected.Task;
+                await connected.WaitAsync(token); if (!_available) continue;
+                if (Interlocked.Exchange(ref _refreshAfterReconnect, 0) != 0) _countsDue = _energyDue = _guardsDue = default;
                 await FetchAsync(token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch { if (_archive && DateTimeOffset.UtcNow >= _countsDue) { EmitSample(new(HistorySampleKind.Counts, DateTimeOffset.UtcNow, _analysis.CountsSeconds, null, null, null, null, null, [], 0, null, "采集失败")); _countsDue = DateTimeOffset.UtcNow.AddSeconds(_analysis.CountsSeconds); } }
-            try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(_interval, Math.Min(_analysis.GuardSeconds, Math.Min(_analysis.CountsSeconds, _analysis.EnergySeconds)))), token); }
+            catch { if (_archive && _available && DateTimeOffset.UtcNow >= _countsDue) { EmitSample(new(HistorySampleKind.Counts, DateTimeOffset.UtcNow, _analysis.CountsSeconds, null, null, null, null, null, [], 0, null, "采集失败")); _countsDue = DateTimeOffset.UtcNow.AddSeconds(_analysis.CountsSeconds); } }
+            try { await Task.Delay(TimeSpan.FromSeconds(_archive ? Math.Min(_interval, Math.Min(_analysis.GuardSeconds, Math.Min(_analysis.CountsSeconds, _analysis.EnergySeconds))) : _interval), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
         }
     }
 
     private async Task FetchAsync(CancellationToken token)
     {
-        var parameters = await _signer.SignAsync(new Dictionary<string, string> { ["room_id"] = _roomId.ToString() }, token, _cookies);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        var parameters = await _signer.SignAsync(new Dictionary<string, string> { ["room_id"] = _roomId.ToString() }, timeout.Token, _cookies);
         var query = string.Join("&", parameters.Select(p => $"{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
         using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?{query}");
         BiliHttp.SetHeaders(request, _cookies);
-        using var response = await _http.SendAsync(request, token);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         response.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(token));
+        using var doc = await BiliHttp.ReadJsonAsync(response, timeout.Token);
         var data = BiliHttp.ReadData(doc.RootElement);
         var room = data.GetProperty("room_info");
         var watched = data.TryGetProperty("watched_show", out var watchedNode) && watchedNode.TryGetProperty("text_large", out var text)
@@ -103,6 +120,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
             duration = $" · 已直播 {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
         }
         token.ThrowIfCancellationRequested();
+        if (!_available) return;
         EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Online, "系统", $"人气: {online}{(string.IsNullOrWhiteSpace(watched) ? "" : $" · {watched}")}", "#2196F3",
             Metadata: new Dictionary<string, object?> { ["room_summary"] = $"{state}{duration}{(string.IsNullOrWhiteSpace(title) ? "" : $" · {title}")}",
                 ["popularity"] = online.ToString(), ["watched"] = watched, ["room_profile"] = profile,
@@ -122,11 +140,16 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         }
     }
 
-    private void EmitSample(HistoryAnalysisSample sample) => EventReceived?.Invoke(this,
-        new LiveEvent(LiveEventType.Rank, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["archive_analysis"] = sample }));
+    private void EmitSample(HistoryAnalysisSample sample)
+    {
+        if (_available) EventReceived?.Invoke(this,
+            new LiveEvent(LiveEventType.Rank, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["archive_analysis"] = sample }));
+    }
 
     private async Task CollectRankAsync(long uid, bool guard, CancellationToken token)
     {
+        if (!_available) return;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
         var settings = _analysis;
         var collect = _archive && (guard || DateTimeOffset.UtcNow >= _energyDue);
         var limit = guard ? settings.GuardLimit : collect ? settings.EnergyLimit : 10;
@@ -138,13 +161,15 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         {
             for (var page = 1; page <= 10 && rows.Count < limit; page++)
             {
-                var result = await _ranks.FetchAsync(_roomId, uid, guard ? DashboardRankKind.GuardTotal : DashboardRankKind.Energy, page, _cookies, token);
+                var result = await _ranks.FetchAsync(_roomId, uid, guard ? DashboardRankKind.GuardTotal : DashboardRankKind.Energy, page, _cookies, timeout.Token);
                 if (page == 1) { at = result.SampledAt; total = result.Total; }
                 foreach (var member in result.Members)
                     if (rows.Count < limit && (member.Uid <= 0 || rows.All(r => r.Uid != member.Uid))) rows.Add(member);
                 if (!result.HasMore) break;
+                if (!_available) return;
             }
             token.ThrowIfCancellationRequested();
+            if (!_available) return;
             if (!guard) EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", rows.Count == 0 ? "暂无榜单" : "高能榜: " + string.Join(" | ", rows.Take(3).Select(m => $"{m.Rank}.{m.Username}")), "#9C27B0",
                 Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total }));
         }

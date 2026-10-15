@@ -27,7 +27,7 @@ public sealed record HistoryTrendPoint(long Id, string SessionId, HistoryAnalysi
     public override string ToString() => $"{Sample.At.ToLocalTime():MM-dd HH:mm:ss} · {Sample.Kind switch { HistorySampleKind.Counts => "人数", HistorySampleKind.Energy => "高能榜", _ => "大航海总榜" }} · {Sample.Status}";
 }
 public sealed record HistoryMemberState(long Uid, string Name, LiveMessageAppearance Appearance,
-    int? Rank = null, long? Contribution = null, int? AccompanyDays = null);
+    int? Rank = null, long? Contribution = null, int? AccompanyDays = null, bool MedalKnown = false, bool GuardKnown = false);
 public sealed record HistoryMemberChange(long Id, string SessionId, DateTimeOffset At, string Source,
     string Kind, HistoryMemberState? Before, HistoryMemberState After);
 public sealed record HistoryChangeCursor(DateTimeOffset At, long Id);

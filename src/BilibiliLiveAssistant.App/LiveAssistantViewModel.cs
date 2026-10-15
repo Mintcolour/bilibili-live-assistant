@@ -32,6 +32,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private HistoryContext? _historyContext;
     private EventHandler<LiveEvent>? _networkHandler;
     private int _historyNoticeScheduled;
+    private int _streamAvailable;
     private string _historyConfigurationWarning = "";
     public bool IsMonitoring => _monitorRequested;
     private bool _overlayInteractive;
@@ -232,7 +233,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             return;
         }
 
-        if (previous.PollIntervalSeconds != settings.PollIntervalSeconds)
+        if (previous.PollIntervalSeconds != settings.PollIntervalSeconds || previous.History.Analysis != settings.History.Analysis || previous.History.Enabled != settings.History.Enabled)
         {
             await _info.StopAsync();
             await _info.StartAsync(settings.RoomId, ConnectionCookies, settings.PollIntervalSeconds, _connectionRun?.Token ?? CancellationToken.None);
@@ -402,6 +403,18 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private void OnStatus(object? sender, string value)
     {
         var run = _connectionRun;
+        var available = value == "已连接";
+        _info.SetConnectionAvailable(available);
+        var previous = Interlocked.Exchange(ref _streamAvailable, available ? 1 : 0);
+        if (!available && previous == 1 && _monitorRequested && run?.IsCancellationRequested == false && _historyContext is { } context)
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var kind in Enum.GetValues<HistorySampleKind>())
+            {
+                var sample = new HistoryAnalysisSample(kind, now, _settings.History.Analysis.CountsSeconds, null, null, null, null, null, [], 0, null, "连接中断");
+                History.Capture(context, new LiveEvent(LiveEventType.Rank, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["archive_analysis"] = sample }), now);
+            }
+        }
         void Update()
         {
             if (_disposed || !ReferenceEquals(run, _connectionRun) || run?.IsCancellationRequested == true && value == "已连接") return;

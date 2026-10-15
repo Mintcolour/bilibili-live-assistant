@@ -6,6 +6,7 @@ namespace BilibiliLiveAssistant.Infrastructure;
 
 public sealed partial class SqliteLocalHistory
 {
+    private readonly Dictionary<(string Session, long Uid), string> _medalStates = new();
     private void WriteAnalysis(SqliteConnection c, HistoryEnvelope item, HistoryAnalysisSample sample)
     {
         sample = sample with { Collected = sample.Members.Count };
@@ -13,7 +14,7 @@ public sealed partial class SqliteLocalHistory
             ("$s", item.Context.Id), ("$at", Millis(sample.At)), ("$day", Day(sample.At)), ("$kind", (int)sample.Kind), ("$data", JsonSerializer.Serialize(sample, Json)));
         var source = sample.Kind == HistorySampleKind.Guards ? "guards" : "energy";
         foreach (var member in sample.Members.Where(m => m.Uid > 0))
-            WriteMember(c, item.Context.Id, sample.At, source, new(member.Uid, member.Username, CompactAppearance(member.Appearance), member.Rank, member.Contribution, member.AccompanyDays),
+            WriteMember(c, item.Context.Id, sample.At, source, new(member.Uid, member.Username, CompactAppearance(member.Appearance), member.Rank, member.Contribution, member.AccompanyDays, member.HasMedalData, member.HasGuardData),
                 "观察变化", member.HasMedalData, member.HasGuardData);
     }
     private static LiveMessageAppearance CompactAppearance(LiveMessageAppearance a) => new()
@@ -23,10 +24,17 @@ public sealed partial class SqliteLocalHistory
         var e = item.Event; if (e.Uid <= 0) return;
         var a = CompactAppearance(e.Appearance ?? new());
         if (e.Type == LiveEventType.Guard)
-            WriteMember(c, item.Context.Id, item.ReceivedAt, "guard_event", new(e.Uid, e.Username, a with { GuardLevel = item.Fields.GuardLevel ?? a.GuardLevel }), "上舰事件");
+            WriteMember(c, item.Context.Id, item.ReceivedAt, "guard_event", new(e.Uid, e.Username, a with { GuardLevel = item.Fields.GuardLevel ?? a.GuardLevel }, MedalKnown: a.MedalLevel > 0, GuardKnown: true), "上舰事件", a.MedalLevel > 0, true);
         // The old appearance model does not carry medal anchor UID. Store observations without claiming room membership.
         if (a.MedalLevel > 0 && a.MedalName.Length > 0)
-            WriteMember(c, item.Context.Id, item.ReceivedAt, "medal_observed", new(e.Uid, e.Username, a), "粉丝牌观察");
+        {
+            var key = (item.Context.Id, e.Uid); var state = new HistoryMemberState(e.Uid, e.Username, a, MedalKnown: true, GuardKnown: a.GuardLevel > 0);
+            var data = JsonSerializer.Serialize(state, Json);
+            if (_medalStates.GetValueOrDefault(key) == data) return;
+            WriteMember(c, item.Context.Id, item.ReceivedAt, "medal_observed", state, "粉丝牌观察", true, a.GuardLevel > 0);
+            if (_medalStates.Count >= 1024) _medalStates.Remove(_medalStates.First().Key);
+            _medalStates[key] = data;
+        }
     }
     private void WriteMember(SqliteConnection c, string session, DateTimeOffset at, string source, HistoryMemberState next, string kind,
         bool hasMedal = true, bool hasGuard = true)
@@ -40,7 +48,7 @@ public sealed partial class SqliteLocalHistory
             var a = next.Appearance;
             if (!hasMedal) a = a with { MedalName = before.Appearance.MedalName, MedalLevel = before.Appearance.MedalLevel, MedalColor = before.Appearance.MedalColor };
             if (!hasGuard) a = a with { GuardLevel = before.Appearance.GuardLevel };
-            next = next with { Appearance = a };
+            next = next with { Appearance = a, MedalKnown = next.MedalKnown || before.MedalKnown, GuardKnown = next.GuardKnown || before.GuardKnown };
         }
         var data = JsonSerializer.Serialize(next, Json);
         if (data == previous && source != "guard_event") return;
@@ -56,12 +64,13 @@ public sealed partial class SqliteLocalHistory
         using (var reader = command.ExecuteReader())
             while (reader.Read()) if (JsonSerializer.Deserialize<HistoryAnalysisSample>(reader.GetString(2), Json) is { } sample)
                 result.Add(new(reader.GetInt64(0), reader.GetString(1), sample));
-        if (result.Count == 0)
         {
             command.CommandText = $"""
                 SELECT e.id,e.session_id,e.received,e.popularity,e.watched,e.rank_total,
                 (SELECT data FROM profiles p WHERE p.session_id=e.session_id AND p.received<=e.received ORDER BY p.received DESC LIMIT 1)
-                FROM snapshots e JOIN sessions s ON s.id=e.session_id WHERE {where} ORDER BY e.received DESC,e.id DESC LIMIT 1200
+                FROM snapshots e JOIN sessions s ON s.id=e.session_id WHERE {where}
+                AND NOT EXISTS(SELECT 1 FROM analysis_samples a WHERE a.session_id=e.session_id)
+                ORDER BY e.received DESC,e.id DESC LIMIT 1200
                 """;
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -71,7 +80,7 @@ public sealed partial class SqliteLocalHistory
                     reader.IsDBNull(5) ? null : reader.GetInt64(5), reader.IsDBNull(3) ? null : reader.GetInt64(3), reader.IsDBNull(4) ? null : reader.GetInt64(4), [], 0, null, "旧版缓存采样，新鲜度未知")));
             }
         }
-        return result.OrderBy(p => p.Sample.At).ToArray();
+        return result.OrderByDescending(p => p.Sample.At).Take(1200).OrderBy(p => p.Sample.At).ToArray();
     }, token);
     public Task<HistoryAnalysisSample?> SampleAsync(HistoryFilter filter, long id, CancellationToken token) => ReadAsync(c =>
     {

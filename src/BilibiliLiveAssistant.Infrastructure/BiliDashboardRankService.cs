@@ -8,12 +8,14 @@ public sealed class BiliDashboardRankService : IDisposable
 {
     private static readonly SemaphoreSlim Requests = new(1, 1);
     private static readonly Dictionary<string, DashboardRankPage> Cache = new();
+    private static int _revision;
+    public static void InvalidateCache() => Interlocked.Increment(ref _revision);
     private readonly HttpClient _http = BiliHttp.CreateClient();
     public async Task<DashboardRankPage> FetchAsync(int room, long uid, DashboardRankKind kind, int page,
         CookieOptions cookies, CancellationToken token)
     {
         var identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BiliHttp.CookieHeader(cookies))));
-        var key = $"{room}:{uid}:{kind}:{page}:{identity}";
+        var key = $"{Volatile.Read(ref _revision)}:{room}:{uid}:{kind}:{page}:{identity}";
         await Requests.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -27,6 +29,7 @@ public sealed class BiliDashboardRankService : IDisposable
     private async Task<DashboardRankPage> FetchPageAsync(int room, long uid, DashboardRankKind kind, int page,
         CookieOptions cookies, CancellationToken token)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(15)); token = timeout.Token;
         page = Math.Clamp(page, 1, 10);
         const int size = 30;
         var url = kind == DashboardRankKind.Energy
@@ -36,7 +39,7 @@ public sealed class BiliDashboardRankService : IDisposable
         BiliHttp.SetHeaders(request, cookies);
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
         response.EnsureSuccessStatusCode();
-        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(token), cancellationToken: token);
+        using var doc = await BiliHttp.ReadJsonAsync(response, token);
         var data = BiliHttp.ReadData(doc.RootElement);
         var rows = new List<LiveRankMember>(33);
         var info = BiliMessageAppearanceParser.Get(data, "info");

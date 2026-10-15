@@ -77,7 +77,7 @@ internal sealed class HistoryAnalysisView : Grid, IDisposable
             ToolTipService.SetToolTip(plot, $"{names[i]} · 最低 {min:N0} / 最高 {max:N0} · 点击查看快照");
         }
         _range.Text = _points.Count == 0 ? "暂无趋势采样。升级前未记录的成员信息无法补录。" :
-            $"{_points[0].Sample.At.ToLocalTime():MM-dd HH:mm} — {_points[^1].Sample.At.ToLocalTime():MM-dd HH:mm} · 最近 {_points.Count} / 最多 1200 次采样 · 失败 {_points.Count(p => p.Sample.Status != "ok")} 次\n空档不补零，离榜不推断离开。旧版缓存采样的新鲜度未知。";
+            $"{_points[0].Sample.At.ToLocalTime():MM-dd HH:mm} — {_points[^1].Sample.At.ToLocalTime():MM-dd HH:mm} · 最近 {_points.Count} / 最多 1200 次采样 · 异常/旧版 {_points.Count(p => p.Sample.Status != "ok")} 次\n空档不补零，离榜不推断离开。旧版缓存采样的新鲜度未知。";
     }
     public void ShowSample(HistoryAnalysisSample sample)
     {

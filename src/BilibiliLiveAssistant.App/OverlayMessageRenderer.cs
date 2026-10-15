@@ -351,8 +351,7 @@ internal static class OverlayMessageRenderer
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var shape = OverlayTextRenderer.RoundedRectangle(new(0.5f, 0.5f, size.Width - 1, size.Height - 1), style.CornerRadius);
-        // Fixed event cards retain a readable background even with the transparent overview preset.
-        using var fill = new SolidBrush(OverlayTextRenderer.Color(style.BackgroundColor, Math.Max(0.72, style.BackgroundOpacity)));
+        using var fill = new SolidBrush(OverlayTextRenderer.Color(style.BackgroundColor, style.BackgroundOpacity));
         graphics.FillPath(fill, shape);
         using var border = new Pen(Color.FromArgb(160, accent), 1); graphics.DrawPath(border, shape);
     }

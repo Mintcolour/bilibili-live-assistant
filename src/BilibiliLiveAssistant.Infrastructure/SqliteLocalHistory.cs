@@ -212,7 +212,8 @@ public sealed partial class SqliteLocalHistory
                     {
                         while (batch.Count < 500 && (_important.Count + _ordinary.Count > 0))
                         {
-                            var important = _important.Count > 0;
+                            // Reserved admission protects gifts; merge queue heads by receipt time for truthful member changes.
+                            var important = _important.Count > 0 && (_ordinary.Count == 0 || _important.Peek().Item.ReceivedAt <= _ordinary.Peek().Item.ReceivedAt);
                             var entry = (important ? _important : _ordinary).Dequeue();
                             _inflightBytes += entry.Bytes; if (!important) { _inflightOrdinaryBytes += entry.Bytes; _inflightOrdinaryCount++; }
                             batch.Add(entry.Item);
@@ -232,6 +233,7 @@ public sealed partial class SqliteLocalHistory
                         }
                         catch
                         {
+                            _medalStates.Clear();
                             lock (_sync)
                             {
                                 foreach (var item in batch) AddGapLocked(item, "数据库写入失败");

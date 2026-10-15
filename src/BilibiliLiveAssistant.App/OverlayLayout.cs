@@ -17,7 +17,8 @@ internal static class OverlayLayout
             OverlayRegionKind.Gift => new Rectangle(work.Right - 380, cardY, 360, Math.Min(360, cardHeight)),
             OverlayRegionKind.SuperChat => new Rectangle(work.X + 20, cardY, 440, Math.Min(520, cardHeight)),
             OverlayRegionKind.Interaction => new Rectangle(work.X + 20, work.Bottom - 200, 420, 180),
-            _ => new Rectangle(work.Right - 440, work.Bottom - 150, 420, 130),
+            _ => region.Mode == OverlayDisplayMode.Panel ? new Rectangle(work.Right - 440, work.Bottom - 284, 420, 264)
+                : new Rectangle(work.Right - 440, work.Bottom - 150, 420, 130),
         };
         var bounds = new Rectangle(region.X ?? defaults.X, region.Y ?? defaults.Y,
             region.Width > 0 ? region.Width : defaults.Width, region.Height > 0 ? region.Height : defaults.Height);

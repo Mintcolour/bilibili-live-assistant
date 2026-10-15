@@ -16,6 +16,20 @@ internal static class BiliHttp
         UseCookies = false,
         AutomaticDecompression = DecompressionMethods.All,
     }) { Timeout = TimeSpan.FromSeconds(15) };
+    public static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken token)
+    {
+        const int limit = 1024 * 1024;
+        if (response.Content.Headers.ContentLength > limit) throw new InvalidDataException("直播资料响应过大");
+        await using var input = await response.Content.ReadAsStreamAsync(token);
+        using var output = new MemoryStream(); var buffer = new byte[8192];
+        while (true)
+        {
+            var count = await input.ReadAsync(buffer.AsMemory(), token); if (count == 0) break;
+            if (output.Length + count > limit) throw new InvalidDataException("直播资料响应过大");
+            output.Write(buffer, 0, count);
+        }
+        return JsonDocument.Parse(output.ToArray());
+    }
 
     public static string CookieHeader(CookieOptions cookies)
     {

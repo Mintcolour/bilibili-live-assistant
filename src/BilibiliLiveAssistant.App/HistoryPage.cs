@@ -133,7 +133,7 @@ internal sealed class HistoryPage : Page
         _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += (_, _) => ConditionsChanged();
         foreach (var input in new[] { _uid, _name, _keyword }) input.TextChanged += (_, _) => ConditionsChanged();
         _history.Committed += OnCommitted; _vm.PropertyChanged += OnVmChanged;
-        Loaded += async (_, _) => { _active = _visible(); _anchorList.SetActive(_active); if (_active) await RefreshAsync(true); };
+        Loaded += async (_, _) => { _active = _visible(); SetTabActive(); _anchorList.SetActive(_active); if (_active) await RefreshAsync(true); };
         Unloaded += OnUnloaded; UpdateStorage(); UpdatePager();
     }
     private static Border Surface(UIElement child, double padding) => new() { Child = child, Padding = new Thickness(padding), CornerRadius = new CornerRadius(8), Background = MessageCard.Brush("#222732") };
@@ -253,7 +253,8 @@ internal sealed class HistoryPage : Page
     private static string ChangeDescription(HistoryMemberChange c)
     {
         static string State(HistoryMemberState? s) => s is null ? "此前暂无观察" :
-            $"{s.Name} · 名次 {s.Rank?.ToString() ?? "—"} · 贡献 {s.Contribution?.ToString() ?? "—"} · 陪伴 {s.AccompanyDays?.ToString() ?? "—"} 天 · {s.Appearance.MedalName} {s.Appearance.MedalLevel} 级 · 大航海等级 {s.Appearance.GuardLevel}";
+            $"{s.Name} · 名次 {s.Rank?.ToString() ?? "—"} · 贡献 {s.Contribution?.ToString() ?? "—"} · 陪伴 {s.AccompanyDays?.ToString() ?? "—"} 天 · " +
+            (s.MedalKnown ? $"{s.Appearance.MedalName} {s.Appearance.MedalLevel} 级" : "粉丝牌未知") + " · " + (s.GuardKnown ? $"大航海等级 {s.Appearance.GuardLevel}" : "大航海身份未知");
         var source = c.Source switch { "energy" => "高能榜", "guards" => "大航海总榜", "guard_event" => "上舰事件", _ => "粉丝牌观察（归属未核实）" };
         return $"{source} · {c.Kind} · UID {c.After.Uid}\n之前：{State(c.Before)}\n本次：{State(c.After)}";
     }

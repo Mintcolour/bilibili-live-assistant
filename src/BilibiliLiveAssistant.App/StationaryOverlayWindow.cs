@@ -38,10 +38,10 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
     private bool GridMode => RegionSettings.Mode == OverlayDisplayMode.Grid;
     private int FooterHeight => 28;
-    private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, ClientSize.Width / 200)) : 1;
+    private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, (ClientSize.Width - 8) / 208)) : 1;
     private int CellHeight => Kind == OverlayRegionKind.Status ? Math.Max(48, RegionSettings.FontSize * 2 + 12)
         : Math.Max(RegionSettings.CardHeight, RegionSettings.FontSize * 3 + 24);
-    private int Capacity => Math.Clamp(Math.Min((ClientSize.Height - ContentTop - FooterHeight) / (CellHeight + 8) * Columns,
+    private int Capacity => GridMode && ClientSize.Width < 216 ? 0 : Math.Clamp(Math.Min((ClientSize.Height - ContentTop - FooterHeight) / (CellHeight + 8) * Columns,
         16 * 1024 * 1024 / Math.Max(1, (ClientSize.Width / Columns) * CellHeight * 4)), 0,
         Timed ? Math.Min(6, RegionSettings.MaxVisible) : 32);
     private DashboardSettings Style => ViewModel.Settings.Dashboard with
@@ -52,6 +52,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         _queue.Dropped += vm.RecordOverlayDropped;
         _wake.Tick += (_, _) => Process();
         vm.RoomHistoryReset += ResetContent;
+        vm.Dashboard.Cleared += ResetContent;
     }
     public void ShowRegion()
     {
@@ -207,7 +208,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     {
         foreach (var view in _views.Values) if (view.Image is not null && view.Bounds.IntersectsWith(clip)) graphics.DrawImageUnscaled(view.Image, view.Bounds.Location);
         using var font = OverlayTextRenderer.CreateFont(RegionSettings.FontFamily, 12);
-        var message = Capacity == 0 ? "区域高度不足，请在设置中增高区域" : Timed
+        var message = Capacity == 0 ? "区域尺寸不足，请在设置中增大区域" : Timed
             ? $"显示 {_views.Count}/{Capacity} · 待播 {_queue.Count} · 未展示 {_queue.Omitted}（点击查看）" : GridMode ? "固定网格 · 点击查看详情，右键隐藏" : $"{(Kind == OverlayRegionKind.Status ? "高能榜" : "最近消息")} · {_offset + 1} 起 · 交互时滚轮翻阅";
         if (Timed && Capacity < RegionSettings.MaxVisible && Capacity > 0) message = $"高度仅容纳 {Capacity}/{RegionSettings.MaxVisible} 张 · 未展示 {_queue.Omitted}";
         using var brush = new SolidBrush(Color.FromArgb(210, 27, 32, 43)); graphics.FillRectangle(brush, 0, ClientSize.Height - FooterHeight, ClientSize.Width, FooterHeight);
@@ -273,7 +274,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing && !_disposed) { _disposed = true; ViewModel.RoomHistoryReset -= ResetContent; ResetContent(); _wake.Dispose(); _queue.Dropped -= ViewModel.RecordOverlayDropped; }
+        if (disposing && !_disposed) { _disposed = true; ViewModel.RoomHistoryReset -= ResetContent; ViewModel.Dashboard.Cleared -= ResetContent; ResetContent(); _wake.Dispose(); _queue.Dropped -= ViewModel.RecordOverlayDropped; }
         base.Dispose(disposing);
     }
 }
