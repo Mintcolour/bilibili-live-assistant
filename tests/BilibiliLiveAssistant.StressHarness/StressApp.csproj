@@ -10,6 +10,7 @@
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <IncludeProjectPriFile>true</IncludeProjectPriFile>
     <EnableDefaultApplicationDefinition>true</EnableDefaultApplicationDefinition>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -28,4 +29,10 @@
     <Compile Include="$(SourceRoot)/*.cs" Exclude="$(SourceRoot)/App.xaml.cs" />
     <Content Include="../../assets/icons/app.ico" Link="Assets/app.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CopyXamlResourcesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <XamlResourceFiles Include="$(TargetDir)*.pri;$(TargetDir)**\*.xbf" Exclude="$(TargetDir)publish\**\*;$(PublishDir)**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(XamlResourceFiles)" DestinationFiles="@(XamlResourceFiles->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 </Project>

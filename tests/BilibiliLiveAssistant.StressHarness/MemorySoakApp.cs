@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using BilibiliLiveAssistant.Core;
 using Microsoft.UI.Dispatching;
@@ -28,6 +29,7 @@ public partial class App : Application
     private Process? _process;
     private double _previousSeconds, _previousCpu;
     private bool _finishing;
+    private Task _snapshot = Task.CompletedTask;
     private readonly List<WeakReference> _retired = new();
     public App()
     {
@@ -47,12 +49,12 @@ public partial class App : Application
             _log = new StreamWriter(Path.Combine(_config.Output, "samples.jsonl"), false) { AutoFlush = true };
             var settings = new AppSettings { RoomId = 900000001, AnonymousReading = true,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
-                Dashboard = new() { RankPanelCollapsed = true } };
+                Dashboard = new() { RankPanelCollapsed = true, ShowAvatars = _config.Images is not ("none" or "emotes") } };
             var images = new BiliImageCache(new FixtureImages(), Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, new SoakInfo(), images);
             _window = new(ViewModel) { Title = "内存模拟 · " + _config.Name };
             _window.Activate();
-            _window.OpenOverlay();
+            if (_config.View != "dashboard") _window.OpenOverlay();
             if (_config.View == "overlay") _window.HideToTray();
             _process = Process.GetCurrentProcess();
             _previousCpu = _process.TotalProcessorTime.TotalSeconds;
@@ -69,6 +71,7 @@ public partial class App : Application
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
+            if (_config.Snapshot) _snapshot = CaptureOverviewAsync();
             await Task.Run(async () =>
             {
                 var start = Stopwatch.GetTimestamp();
@@ -86,6 +89,7 @@ public partial class App : Application
             });
             // Let the normal display batch finish before taking retention checks.
             await Task.Delay(TimeSpan.FromSeconds(2));
+            if (_config.Snapshot) await CaptureOverviewAsync("overview-settled.png", 0);
             var retainedIds = ViewModel.Dashboard.Danmaku.Concat(ViewModel.Dashboard.Gifts).Concat(ViewModel.Dashboard.SuperChats).Select(r => r.Id).ToHashSet();
             EmitRoom(settings.RoomId, 0);
             await Task.Delay(TimeSpan.FromSeconds(2));
@@ -125,8 +129,9 @@ public partial class App : Application
         var uid = sequence % _config.Users + 1;
         var type = sequence % 401 == 0 ? LiveEventType.Guard : sequence % 100 == 0 ? LiveEventType.SuperChat
             : sequence % 17 == 0 ? LiveEventType.Gift : sequence % 7 == 0 ? LiveEventType.Enter : LiveEventType.Danmaku;
-        var emote = sequence % 3 == 0;
-        var appearance = new LiveMessageAppearance { AvatarUrl = $"https://i0.hdslb.com/soak/avatar/{uid}.png", MedalName = "测试团",
+        var emote = sequence % 3 == 0 && _config.Images is not ("none" or "avatars");
+        var imageId = _config.Images == "shared" ? uid % 8 : uid;
+        var appearance = new LiveMessageAppearance { AvatarUrl = _config.Images == "none" ? "" : $"https://i0.hdslb.com/soak/avatar/{imageId}.png", MedalName = "测试团",
             MedalLevel = (int)(uid % 30 + 1), GuardLevel = uid % 20 == 0 ? 3 : 0,
             Emotes = emote ? [new("[表情]", $"https://i0.hdslb.com/soak/emote/{sequence % 128}.png", 48, 48)] : [] };
         var body = type == LiveEventType.SuperChat ? string.Join("，", Enumerable.Repeat("这是需要完整展示的醒目留言，感谢主播", 8))
@@ -164,11 +169,29 @@ public partial class App : Application
     }
     private async Task FinishAsync()
     {
+        await _snapshot;
         _phase = "finished"; Sample(); _finishing = true; _stop.Cancel(); _sampling?.Stop();
         _window?.AllowClose(); await ViewModel.DisposeAsync(); _window?.Close();
         _log?.Dispose(); _process?.Dispose();
         File.WriteAllText(Path.Combine(_config.Output, "completed.json"), JsonSerializer.Serialize(new { seconds = _elapsed.Elapsed.TotalSeconds, produced = _produced }));
         Exit();
+    }
+    private async Task CaptureOverviewAsync(string filename = "overview.png", int delaySeconds = 20)
+    {
+        try
+        {
+            if (delaySeconds > 0) await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+            var bitmap = new Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap();
+            await bitmap.RenderAsync((UIElement)_window!.Content);
+            var pixels = await bitmap.GetPixelsAsync();
+            using var file = File.Create(Path.Combine(_config.Output, filename));
+            using var output = file.AsRandomAccessStream();
+            var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, output);
+            encoder.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels.ToArray());
+            await encoder.FlushAsync();
+        }
+        catch (Exception error) { File.WriteAllText(Path.Combine(_config.Output, "snapshot-error.txt"), error.ToString()); }
     }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
     // Layout from the installed Windows SDK psapi.h PROCESS_MEMORY_COUNTERS_EX2.
@@ -185,7 +208,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both");
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique");
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
