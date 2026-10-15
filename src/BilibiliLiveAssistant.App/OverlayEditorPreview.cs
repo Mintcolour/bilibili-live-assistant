@@ -4,17 +4,26 @@ using BilibiliLiveAssistant.Core;
 
 namespace BilibiliLiveAssistant.App;
 
-// Local, static samples only. Never enqueue them into the live pipeline or start
-// image/media requests. Cached bitmaps are replaced only after an editor change.
+// Local samples only. Movement reuses cached bitmaps and the shared frame clock;
+// samples never enter the live pipeline or start image/media requests.
 internal sealed class OverlayEditorPreview : IDisposable
 {
-    private readonly List<(Bitmap Image, Point Location)> _images = new();
+    private sealed class SampleImage(Bitmap image, int x, int y)
+    {
+        internal readonly Bitmap Image = image;
+        internal double X = x;
+        internal readonly int Y = y;
+        internal readonly PointF[] Destination = new PointF[3];
+    }
+    private readonly List<SampleImage> _images = new();
+    internal bool IsScrolling { get; private set; }
     internal void Rebuild(OverlayRegionKind kind, OverlayRegionSettings region, DashboardSettings style,
         BiliImageCache cache, int width, int height, int top)
     {
         Dispose();
         var available = height - top - 8; if (available < 24 || width < 32) return;
-        var stationary = region.Mode != OverlayDisplayMode.Scrolling;
+        var stationary = region.Mode != OverlayDisplayMode.Scrolling || kind == OverlayRegionKind.Interaction;
+        IsScrolling = !stationary;
         var columns = region.Mode == OverlayDisplayMode.Grid ? Math.Max(1, Math.Min(region.CardColumns, (width - 8) / 208)) : 1;
         var cellWidth = Math.Max(24, (width - 16 - (columns - 1) * 8) / columns);
         var cellHeight = stationary && kind != OverlayRegionKind.Status
@@ -53,16 +62,22 @@ internal sealed class OverlayEditorPreview : IDisposable
                             using var graphics = Graphics.FromImage(image);
                             OverlayMessageRenderer.DrawBackground(graphics, image.Size, effective, OverlayTextRenderer.Color(region.Color));
                             graphics.DrawImageUnscaled(body, 0, 0);
+                            if (region.Mode == OverlayDisplayMode.Grid)
+                            {
+                                using var countFont = OverlayTextRenderer.CreateFont("Microsoft YaHei UI", 12);
+                                OverlayTextRenderer.Draw(graphics, $"×{slot + 2}", countFont, new PointF(8, Math.Max(8, image.Height - 22)), Color.LightSkyBlue, false);
+                            }
                         }
                         catch { image.Dispose(); throw; }
                     }
                 }
                 else image = body;
                 if ((bytes += (long)image.Width * image.Height * 4) > 16 * 1024 * 1024) { image.Dispose(); break; }
-                _images.Add((image, new(x, y)));
+                _images.Add(new(image, x, y));
             }
         }
         catch { Dispose(); throw; }
+        IsScrolling = !stationary && _images.Count > 0;
     }
     private static LiveEvent[] Samples(OverlayRegionKind kind, OverlayRegionSettings region, bool stationary)
     {
@@ -91,8 +106,24 @@ internal sealed class OverlayEditorPreview : IDisposable
     internal void Draw(Graphics graphics, double opacity)
     {
         using var attributes = new ImageAttributes(); attributes.SetColorMatrix(new ColorMatrix { Matrix33 = (float)opacity });
-        foreach (var (image, location) in _images)
-            graphics.DrawImage(image, new Rectangle(location, image.Size), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+        foreach (var sample in _images)
+        {
+            var image = sample.Image; var points = sample.Destination; var x = (float)sample.X;
+            points[0] = new(x, sample.Y); points[1] = new(x + image.Width, sample.Y); points[2] = new(x, sample.Y + image.Height);
+            graphics.DrawImage(image, points, new RectangleF(0, 0, image.Width, image.Height), GraphicsUnit.Pixel, attributes);
+        }
     }
-    public void Dispose() { foreach (var item in _images) item.Image.Dispose(); _images.Clear(); }
+    internal void Advance(double elapsed, int width, int speed, Action<Rectangle> invalidate)
+    {
+        if (!IsScrolling) return;
+        foreach (var sample in _images)
+        {
+            var oldX = sample.X; sample.X -= speed * elapsed;
+            if (sample.X + sample.Image.Width < 0) sample.X = width + 16;
+            var left = (int)Math.Floor(Math.Min(oldX, sample.X)) - 2;
+            var right = (int)Math.Ceiling(Math.Max(oldX, sample.X)) + sample.Image.Width + 2;
+            invalidate(new Rectangle(left, sample.Y, right - left, sample.Image.Height));
+        }
+    }
+    public void Dispose() { foreach (var item in _images) item.Image.Dispose(); _images.Clear(); IsScrolling = false; }
 }

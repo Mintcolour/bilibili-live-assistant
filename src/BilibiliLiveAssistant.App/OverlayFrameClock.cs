@@ -14,7 +14,7 @@ internal sealed class OverlayFrameClock : IDisposable
     private readonly AutoResetEvent _changed = new(false);
     private readonly AutoResetEvent _completed = new(false);
     private readonly List<Subscription> _subscriptions = new(4);
-    private readonly Subscription?[] _snapshot = new Subscription?[4];
+    private readonly Subscription?[] _snapshot = new Subscription?[8];
     private Task? _worker;
     private int _activeCount;
     private int _frameRate = 60;

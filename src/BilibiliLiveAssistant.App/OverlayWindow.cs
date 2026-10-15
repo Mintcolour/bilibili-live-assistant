@@ -31,6 +31,9 @@ public sealed class OverlayWindow : OverlaySurface
             .Select(kind => new FixedOverlayWindow(vm, kind, _frames)).ToArray();
         _stationary = new[] { OverlayRegionKind.Danmaku, OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Status }
             .Select(kind => new StationaryOverlayWindow(vm, kind)).ToArray();
+        SetEditorClock(_frames);
+        foreach (var region in _fixedRegions) region.SetEditorClock(_frames);
+        foreach (var region in _stationary) region.SetEditorClock(_frames);
         _vm.EventBatchReceived += OnEventBatch;
         _vm.RoomHistoryReset += ResetContent;
         _vm.PropertyChanged += OnViewModelPropertyChanged;

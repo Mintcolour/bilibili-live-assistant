@@ -32,6 +32,8 @@ public abstract class OverlaySurface : Forms.Form
     private int _slider = -1;
     private readonly Forms.Timer _inlinePreviewTimer = new() { Interval = 60 };
     private readonly OverlayEditorPreview _samplePreview = new();
+    private OverlayFrameClock? _editorClock;
+    private readonly Action<Rectangle> _invalidateSample;
     private OverlayRegionSettings RawRegion => _previewRegion ?? _inlineRegion ?? OverlayRegions.Get(ViewModel.Settings.Display, Kind);
     private bool ContentEnabled => _inlineEnabled ?? OverlayRegions.Enabled(ViewModel.Settings.Display, Kind);
     protected bool Editing => ViewModel.OverlayInteractive || !ViewModel.Settings.Display.LayoutLocked;
@@ -44,6 +46,7 @@ public abstract class OverlaySurface : Forms.Form
     protected OverlaySurface(LiveAssistantViewModel vm, OverlayRegionKind kind)
     {
         ViewModel = vm;
+        _invalidateSample = RequestRender;
         Kind = kind;
         RegionSettings = OverlayRegions.Get(vm.Settings.Display, kind);
         Text = OverlayRegions.Title(kind);
@@ -96,7 +99,7 @@ public abstract class OverlaySurface : Forms.Form
             _wasEditing = Editing;
             _slider = -1; Capture = false;
             OnInteractionChanged();
-            if (!Editing) { _editorMenu?.Close(); _quickEditor?.Close(); _ = SaveInlineAsync(); _samplePreview.Dispose(); }
+            if (!Editing) { _editorClock?.Stop(OnEditorFrame); _editorMenu?.Close(); _quickEditor?.Close(); _ = SaveInlineAsync(); _samplePreview.Dispose(); }
         }
         _sampleDirty = true;
         OnRegionSettingsChanged(previous);
@@ -188,6 +191,7 @@ public abstract class OverlaySurface : Forms.Form
         if (Visible) RequestRender();
         else
         {
+            _editorClock?.Stop(OnEditorFrame);
             _inlinePreviewTimer.Stop();
             _samplePreview.Dispose(); _sampleDirty = true;
             _quickEditor?.Close();
@@ -207,6 +211,7 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _editorClock?.Stop(OnEditorFrame);
         _pendingDirty = Rectangle.Empty;
         _dirtyRects.Clear();
         _renderQueued = false;
@@ -280,22 +285,25 @@ public abstract class OverlaySurface : Forms.Form
     {
         if (ContentTop != 0)
         {
-            using var header = new SolidBrush(Color.FromArgb(50, 58, 70));
-            graphics.FillRectangle(header, 0, 0, ClientSize.Width, ContentTop);
-            // GDI text does not write alpha; use the same filled glyph paths as the message renderer.
-            using var font = new Font("Microsoft YaHei UI", 12, FontStyle.Regular, GraphicsUnit.Pixel);
-            var state = graphics.Save();
-            graphics.SetClip(new Rectangle(8, 8, Math.Max(0, ClientSize.Width < 360 ? ClientSize.Width - 16 : VisibilityBounds.Left - 12), 22), CombineMode.Intersect);
-            OverlayTextRenderer.Draw(graphics, Text + " · 示例", font, new PointF(8, 11), Color.White, false);
-            graphics.Restore(state);
-            using var button = new SolidBrush(Color.FromArgb(76, 88, 108));
-            graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds); graphics.FillRectangle(button, VisibilityBounds);
-            state = graphics.Save(); graphics.SetClip(ModeBounds, CombineMode.Intersect);
-            OverlayTextRenderer.Draw(graphics, ClientSize.Width < 280 ? "样式 ▾" : "外观 / 类型 ▾", font, new PointF(ModeBounds.X + 3, ActionTop + 3), Color.White, false);
-            graphics.Restore(state);
-            OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 6, ActionTop + 3), Color.White, false);
-            OverlayTextRenderer.Draw(graphics, ContentEnabled ? "隐藏" : "显示", font, new PointF(VisibilityBounds.X + 10, ActionTop + 3), Color.White, false);
-            OverlayInlineControls.Draw(graphics, ClientSize.Width, RawRegion);
+            if (graphics.IsVisible(new Rectangle(0, 0, ClientSize.Width, ContentTop)))
+            {
+                using var header = new SolidBrush(Color.FromArgb(50, 58, 70));
+                graphics.FillRectangle(header, 0, 0, ClientSize.Width, ContentTop);
+                // GDI text does not write alpha; use the same filled glyph paths as the message renderer.
+                using var font = new Font("Microsoft YaHei UI", 12, FontStyle.Regular, GraphicsUnit.Pixel);
+                var state = graphics.Save();
+                graphics.SetClip(new Rectangle(8, 8, Math.Max(0, ClientSize.Width < 360 ? ClientSize.Width - 16 : VisibilityBounds.Left - 12), 22), CombineMode.Intersect);
+                OverlayTextRenderer.Draw(graphics, Text + " · 示例", font, new PointF(8, 11), Color.White, false);
+                graphics.Restore(state);
+                using var button = new SolidBrush(Color.FromArgb(76, 88, 108));
+                graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds); graphics.FillRectangle(button, VisibilityBounds);
+                state = graphics.Save(); graphics.SetClip(ModeBounds, CombineMode.Intersect);
+                OverlayTextRenderer.Draw(graphics, ClientSize.Width < 280 ? "样式 ▾" : "更多外观 ▾", font, new PointF(ModeBounds.X + 3, ActionTop + 3), Color.White, false);
+                graphics.Restore(state);
+                OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 6, ActionTop + 3), Color.White, false);
+                OverlayTextRenderer.Draw(graphics, ContentEnabled ? "隐藏" : "显示", font, new PointF(VisibilityBounds.X + 10, ActionTop + 3), Color.White, false);
+                OverlayInlineControls.Draw(graphics, ClientSize.Width, RawRegion, Kind);
+            }
             using var pen = new Pen(Color.FromArgb(100, 160, 210));
             graphics.DrawRectangle(pen, 0, 0, Math.Max(0, ClientSize.Width - 1), Math.Max(0, ClientSize.Height - 1));
             foreach (var p in new[] { new Point(1, 1), new Point(ClientSize.Width - 7, 1), new Point(1, ClientSize.Height - 7), new Point(ClientSize.Width - 7, ClientSize.Height - 7) })
@@ -309,6 +317,7 @@ public abstract class OverlaySurface : Forms.Form
     {
         if (!ContentEnabled)
         {
+            _editorClock?.Stop(OnEditorFrame);
             _samplePreview.Dispose();
             using var font = OverlayTextRenderer.CreateFont("Microsoft YaHei UI", 12);
             OverlayTextRenderer.Draw(graphics, "内容已隐藏", font, new(10, ContentTop + 8), Color.LightGray, false);
@@ -318,10 +327,24 @@ public abstract class OverlaySurface : Forms.Form
         {
             _samplePreview.Rebuild(Kind, RegionSettings, ViewModel.Settings.Dashboard, ViewModel.Images, ClientSize.Width, ClientSize.Height, ContentTop);
             _sampleDirty = false;
+            if (_samplePreview.IsScrolling && Visible && Editing)
+                _editorClock?.Start(OnEditorFrame);
+            else _editorClock?.Stop(OnEditorFrame);
         }
         var state = graphics.Save();
         graphics.SetClip(new Rectangle(0, ContentTop, ClientSize.Width, Math.Max(0, ClientSize.Height - ContentTop)), CombineMode.Intersect);
         _samplePreview.Draw(graphics, RegionSettings.Opacity); graphics.Restore(state);
+    }
+
+    internal void SetEditorClock(OverlayFrameClock clock) => _editorClock = clock;
+
+    private void OnEditorFrame(double elapsed)
+    {
+        if (IsDisposed || !Visible || !Editing || !ContentEnabled || !_samplePreview.IsScrolling)
+        { _editorClock?.Stop(OnEditorFrame); return; }
+        BeginAnimationFrame();
+        _samplePreview.Advance(elapsed, ClientSize.Width, RegionSettings.ScrollSpeed, _invalidateSample);
+        EndAnimationFrame();
     }
 
     protected override void WndProc(ref Forms.Message m)
@@ -346,6 +369,13 @@ public abstract class OverlaySurface : Forms.Form
     {
         base.OnMouseClick(e);
         if (!Editing || e.Button != Forms.MouseButtons.Left) return;
+        var modes = OverlayRegions.Modes(Kind);
+        for (var i = 0; i < modes.Length; i++)
+        {
+            if (!OverlayInlineControls.Mode(ClientSize.Width, i, modes.Length).Contains(e.Location)) continue;
+            if (RegionSettings.Mode != modes[i]) await ChangeModeAsync(modes[i]);
+            return;
+        }
         if (VisibilityBounds.Contains(e.Location))
         {
             _quickEditor?.Close(); _inlineEnabled = !ContentEnabled; _inlineDirty = true;
@@ -359,13 +389,7 @@ public abstract class OverlaySurface : Forms.Form
             var item = new Forms.ToolStripMenuItem(OverlayRegions.ModeTitle(mode)) { Checked = RegionSettings.Mode == mode };
             item.Click += async (_, _) =>
             {
-                try
-                {
-                    _quickEditor?.Close();
-                    await SaveInlineAsync();
-                    await ViewModel.UpdateOverlayRegionAsync(Kind, current => current with { Mode = mode, ModeVersion = 1 });
-                }
-                catch (Exception ex) { ViewModel.ReportSettingsError("保存显示类型失败：" + ex.Message); }
+                await ChangeModeAsync(mode);
             };
             _editorMenu.Items.Add(item);
         }
@@ -377,6 +401,17 @@ public abstract class OverlaySurface : Forms.Form
     }
 
     protected virtual void AddEditorMenuItems(Forms.ContextMenuStrip menu) { }
+
+    private async Task ChangeModeAsync(OverlayDisplayMode mode)
+    {
+        try
+        {
+            _quickEditor?.Close();
+            await SaveInlineAsync();
+            await ViewModel.UpdateOverlayRegionAsync(Kind, current => current with { Mode = mode, ModeVersion = 1 });
+        }
+        catch (Exception ex) { ViewModel.ReportSettingsError("保存显示类型失败：" + ex.Message); }
+    }
 
     private void OpenQuickEditor()
     {
@@ -509,7 +544,7 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
+        if (disposing) { _editorClock?.Stop(OnEditorFrame); ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }
 
