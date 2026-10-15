@@ -4,7 +4,10 @@ public sealed record LiveRankMember(int Rank, long Uid, string Username, LiveMes
     bool HasMedalData = true, bool HasGuardData = true, long? Contribution = null, int? AccompanyDays = null);
 
 public enum DashboardRankKind { Energy, GuardTotal, GuardMonth, GuardWeek }
-public sealed record DashboardRankPage(IReadOnlyList<LiveRankMember> Members, bool HasMore, int? Total);
+public sealed record DashboardRankPage(IReadOnlyList<LiveRankMember> Members, bool HasMore, int? Total)
+{
+    public DateTimeOffset SampledAt { get; init; } = DateTimeOffset.UtcNow;
+}
 public sealed record LiveRoomProfile(long Uid, int RoomId, string Name, string AvatarUrl, string Title,
     string MedalName, long? FansClub, long? Guards, long? Likes, long? EnergyMembers);
 public sealed record PopularitySample(DateTimeOffset Time, long Value);

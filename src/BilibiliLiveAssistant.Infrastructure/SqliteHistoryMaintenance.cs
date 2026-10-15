@@ -36,7 +36,7 @@ public sealed partial class SqliteLocalHistory
             active.CommandText = $"SELECT COUNT(*) FROM sessions s WHERE {where} AND s.status='active'";
             if (Convert.ToInt64(active.ExecuteScalar()) > 0) throw new InvalidOperationException("清理范围包含正在记录的监视段，请先停止监视");
         }
-        foreach (var table in new[] { "events", "profiles", "snapshots", "gaps", "summaries" })
+        foreach (var table in new[] { "events", "profiles", "snapshots", "analysis_samples", "member_changes", "gaps", "summaries" })
         {
             while (true)
             {
@@ -72,6 +72,8 @@ public sealed partial class SqliteLocalHistory
             AND NOT EXISTS(SELECT 1 FROM events WHERE session_id=s.id)
             AND NOT EXISTS(SELECT 1 FROM profiles WHERE session_id=s.id)
             AND NOT EXISTS(SELECT 1 FROM snapshots WHERE session_id=s.id)
+            AND NOT EXISTS(SELECT 1 FROM analysis_samples WHERE session_id=s.id)
+            AND NOT EXISTS(SELECT 1 FROM member_changes WHERE session_id=s.id)
             AND NOT EXISTS(SELECT 1 FROM gaps WHERE session_id=s.id)
             AND NOT EXISTS(SELECT 1 FROM summaries WHERE session_id=s.id)
             """;
@@ -107,7 +109,7 @@ public sealed partial class SqliteLocalHistory
                     using var check = Command(target, "PRAGMA integrity_check;");
                     if (!Equals(check.ExecuteScalar(), "ok")) throw new InvalidDataException("复制的历史数据库校验失败");
                     using var version = Command(target, "PRAGMA user_version;");
-                    if (Convert.ToInt32(version.ExecuteScalar()) != 1) throw new InvalidDataException("复制的数据库版本不匹配");
+                    if (Convert.ToInt32(version.ExecuteScalar()) != 2) throw new InvalidDataException("复制的数据库版本不匹配");
                 }
                 token.ThrowIfCancellationRequested();
                 File.Move(temporary, destination, false);

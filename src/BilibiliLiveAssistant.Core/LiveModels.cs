@@ -90,6 +90,7 @@ public interface ILiveRoomClient
 
 public interface ILiveInfoService
 {
+    void ConfigureAnalysis(HistoryAnalysisSettings settings, bool enabled);
     event EventHandler<LiveEvent>? EventReceived;
     Task StartAsync(int roomId, CookieOptions cookies, int intervalSeconds, CancellationToken cancellationToken = default);
     Task StopAsync();

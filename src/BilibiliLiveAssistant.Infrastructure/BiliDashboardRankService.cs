@@ -6,8 +6,25 @@ namespace BilibiliLiveAssistant.Infrastructure;
 // Owned by the visible dashboard panel. Only one page is requested at a time.
 public sealed class BiliDashboardRankService : IDisposable
 {
+    private static readonly SemaphoreSlim Requests = new(1, 1);
+    private static readonly Dictionary<string, DashboardRankPage> Cache = new();
     private readonly HttpClient _http = BiliHttp.CreateClient();
     public async Task<DashboardRankPage> FetchAsync(int room, long uid, DashboardRankKind kind, int page,
+        CookieOptions cookies, CancellationToken token)
+    {
+        var identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BiliHttp.CookieHeader(cookies))));
+        var key = $"{room}:{uid}:{kind}:{page}:{identity}";
+        await Requests.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (Cache.TryGetValue(key, out var cached) && DateTimeOffset.UtcNow - cached.SampledAt < TimeSpan.FromSeconds(15)) return cached;
+            var result = await FetchPageAsync(room, uid, kind, page, cookies, token).ConfigureAwait(false);
+            if (Cache.Count >= 32) Cache.Remove(Cache.MinBy(pair => pair.Value.SampledAt).Key);
+            Cache[key] = result; return result;
+        }
+        finally { Requests.Release(); }
+    }
+    private async Task<DashboardRankPage> FetchPageAsync(int room, long uid, DashboardRankKind kind, int page,
         CookieOptions cookies, CancellationToken token)
     {
         page = Math.Clamp(page, 1, 10);

@@ -98,6 +98,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _store = store;
         _client = client;
         _info = info;
+        _info.ConfigureAnalysis(_settings.History.Analysis, _settings.History.Enabled);
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _eventTimer = _dispatcher.CreateTimer();
         _authTimer = _dispatcher.CreateTimer(); _authTimer.IsRepeating = false; _authTimer.Interval = TimeSpan.FromSeconds(1);
@@ -146,6 +147,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 // Captured session and room travel with the event before display overflow or merging.
                 if (context is not null && !(value.Extra.GetValueOrDefault("sample") is true))
                     History.Capture(context, value, DateTimeOffset.UtcNow);
+                if (value.Extra.ContainsKey("archive_analysis")) return;
                 OnEvent(sender, value);
             };
             _client.EventReceived += _networkHandler; _info.EventReceived += _networkHandler;
@@ -195,6 +197,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         _settings = settings;
         History.Configure(settings.History);
+        _info.ConfigureAnalysis(settings.History.Analysis, settings.History.Enabled);
         if (previous.RoomId != settings.RoomId) ResetRoomHistory();
         Dashboard.Trim(settings.Dashboard);
         ApplyEventInterval();
@@ -206,7 +209,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 // Old database remains a complete backup. Reopen it if persisting the new path fails.
                 await ((SqliteLocalHistory)History).UseExistingDirectoryAsync(previous.History.EffectiveDirectory);
             }
-            _settings = previous; History.Configure(previous.History); throw;
+            _settings = previous; History.Configure(previous.History); _info.ConfigureAnalysis(previous.History.Analysis, previous.History.Enabled); throw;
         }
         OnPropertyChanged(nameof(Settings));
         _historyConfigurationWarning = ""; OnPropertyChanged(nameof(HistoryWarning));

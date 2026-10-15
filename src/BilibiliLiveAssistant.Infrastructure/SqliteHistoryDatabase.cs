@@ -41,7 +41,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         Execute(connection, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         using var versionCommand = Command(connection, "PRAGMA user_version;");
         var version = Convert.ToInt32(versionCommand.ExecuteScalar());
-        if (version > 1) throw new InvalidDataException("历史数据库来自更新的软件版本，请使用新版打开");
+        if (version > 2) throw new InvalidDataException("历史数据库来自更新的软件版本，请使用新版打开");
         if (version == 0)
         {
             using var transaction = new HistoryTransaction(connection);
@@ -76,6 +76,22 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 """);
             transaction.Commit();
         }
+        if (version < 2)
+        {
+            using var transaction = new HistoryTransaction(connection);
+            Execute(connection, """
+                CREATE TABLE analysis_samples(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,
+                    local_day TEXT NOT NULL,kind INTEGER NOT NULL,data TEXT NOT NULL);
+                CREATE INDEX ix_analysis_time ON analysis_samples(session_id,local_day,received DESC,id DESC);
+                CREATE TABLE member_changes(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),received INTEGER NOT NULL,
+                    local_day TEXT NOT NULL,source TEXT NOT NULL,uid INTEGER NOT NULL,kind TEXT NOT NULL,before_data TEXT,after_data TEXT NOT NULL);
+                CREATE INDEX ix_changes_time ON member_changes(session_id,local_day,received DESC,id DESC);
+                CREATE INDEX ix_changes_member ON member_changes(session_id,source,uid,received DESC,id DESC);
+                CREATE INDEX ix_profiles_received ON profiles(session_id,received DESC);
+                PRAGMA user_version=2;
+                """);
+            transaction.Commit();
+        }
         if (recover)
             Execute(connection, "UPDATE sessions SET status='interrupted',ended=heartbeat WHERE status='active';");
     }
@@ -103,6 +119,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
             ("$color", value.Color), ("$appearance", appearance), ("$fields", JsonSerializer.Serialize(fields, Json)), ("$source", fields.UniqueId),
             ("$quantity", fields.Quantity), ("$paid", paid), ("$amount", fields.AmountMilliYuan));
         if (command.ExecuteNonQuery() == 0) return;
+        WriteObservedMember(connection, item);
         var isGift = value.Type is LiveEventType.Gift or LiveEventType.Guard;
         var unknown = (isGift && paid != 0 || value.Type == LiveEventType.SuperChat) && fields.AmountMilliYuan is null ? 1 : 0;
         Execute(connection, """
@@ -117,6 +134,8 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     {
         // Snapshot payloads contain only public, typed room data, never raw metadata.
         var value = item.Event;
+        if (value.Extra.GetValueOrDefault("archive_analysis") is HistoryAnalysisSample analysis)
+        { WriteAnalysis(connection, item, analysis); return; }
         if (value.Extra.TryGetValue("room_profile", out var profileValue) && profileValue is LiveRoomProfile profile)
         {
             var data = JsonSerializer.Serialize(profile, Json);
@@ -259,7 +278,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     public Task<long> CountAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);
-        command.CommandText = "SELECT SUM(n) FROM (" + string.Join(" UNION ALL ", new[] { "events", "profiles", "snapshots", "gaps" }
+        command.CommandText = "SELECT SUM(n) FROM (" + string.Join(" UNION ALL ", new[] { "events", "profiles", "snapshots", "analysis_samples", "member_changes", "gaps" }
             .Select(table => $"SELECT COUNT(*) AS n FROM {table} e JOIN sessions s ON s.id=e.session_id WHERE {where}")) + ")";
         return Convert.ToInt64(command.ExecuteScalar());
     }, token);

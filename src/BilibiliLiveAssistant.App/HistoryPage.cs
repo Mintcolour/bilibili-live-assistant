@@ -31,6 +31,11 @@ internal sealed class HistoryPage : Page
     private readonly TextBlock _storage = new() { FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly Button _newRecords = UiFactory.Button("有新记录 · 刷新"), _previous = UiFactory.Button("上一页"), _next = UiFactory.Button("更早 100 条");
     private readonly HistoryMessageList _messages;
+    private readonly HistoryMessageList _changes;
+    private readonly HistoryAnalysisView _analysis;
+    private readonly RadioButtons _tabs = new() { MaxColumns = 3, SelectedIndex = 0, Items = { "消息记录", "趋势分析", "成员变化" } };
+    private readonly Grid _tabContent = new();
+    private int _selectedTab;
     private readonly List<(long? Id, DateTimeOffset? At)> _cursors = new() { (null, null) };
     private CancellationTokenSource? _query;
     private CancellationTokenSource? _maintenance;
@@ -44,6 +49,9 @@ internal sealed class HistoryPage : Page
     {
         _vm = vm; _history = vm.History; _visible = visible;
         _anchorList = new(vm); _messages = new(vm, () => _active && !_disposed && _visible());
+        _changes = new(vm, () => _active && !_disposed && _visible() && _selectedTab == 2);
+        _analysis = new(vm, () => _active && !_disposed && _visible() && _selectedTab == 1);
+        _analysis.Selected += async point => await ShowSampleAsync(point);
         var root = new Grid { Padding = new Thickness(20, 16, 20, 16), RowSpacing = 16, Background = MessageCard.Brush("#171A21"), RequestedTheme = ElementTheme.Dark };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         var heading = new Grid(); heading.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -97,8 +105,20 @@ internal sealed class HistoryPage : Page
         var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += (_, _) => { _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0; _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; };
         _keyword.MinWidth = 230; advancedFields.Children.Add(Strip(_keyword, reset, cancel)); advanced.Content = advancedFields;
         Grid.SetRow(advanced, 3); right.Children.Add(advanced);
-        Grid.SetRow(_status, 4); right.Children.Add(_status);
-        var messages = Surface(_messages, 4); Grid.SetRow(messages, 5); right.Children.Add(messages);
+        var tabHeader = new StackPanel { Spacing = 5, Children = { _tabs, _status } };
+        Grid.SetRow(tabHeader, 4); right.Children.Add(tabHeader);
+        _tabContent.Children.Add(_messages); _tabContent.Children.Add(_analysis); _tabContent.Children.Add(_changes);
+        _analysis.Visibility = _changes.Visibility = Visibility.Collapsed;
+        var messages = Surface(_tabContent, 4); Grid.SetRow(messages, 5); right.Children.Add(messages);
+        _tabs.SelectionChanged += async (_, _) =>
+        {
+            _selectedTab = _tabs.SelectedIndex; _query?.Cancel(); ResetPages(); _rows = []; _messages.SetRows([]); _changes.SetRows([]); _analysis.Clear();
+            _messages.Visibility = _selectedTab == 0 ? Visibility.Visible : Visibility.Collapsed;
+            _analysis.Visibility = _selectedTab == 1 ? Visibility.Visible : Visibility.Collapsed;
+            _changes.Visibility = _selectedTab == 2 ? Visibility.Visible : Visibility.Collapsed;
+            SetTabActive(); _type.IsEnabled = _keyword.IsEnabled = _selectedTab == 0; _uid.IsEnabled = _name.IsEnabled = _selectedTab != 1;
+            await RefreshAsync(false);
+        };
         var pager = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _page, _next } };
         _previous.Click += async (_, _) => { if (_cursors.Count > 1) { _cursors.RemoveAt(_cursors.Count - 1); _pageNumber--; await LoadPageAsync(); } };
         _next.Click += async (_, _) =>
@@ -156,6 +176,7 @@ internal sealed class HistoryPage : Page
     {
         if (_loading || _disposed || _managing) return;
         _query?.Cancel(); ResetPages(); _rows = []; _messages.SetRows(_rows); _details = null; _gaps = [];
+        _changes.SetRows([]); _analysis.Clear();
         if (scope) ShowSummary(null);
         _status.Text = "条件已修改 · 点击查询"; UpdatePager();
     }
@@ -170,6 +191,7 @@ internal sealed class HistoryPage : Page
         if (_disposed || !_active || _managing) return;
         var run = NewQuery(); ResetPages(); _status.Text = "查询中…"; SetPagerEnabled(false);
         _rows = []; _messages.SetRows([]); _details = null; _gaps = []; ShowSummary(null);
+        _changes.SetRows([]); _analysis.Clear();
         Interlocked.Exchange(ref _hasNewRecords, 0); _newRecords.Visibility = Visibility.Collapsed;
         try
         {
@@ -211,10 +233,39 @@ internal sealed class HistoryPage : Page
     }
     private async Task QueryRowsAsync(CancellationTokenSource run)
     {
+        if (_selectedTab == 1)
+        {
+            var points = await _history.TrendsAsync(Filter(), run.Token); if (!Current(run)) return;
+            _analysis.SetPoints(points); _status.Text = "人数增减为所选采样范围首末差值 · 缺口不补零 · 点击曲线或选择采样时间查看快照"; return;
+        }
+        if (_selectedTab == 2)
+        {
+            var cursor = _cursors[^1];
+            var changes = await _history.ChangesAsync(Filter(true), cursor.Id is { } id && cursor.At is { } at ? new(at, id) : null, run.Token); if (!Current(run)) return;
+            _rows = changes.Select(c => new HistoryRow(c.Id, c.At, null, "", c.SessionId,
+                new LiveEvent(LiveEventType.Rank, c.After.Name, ChangeDescription(c), "#FFFFFF", c.After.Uid, c.At.ToLocalTime(), Appearance: c.After.Appearance), new())).ToArray();
+            _changes.SetRows(_rows); _status.Text = "可核实的观察变化 · 首次观察不是加入事件 · 粉丝牌归属未核实 · 不从离榜推断退舰/退团"; return;
+        }
         var rows = await _history.QueryAsync(Filter(true), run.Token); if (!Current(run)) return;
         _rows = rows; _messages.SetRows(rows); _status.Text = rows.Count == 0 ? "此范围没有符合条件的消息" : "按接收时间倒序 · 列表筛选不改变上方统计";
     }
-    private void UpdatePager() { _page.Text = $"第 {_pageNumber} 页 · {_rows.Count} 条"; _previous.IsEnabled = _cursors.Count > 1 && !_managing; _next.IsEnabled = _rows.Count == 100 && !_managing; }
+    private void UpdatePager() { _page.Text = _selectedTab == 1 ? "最多显示最近 1200 次采样" : $"第 {_pageNumber} 页 · {_rows.Count} 条"; _previous.Visibility = _next.Visibility = _selectedTab == 1 ? Visibility.Collapsed : Visibility.Visible; _previous.IsEnabled = _cursors.Count > 1 && !_managing; _next.IsEnabled = _rows.Count == 100 && !_managing; }
+    private static string ChangeDescription(HistoryMemberChange c)
+    {
+        static string State(HistoryMemberState? s) => s is null ? "此前暂无观察" :
+            $"{s.Name} · 名次 {s.Rank?.ToString() ?? "—"} · 贡献 {s.Contribution?.ToString() ?? "—"} · 陪伴 {s.AccompanyDays?.ToString() ?? "—"} 天 · {s.Appearance.MedalName} {s.Appearance.MedalLevel} 级 · 大航海等级 {s.Appearance.GuardLevel}";
+        var source = c.Source switch { "energy" => "高能榜", "guards" => "大航海总榜", "guard_event" => "上舰事件", _ => "粉丝牌观察（归属未核实）" };
+        return $"{source} · {c.Kind} · UID {c.After.Uid}\n之前：{State(c.Before)}\n本次：{State(c.After)}";
+    }
+    private async Task ShowSampleAsync(HistoryTrendPoint point)
+    {
+        if (_selectedTab != 1 || !_active || _disposed || _managing) return;
+        var run = NewQuery();
+        try { var sample = point.Sample.Status.StartsWith("旧版", StringComparison.Ordinal) ? point.Sample : await _history.SampleAsync(Filter(), point.Id, run.Token); if (Current(run) && sample is not null) _analysis.ShowSample(sample); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { if (Current(run)) _status.Text = "快照查询失败：" + ex.Message; }
+    }
+    private void SetTabActive() { _messages.SetActive(_active && _selectedTab == 0); _changes.SetActive(_active && _selectedTab == 2); _analysis.SetActive(_active && _selectedTab == 1); }
     private void SetPagerEnabled(bool value) { _previous.IsEnabled = _next.IsEnabled = value; }
     private void OnCommitted()
     {
@@ -303,11 +354,12 @@ internal sealed class HistoryPage : Page
     internal void SetActive(bool active)
     {
         if (_disposed) return; _active = active;
-        if (!active) _query?.Cancel(); _messages.SetActive(active); _anchorList.SetActive(active);
+        if (!active) _query?.Cancel(); SetTabActive(); _anchorList.SetActive(active);
     }
     private void OnUnloaded(object sender, RoutedEventArgs args)
     {
         _disposed = true; _active = false; _query?.Cancel(); _query?.Dispose(); _maintenance?.Cancel();
         _history.Committed -= OnCommitted; _vm.PropertyChanged -= OnVmChanged; _messages.Dispose(); _anchorList.Dispose(); Unloaded -= OnUnloaded;
+        _changes.Dispose(); _analysis.Dispose();
     }
 }

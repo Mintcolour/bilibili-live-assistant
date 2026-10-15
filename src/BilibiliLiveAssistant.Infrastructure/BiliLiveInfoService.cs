@@ -14,6 +14,11 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
     private int _roomId;
     private CookieOptions _cookies = new();
     private int _interval;
+    private readonly BiliDashboardRankService _ranks = new();
+    private HistoryAnalysisSettings _analysis = new();
+    private bool _archive = true;
+    private DateTimeOffset _countsDue, _energyDue, _guardsDue;
+    public void ConfigureAnalysis(HistoryAnalysisSettings settings, bool enabled) { _analysis = settings.Normalize(); _archive = enabled; }
 
     public BiliLiveInfoService(HttpClient? http = null)
     {
@@ -28,6 +33,7 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
         _roomId = roomId;
         _cookies = cookies;
         _interval = Math.Clamp(intervalSeconds, 5, 600);
+        _countsDue = _energyDue = _guardsDue = default;
         _signer.Reset();
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = cts.Token;
@@ -55,8 +61,8 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
                 await FetchAsync(token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch { }
-            try { await Task.Delay(TimeSpan.FromSeconds(_interval), token); }
+            catch { if (_archive && DateTimeOffset.UtcNow >= _countsDue) { EmitSample(new(HistorySampleKind.Counts, DateTimeOffset.UtcNow, _analysis.CountsSeconds, null, null, null, null, null, [], 0, null, "采集失败")); _countsDue = DateTimeOffset.UtcNow.AddSeconds(_analysis.CountsSeconds); } }
+            try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(_interval, Math.Min(_analysis.GuardSeconds, Math.Min(_analysis.CountsSeconds, _analysis.EnergySeconds)))), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
         }
     }
@@ -102,32 +108,54 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
                 ["popularity"] = online.ToString(), ["watched"] = watched, ["room_profile"] = profile,
                 ["archive_popularity"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(room, "online")),
                 ["archive_watched"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "watched_show"), "num")) }));
-        if (room.TryGetProperty("uid", out var uidNode))
-            await FetchRankAsync(uidNode.GetInt64(), token);
-    }
-
-    private async Task FetchRankAsync(long uid, CancellationToken token)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.live.bilibili.com/xlive/general-interface/v1/rank/getOnlineGoldRank?ruid={uid}&roomId={_roomId}&page=1&pageSize=10");
-        BiliHttp.SetHeaders(request, _cookies);
-        using var response = await _http.SendAsync(request, token);
-        if (!response.IsSuccessStatusCode) return;
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(token));
-        var data = BiliHttp.ReadData(doc.RootElement);
-        var items = data.TryGetProperty("OnlineRankItem", out var list) ? list : default;
-        token.ThrowIfCancellationRequested();
-        if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
+        if (_archive && DateTimeOffset.UtcNow >= _countsDue)
         {
-            EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", "暂无榜单", "#9C27B0",
-                Metadata: new Dictionary<string, object?> { ["rank_total"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(data, "onlineNum")) }));
-            return;
+            EmitSample(new(HistorySampleKind.Counts, DateTimeOffset.UtcNow, _analysis.CountsSeconds, profile.FansClub, profile.Guards, null,
+                BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(room, "online")),
+                BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "watched_show"), "num")), [], 0, null));
+            _countsDue = DateTimeOffset.UtcNow.AddSeconds(_analysis.CountsSeconds);
         }
-        var members = items.EnumerateArray().Take(10).Select((item, index) => BiliMessageAppearanceParser.RankMember(item, index + 1)).ToArray();
-        var names = members.Select(member => $"{member.Rank}.{member.Username}").ToArray();
-        EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", $"高能榜: {string.Join(" | ", names.Take(3))}", "#9C27B0",
-            Metadata: new Dictionary<string, object?> { ["rank_names"] = names, ["rank_members"] = members,
-                ["rank_total"] = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(data, "onlineNum")) }));
+        if (profile.Uid > 0)
+        {
+            await CollectRankAsync(profile.Uid, false, token);
+            if (_archive && DateTimeOffset.UtcNow >= _guardsDue) await CollectRankAsync(profile.Uid, true, token);
+        }
     }
 
-    public void Dispose() { _ = StopAsync(); _http.Dispose(); }
+    private void EmitSample(HistoryAnalysisSample sample) => EventReceived?.Invoke(this,
+        new LiveEvent(LiveEventType.Rank, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?> { ["archive_analysis"] = sample }));
+
+    private async Task CollectRankAsync(long uid, bool guard, CancellationToken token)
+    {
+        var settings = _analysis;
+        var collect = _archive && (guard || DateTimeOffset.UtcNow >= _energyDue);
+        var limit = guard ? settings.GuardLimit : collect ? settings.EnergyLimit : 10;
+        var interval = guard ? settings.GuardSeconds : settings.EnergySeconds;
+        var kind = guard ? HistorySampleKind.Guards : HistorySampleKind.Energy;
+        var rows = new List<LiveRankMember>(limit); long? total = null; var at = DateTimeOffset.UtcNow;
+        var status = "ok";
+        try
+        {
+            for (var page = 1; page <= 10 && rows.Count < limit; page++)
+            {
+                var result = await _ranks.FetchAsync(_roomId, uid, guard ? DashboardRankKind.GuardTotal : DashboardRankKind.Energy, page, _cookies, token);
+                if (page == 1) { at = result.SampledAt; total = result.Total; }
+                foreach (var member in result.Members)
+                    if (rows.Count < limit && (member.Uid <= 0 || rows.All(r => r.Uid != member.Uid))) rows.Add(member);
+                if (!result.HasMore) break;
+            }
+            token.ThrowIfCancellationRequested();
+            if (!guard) EventReceived?.Invoke(this, new LiveEvent(LiveEventType.Rank, "系统", rows.Count == 0 ? "暂无榜单" : "高能榜: " + string.Join(" | ", rows.Take(3).Select(m => $"{m.Rank}.{m.Username}")), "#9C27B0",
+                Metadata: new Dictionary<string, object?> { ["rank_members"] = rows.Take(10).ToArray(), ["rank_names"] = rows.Take(10).Select(m => m.Username).ToArray(), ["rank_total"] = total }));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { status = rows.Count > 0 ? "分页失败，部分采集" : "采集失败"; }
+        if (collect)
+        {
+            EmitSample(new(kind, at, interval, null, null, guard ? null : total, null, null, rows.ToArray(), limit, total, status));
+            if (guard) _guardsDue = DateTimeOffset.UtcNow.AddSeconds(interval); else _energyDue = DateTimeOffset.UtcNow.AddSeconds(interval);
+        }
+    }
+
+    public void Dispose() { _ = StopAsync(); _ranks.Dispose(); _http.Dispose(); }
 }

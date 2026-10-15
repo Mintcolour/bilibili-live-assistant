@@ -27,6 +27,8 @@ public sealed partial class SqliteLocalHistory
     private IReadOnlyList<LiveRankMember>? _rank;
     private long? _popularity, _watchedCount, _rankTotal;
     private bool _hasObservation;
+    private bool _observationDirty;
+    private DateTimeOffset _observationAt;
     private HistoryStatus _status = new("正在打开历史存档", 0, 0, 0, false, false);
     private sealed record Work(Action<SqliteConnection> Run, TaskCompletionSource Completion, bool Drain);
     public event Action<HistoryStatus>? StatusChanged;
@@ -56,7 +58,7 @@ public sealed partial class SqliteLocalHistory
         var context = new HistoryContext(Guid.NewGuid().ToString("N"), roomId, DateTimeOffset.UtcNow);
         lock (_sync)
         {
-            _current = context; _profile = null; _rank = null; _popularity = _watchedCount = _rankTotal = null; _hasObservation = false;
+            _current = context; _profile = null; _rank = null; _popularity = _watchedCount = _rankTotal = null; _hasObservation = _observationDirty = false;
             _snapshots.Change(_settings.Enabled ? 60000 : Timeout.Infinite, _settings.Enabled ? 60000 : Timeout.Infinite);
         }
         if (_settings.Enabled) ObserveControl(QueueCommand(c => EnsureSession(c, context), false)); return context;
@@ -72,9 +74,12 @@ public sealed partial class SqliteLocalHistory
         lock (_sync)
         {
             if (_closing || !_settings.Enabled) return;
+            if (value.Extra.GetValueOrDefault("archive_analysis") is HistoryAnalysisSample)
+            { if (_current?.Id == context.Id) EnqueueLocked(new(context, receivedAt, Day(receivedAt), value, new())); return; }
             if (value.Type is LiveEventType.Online or LiveEventType.Rank)
             {
                 if (_current?.Id != context.Id) return;
+                _observationDirty = true; _observationAt = receivedAt;
                 if (value.Extra.TryGetValue("archive_popularity", out var p)) _popularity = p as long?;
                 if (value.Extra.TryGetValue("archive_watched", out var w)) _watchedCount = w as long?;
                 if (value.Type == LiveEventType.Rank)
@@ -104,8 +109,8 @@ public sealed partial class SqliteLocalHistory
     }
     private void SaveObservationLocked()
     {
-        if (_current is not { } context || !_settings.Enabled || !_hasObservation || _closing) return;
-        var at = DateTimeOffset.UtcNow;
+        if (_current is not { } context || !_settings.Enabled || !_hasObservation || !_observationDirty || _closing) return;
+        var at = _observationAt; _observationDirty = false;
         var value = new LiveEvent(LiveEventType.Online, "系统", "", "#FFFFFF", Metadata: new Dictionary<string, object?>
         { ["archive_popularity"] = _popularity, ["archive_watched"] = _watchedCount, ["rank_members"] = _rank, ["rank_total"] = _rankTotal });
         EnqueueLocked(new(context, at, Day(at), value, new()));
@@ -115,6 +120,8 @@ public sealed partial class SqliteLocalHistory
         var value = item.Event; var a = value.Appearance;
         long bytes = 2048L + 2L * (value.Username.Length + value.Content.Length + value.Color.Length);
         var fields = item.Fields;
+        if (value.Extra.GetValueOrDefault("archive_analysis") is HistoryAnalysisSample sample)
+            foreach (var member in sample.Members) bytes += 768 + 2L * (member.Username.Length + member.Appearance.AvatarUrl.Length + member.Appearance.MedalName.Length);
         bytes += 2L * ((fields.RawBody?.Length ?? 0) + (fields.TransactionId?.Length ?? 0) + (fields.GiftName?.Length ?? 0) + (fields.UniqueId?.Length ?? 0));
         if (value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile profile)
             bytes += 2L * (profile.Name.Length + profile.Title.Length + profile.AvatarUrl.Length + profile.MedalName.Length);

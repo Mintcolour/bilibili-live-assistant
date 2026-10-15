@@ -5,7 +5,8 @@ public sealed record HistorySettings
     public bool Enabled { get; init; } = true;
     public string Directory { get; init; } = "";
     public int CapacityWarningGiB { get; init; } = 10;
-    public HistorySettings Normalize() => this with { Directory = string.IsNullOrWhiteSpace(Directory) ? "" : Path.GetFullPath(Directory.Trim()), CapacityWarningGiB = Math.Clamp(CapacityWarningGiB, 1, 4096) };
+    public HistoryAnalysisSettings Analysis { get; init; } = new();
+    public HistorySettings Normalize() => this with { Analysis = (Analysis ?? new()).Normalize(), Directory = string.IsNullOrWhiteSpace(Directory) ? "" : Path.GetFullPath(Directory.Trim()), CapacityWarningGiB = Math.Clamp(CapacityWarningGiB, 1, 4096) };
     public string EffectiveDirectory => string.IsNullOrWhiteSpace(Directory)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "history")
         : Path.GetFullPath(Directory);
@@ -59,6 +60,9 @@ public interface ILocalHistory : IAsyncDisposable
     Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token);
     Task<HistoryDetails> DetailsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryGap>> GapsAsync(HistoryFilter filter, CancellationToken token);
+    Task<IReadOnlyList<HistoryTrendPoint>> TrendsAsync(HistoryFilter filter, CancellationToken token);
+    Task<HistoryAnalysisSample?> SampleAsync(HistoryFilter filter, long id, CancellationToken token);
+    Task<IReadOnlyList<HistoryMemberChange>> ChangesAsync(HistoryFilter filter, HistoryChangeCursor? cursor, CancellationToken token);
     Task<long> CountAsync(HistoryFilter filter, CancellationToken token);
     Task DeleteAsync(HistoryFilter filter, CancellationToken token);
     Task CompactAsync(CancellationToken token);
