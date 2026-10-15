@@ -70,7 +70,8 @@ public sealed class MainWindow : Window
         Activated += (_, _) => UpdatePageVisibility();
         _appWindow.Changed += (_, _) => UpdatePageVisibility();
         vm.WindowDiagnostics = () => new { mainVisible = IsMainVisible(),
-            page = (_navigation.SelectedItem as NavigationViewItem)?.Tag?.ToString(), overlay = _overlay?.GetDiagnostics() };
+            page = (_navigation.SelectedItem as NavigationViewItem)?.Tag?.ToString(),
+            dashboard = (_frame.Content as DashboardPage)?.GetResourceDiagnostics(), overlay = _overlay?.GetDiagnostics() };
     }
 
     private void ConfigureTitleBar()

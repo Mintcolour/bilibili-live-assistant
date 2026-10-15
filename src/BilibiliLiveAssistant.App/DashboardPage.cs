@@ -53,6 +53,8 @@ internal sealed class DashboardPage : Page
     private readonly DashboardList _gifts;
     private readonly DashboardList _sc;
     private readonly DashboardList _interactions;
+    internal object GetResourceDiagnostics() => new { danmaku = _danmaku.GetResourceDiagnostics(), gifts = _gifts.GetResourceDiagnostics(),
+        sc = _sc.GetResourceDiagnostics(), interactions = _interactions.GetResourceDiagnostics() };
     private bool _dirty = true;
     private bool _unloaded;
     private bool _settingsDirty;
@@ -410,6 +412,8 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly ListView _list = new() { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = null };
     private readonly RecordCollection _items = new();
     private readonly HashSet<MessageCard> _cards = new();
+    private readonly Dictionary<Microsoft.UI.Xaml.Controls.Primitives.SelectorItem, MessageCard> _containerCards = new();
+    private long _recycledWithoutRoot;
     private readonly Dictionary<Guid, DashboardRecord> _visibleRecords = new();
     private readonly ListImageVisibility _visibility;
     private bool _active = true;
@@ -433,6 +437,9 @@ internal sealed class DashboardList : Grid, IDisposable
     public event Action? FilterChanged;
     public DashboardList(string title, string glyph, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, UIElement? extraAction = null)
     {
+        // The default panel precreates several screens of expensive rich cards.
+        // Retain all message data, but materialize controls for the viewport only.
+        _list.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ItemsStackPanel CacheLength='0'/></ItemsPanelTemplate>");
         _title = title; _vm = vm; _animations = animations; _visible = visible; _important = important;
         _visibility = new(_list, () => _active && _visible(), UpdateVisibleImages);
         RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -510,12 +517,23 @@ internal sealed class DashboardList : Grid, IDisposable
         foreach (var record in selected) _visibleRecords[record.Id] = record;
         foreach (var record in selected)
             if (_list.ContainerFromItem(record) is ListViewItem container && container.ContentTemplateRoot is ContentControl host)
-                BindCard(host, record);
+                BindCard(container, host, record);
         UpdateActions(source.Count, unread);
         _visibility.Request();
     }
     private void RenderContainer(ListViewBase sender, ContainerContentChangingEventArgs e)
     {
+        // A recycled container may have already lost ContentTemplateRoot. Its
+        // previous card must be released before attempting to inspect that root.
+        if (e.InRecycleQueue)
+        {
+            if (_containerCards.Remove(e.ItemContainer, out var retired)) ReleaseCard(retired);
+            if (e.ItemContainer.ContentTemplateRoot is ContentControl recycledHost) recycledHost.Content = null;
+            else _recycledWithoutRoot++;
+            e.Handled = true;
+            _visibility.Request();
+            return;
+        }
         e.ItemContainer.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         e.ItemContainer.VerticalContentAlignment = VerticalAlignment.Top;
         e.ItemContainer.Padding = new Thickness(0);
@@ -526,7 +544,7 @@ internal sealed class DashboardList : Grid, IDisposable
             return;
         }
         if (!e.InRecycleQueue && e.Item is DashboardRecord record)
-            BindCard(host, record);
+            BindCard(e.ItemContainer, host, record);
         else
         {
             if (host.Content is MessageCard old) ReleaseCard(old);
@@ -585,8 +603,9 @@ internal sealed class DashboardList : Grid, IDisposable
             if (FindScrollViewer(VisualTreeHelper.GetChild(root, i)) is { } child) return child;
         return null;
     }
-    private void BindCard(ContentControl host, DashboardRecord record)
+    private void BindCard(Microsoft.UI.Xaml.Controls.Primitives.SelectorItem container, ContentControl host, DashboardRecord record)
     {
+        if (_containerCards.TryGetValue(container, out var previous) && !ReferenceEquals(previous, host.Content)) ReleaseCard(previous);
         if (host.Content is MessageCard old)
         {
             if (!old.IsDisposed && old.RecordId == record.Id && old.RecordRevision == record.Revision && old.MediaStyle == _vm.Settings.MediaPreview && old.MessageStyle.HasSameMessageStyle(_vm.Settings.Dashboard) && old.Read == record.IsRead && old.Thanked == record.IsThanked)
@@ -597,15 +616,34 @@ internal sealed class DashboardList : Grid, IDisposable
             ReleaseCard(old);
         }
         var card = new MessageCard(record, _vm, _animations, () => _visibility.IsVisible(record), _important);
-        _cards.Add(card); host.Content = card;
+        _cards.Add(card); _containerCards[container] = card; host.Content = card;
         card.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
     }
     private void ReleaseCard(MessageCard card)
     {
         card.Dispose(); _cards.Remove(card);
+        foreach (var owner in _containerCards.Where(x => ReferenceEquals(x.Value, card)).Select(x => x.Key).ToArray())
+            _containerCards.Remove(owner);
+    }
+    internal object GetResourceDiagnostics()
+    {
+        var panel = _list.ItemsPanelRoot as ItemsStackPanel;
+        return new { items = _items.Count, cards = _cards.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
+            ownedIndices = _containerCards.Keys.Select(x => _list.IndexFromContainer(x)).Order().ToArray(),
+            firstVisible = panel?.FirstVisibleIndex, lastVisible = panel?.LastVisibleIndex,
+            firstCached = panel?.FirstCacheIndex, lastCached = panel?.LastCacheIndex };
     }
     private void UpdateVisibleImages()
     {
+        // WinUI can retain an item container in its recycling pool without a
+        // ContentChanging callback until that container is reused. Do not let
+        // our ownership set keep its old rich visual tree alive in the meantime.
+        foreach (var pair in _containerCards.ToArray())
+        {
+            if (_list.IndexFromContainer(pair.Key) >= 0) continue;
+            if (pair.Key.ContentTemplateRoot is ContentControl host && ReferenceEquals(host.Content, pair.Value)) host.Content = null;
+            ReleaseCard(pair.Value);
+        }
         foreach (var card in _cards)
             if (_visibleRecords.TryGetValue(card.RecordId, out var record) && _visibility.IsVisible(record)) card.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
             else card.Deactivate();
@@ -622,7 +660,7 @@ internal sealed class DashboardList : Grid, IDisposable
         // Include detached/recycled containers, not just those currently returned
         // by ContainerFromItem. Ownership is explicit until release.
         foreach (var card in _cards) card.Dispose();
-        _cards.Clear();
+        _cards.Clear(); _containerCards.Clear();
         _list.ItemsSource = null;
         _items.Clear();
     }
