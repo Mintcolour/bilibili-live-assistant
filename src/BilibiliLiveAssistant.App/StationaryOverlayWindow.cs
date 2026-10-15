@@ -37,11 +37,10 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     public OverlayRegionKind RegionKind => Kind;
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
     private bool GridMode => RegionSettings.Mode == OverlayDisplayMode.Grid;
-    private int FooterHeight => 28;
     private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, (ClientSize.Width - 8) / 208)) : 1;
     private int CellHeight => Kind == OverlayRegionKind.Status ? Math.Max(48, RegionSettings.FontSize * 2 + 12)
         : Math.Max(RegionSettings.CardHeight, RegionSettings.FontSize * 3 + 24);
-    private int Capacity => GridMode && ClientSize.Width < 216 ? 0 : Math.Clamp(Math.Min((ClientSize.Height - ContentTop - FooterHeight) / (CellHeight + 8) * Columns,
+    private int Capacity => GridMode && ClientSize.Width < 216 ? 0 : Math.Clamp(Math.Min((ClientSize.Height - ContentTop) / (CellHeight + 8) * Columns,
         16 * 1024 * 1024 / Math.Max(1, (ClientSize.Width / Columns) * CellHeight * 4)), 0,
         Timed ? Math.Min(6, RegionSettings.MaxVisible) : 32);
     private DashboardSettings Style => ViewModel.Settings.Dashboard with
@@ -84,12 +83,8 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void RefreshRanking()
     {
-        var previous = _ranking.ToArray(); _ranking.Clear(); var metrics = new List<LiveAudienceMetric>();
-        if (RegionSettings.ShowAudienceStats && _online is not null)
-        {
-            if (_online.Extra.GetValueOrDefault("popularity") is string { Length: > 0 } p) metrics.Add(new(LiveAudienceMetricKind.Popularity, p));
-            if (_online.Extra.GetValueOrDefault("watched") is string { Length: > 0 } w) metrics.Add(new(LiveAudienceMetricKind.Watched, w.Replace("人看过", "", StringComparison.Ordinal).Trim()));
-        }
+        var previous = _ranking.ToArray(); _ranking.Clear();
+        var metrics = OverlayBulletinRenderer.AudienceMetrics(_rank, _online, RegionSettings.ShowAudienceStats);
         if (metrics.Count > 0) _ranking.Add(new(LiveEventType.Rank, "", string.Join(" | ", metrics.Select(m => m.Value)), RegionSettings.Color,
             Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }));
         if (_rank is not null) _ranking.AddRange(ViewModel.GetRankMembers(_rank, RegionSettings.RankCount).Select(m => OverlayBulletinRenderer.MemberEvent(m, RegionSettings.Color)));
@@ -118,7 +113,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 _timed[i] = new(next, now, now.AddSeconds(seconds)); changed = true;
             }
         }
-        if (changed) Rebuild(); else if (Timed) RequestRender(new Rectangle(0, ClientSize.Height - FooterHeight, ClientSize.Width, FooterHeight));
+        if (changed) Rebuild();
         Schedule();
     }
     private void Schedule()
@@ -148,7 +143,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
             {
                 var value = Timed ? _timed[i]?.Value : GridMode ? _board.Slots[i]?.Record.Event : data.Skip(_offset + i).FirstOrDefault();
                 if (value is null) continue;
-                var caption = GridMode ? $"×{_board.Slots[i]!.Count} · 点击查看发言者" : value.Type == LiveEventType.SuperChat ? "点击展开完整 SC" : "";
+                var caption = GridMode ? $"×{_board.Slots[i]!.Count}" : "";
                 var width = Math.Max(120, (ClientSize.Width - 16 - (Columns - 1) * 8) / Columns);
                 var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + 8), width, CellHeight);
                 keep.Add(i);
@@ -166,7 +161,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     {
         if (Kind is not (OverlayRegionKind.Danmaku or OverlayRegionKind.SuperChat) || view.Value.MediaReferences.Count == 0) return;
         var settings = ViewModel.Settings.MediaPreview; var body = Math.Max(60, RegionSettings.FontSize * 2 + 32);
-        if (settings.Width > view.Bounds.Width || OverlayMediaAttachment.RequiredHeight(body, settings, RegionSettings) > view.Bounds.Height - 22 || !ViewModel.AcquireOverlayMedia()) return;
+        if (settings.Width > view.Bounds.Width || OverlayMediaAttachment.RequiredHeight(body, settings, RegionSettings) > view.Bounds.Height - (view.Caption.Length > 0 ? 22 : 0) || !ViewModel.AcquireOverlayMedia()) return;
         view.Media = new(ViewModel, view.Value.MediaReferences[0], body, RegionSettings);
     }
     private void UpdateBitmap(CardView view)
@@ -207,12 +202,6 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     protected override void DrawContent(Graphics graphics, Rectangle clip)
     {
         foreach (var view in _views.Values) if (view.Image is not null && view.Bounds.IntersectsWith(clip)) graphics.DrawImageUnscaled(view.Image, view.Bounds.Location);
-        using var font = OverlayTextRenderer.CreateFont(RegionSettings.FontFamily, 12);
-        var message = Capacity == 0 ? "区域尺寸不足，请在设置中增大区域" : Timed
-            ? $"显示 {_views.Count}/{Capacity} · 待播 {_queue.Count} · 未展示 {_queue.Omitted}（点击查看）" : GridMode ? "固定网格 · 点击查看详情，右键隐藏" : $"{(Kind == OverlayRegionKind.Status ? "高能榜" : "最近消息")} · {_offset + 1} 起 · 交互时滚轮翻阅";
-        if (Timed && Capacity < RegionSettings.MaxVisible && Capacity > 0) message = $"高度仅容纳 {Capacity}/{RegionSettings.MaxVisible} 张 · 未展示 {_queue.Omitted}";
-        using var brush = new SolidBrush(Color.FromArgb(210, 27, 32, 43)); graphics.FillRectangle(brush, 0, ClientSize.Height - FooterHeight, ClientSize.Width, FooterHeight);
-        OverlayTextRenderer.Draw(graphics, message, font, new(8, ClientSize.Height - FooterHeight + 5), Color.FromArgb(255, 204, 214, 235), false);
     }
     protected override void OnMouseWheel(Forms.MouseEventArgs e)
     {
@@ -232,9 +221,9 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     protected override void OnInteractionChanged() { ClearHover(); if (!ViewModel.OverlayInteractive) { _detail?.Close(); _detail = null; } }
     protected override void OnMouseClick(Forms.MouseEventArgs e)
     {
+        var header = Editing && e.Y < ContentTop;
         base.OnMouseClick(e);
-        if (e.Y >= ClientSize.Height - FooterHeight && Timed)
-        { ShowText("未展示提示（最近 100 项）", $"累计 {_queue.Omitted} 条；原消息仍可在概览与历史查看。\r\n\r\n" + string.Join("\r\n\r\n", _queue.Omissions.Reverse().Select(o => $"{o.At.ToLocalTime():HH:mm:ss} {o.Name} · {o.Reason}\r\n{o.Content}"))); return; }
+        if (header) return;
         var pair = _views.FirstOrDefault(v => v.Value.Bounds.Contains(e.Location));
         if (pair.Value is not { } view)
         {
@@ -252,6 +241,14 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
             ShowText($"重复 {entry.Count} 次", $"{view.Value.Content}\r\n\r\n" + string.Join("\r\n", entry.Senders.Values.Select(s => $"{s.Name} · UID {s.Uid} · {s.Count} 次 · {s.LastSeen.ToLocalTime():HH:mm:ss}")) + $"\r\n身份未知 {entry.UnknownCount} 次 · 未展开 {entry.UnlistedCount} 次");
         }
         else ShowText(view.Value.Username, view.Value.Content);
+    }
+    protected override void AddEditorMenuItems(Forms.ContextMenuStrip menu)
+    {
+        if (!Timed) return;
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        var omitted = new Forms.ToolStripMenuItem($"未展示记录（{_queue.Omitted}）");
+        omitted.Click += (_, _) => ShowText("未展示记录（最近 100 项）", string.Join("\r\n\r\n", _queue.Omissions.Reverse().Select(o => $"{o.At.ToLocalTime():HH:mm:ss} {o.Name} · {o.Reason}\r\n{o.Content}")));
+        menu.Items.Add(omitted);
     }
     private void ShowText(string title, string text)
     {

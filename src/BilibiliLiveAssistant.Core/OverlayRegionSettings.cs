@@ -69,7 +69,7 @@ public static class OverlayRegions
     {
         OverlayRegionKind.Danmaku => "普通弹幕", OverlayRegionKind.Gift => "礼物 / 上舰",
         OverlayRegionKind.SuperChat => "醒目留言 SC", OverlayRegionKind.Interaction => "进房 / 关注",
-        _ => "人气 / 高能榜",
+        _ => "人数 / 高能榜",
     };
 
     // Missing region records preserve the old appearance without a destructive migration.

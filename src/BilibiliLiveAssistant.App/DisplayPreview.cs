@@ -84,7 +84,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         if (kind == OverlayRegionKind.Status)
         {
             var members = Enumerable.Range(1, _region.RankCount).Select(i => new LiveRankMember(i, i, $"示例观众{i}", PreviewSamples.Appearance with { GuardLevel = i == 1 ? 3 : 0 })).ToArray();
-            var metrics = _region.ShowAudienceStats ? new[] { new LiveAudienceMetric(LiveAudienceMetricKind.Watched, "1.2万"), new LiveAudienceMetric(LiveAudienceMetricKind.Popularity, "3456") } : Array.Empty<LiveAudienceMetric>();
+            var metrics = _region.ShowAudienceStats ? new[] { new LiveAudienceMetric(LiveAudienceMetricKind.EnergyMembers, "620"), new LiveAudienceMetric(LiveAudienceMetricKind.Watched, "1.2万") } : Array.Empty<LiveAudienceMetric>();
             messages = OverlayBulletinRenderer.CreateParts(metrics,
                 members, true, _region, _style, _vm.Images, 160).Take(1).ToArray();
             if (stationary) messages = new[] { new LiveEvent(LiveEventType.Rank, "", "", _region.Color, Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }) }

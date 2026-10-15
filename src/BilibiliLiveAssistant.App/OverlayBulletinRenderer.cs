@@ -10,6 +10,17 @@ internal static class OverlayBulletinRenderer
     private const int WidthLimit = 4096;
     private const int Gap = 14;
 
+    internal static IReadOnlyList<LiveAudienceMetric> AudienceMetrics(LiveEvent? rank, LiveEvent? online, bool enabled)
+    {
+        if (!enabled) return Array.Empty<LiveAudienceMetric>();
+        var count = rank?.Extra.GetValueOrDefault("rank_total") as long?;
+        var metrics = new List<LiveAudienceMetric>(2)
+        { new(LiveAudienceMetricKind.EnergyMembers, count is >= 0 ? count.Value.ToString("N0") : "—") };
+        if (online?.Extra.GetValueOrDefault("watched") is string { Length: > 0 } watched)
+            metrics.Add(new(LiveAudienceMetricKind.Watched, watched.Replace("人看过", "", StringComparison.Ordinal).Trim()));
+        return metrics;
+    }
+
     public static LiveEvent MemberEvent(LiveRankMember member, string color) => new(LiveEventType.Danmaku,
         member.Username, "", color, member.Uid,
         Metadata: new Dictionary<string, object?> { ["rank_position"] = member.Rank }, Appearance: member.Appearance);
@@ -83,7 +94,7 @@ internal static class OverlayBulletinRenderer
         foreach (var metric in bulletin.Metrics.Take(2))
         {
             var value = metric.Value.Length > 32 ? metric.Value[..32] + "…" : metric.Value;
-            pieces.Add((metric.Kind == LiveAudienceMetricKind.Watched ? 0 : 1, value, x));
+            pieces.Add((metric.Kind == LiveAudienceMetricKind.Watched ? 0 : metric.Kind == LiveAudienceMetricKind.EnergyMembers ? 3 : 1, value, x));
             x += iconSize + 7 + OverlayTextRenderer.Measure(measure, value, font).Width + Gap;
         }
         if (bulletin.ShowRankHeader)
@@ -131,6 +142,13 @@ internal static class OverlayBulletinRenderer
                 shape.AddBezier(5, 9, 1, 18, 7, 22, 12, 22);
                 shape.AddBezier(12, 22, 22, 22, 23, 11, 17, 6);
                 shape.AddBezier(17, 6, 18, 10, 14, 10, 12, 2); shape.CloseFigure();
+            }
+            else if (kind == 3)
+            {
+                shape.AddEllipse(7, 2, 8, 8); shape.StartFigure();
+                shape.AddBezier(3, 22, 3, 9, 19, 9, 19, 22); shape.StartFigure();
+                shape.AddArc(15, 4, 6, 6, -90, 180); shape.StartFigure();
+                shape.AddBezier(18, 13, 22, 13, 23, 17, 23, 21);
             }
             else
             {

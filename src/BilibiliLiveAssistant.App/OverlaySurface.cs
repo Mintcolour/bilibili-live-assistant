@@ -22,7 +22,11 @@ public abstract class OverlaySurface : Forms.Form
     private readonly List<Rectangle> _dirtyRects = new(32);
     private readonly Rectangle[] _frameDirtyRects = new Rectangle[32];
     private bool _inAnimationFrame;
-    protected int ContentTop => ViewModel.Settings.Display.LayoutLocked ? 0 : 28;
+    private Forms.ContextMenuStrip? _editorMenu;
+    protected bool Editing => ViewModel.OverlayInteractive || !ViewModel.Settings.Display.LayoutLocked;
+    protected int ContentTop => Editing ? 36 : 0;
+    private Rectangle DoneBounds => new(Math.Max(8, ClientSize.Width - 52), 8, 44, 22);
+    private Rectangle ModeBounds => new(Math.Max(8, DoneBounds.Left - Math.Min(136, ClientSize.Width / 2) - 4), 8, Math.Min(136, ClientSize.Width / 2), 22);
 
     protected OverlaySurface(LiveAssistantViewModel vm, OverlayRegionKind kind)
     {
@@ -70,7 +74,12 @@ public abstract class OverlaySurface : Forms.Form
     private void OnSettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive))
-        { SetClickThrough(ViewModel.Settings.Display.LayoutLocked && !ViewModel.OverlayInteractive); OnInteractionChanged(); RequestRender(); return; }
+        {
+            if (IsDisposed) return;
+            SetClickThrough(!Editing);
+            if (!Editing) _editorMenu?.Close();
+            OnInteractionChanged(); OnRegionSettingsChanged(RegionSettings); RequestRender(); return;
+        }
         if (e.PropertyName != nameof(LiveAssistantViewModel.Settings) || IsDisposed) return;
         var previous = RegionSettings;
         ApplySurfaceSettings();
@@ -242,9 +251,20 @@ public abstract class OverlaySurface : Forms.Form
             graphics.FillRectangle(header, 0, 0, ClientSize.Width, ContentTop);
             // GDI text does not write alpha; use the same filled glyph paths as the message renderer.
             using var font = new Font("Microsoft YaHei UI", 12, FontStyle.Regular, GraphicsUnit.Pixel);
-            OverlayTextRenderer.Draw(graphics, $"{Text} · 拖动区域，边缘调整大小", font, new PointF(8, 5), Color.White, false);
+            var state = graphics.Save();
+            graphics.SetClip(new Rectangle(8, 8, Math.Max(0, ModeBounds.Left - 12), 22), CombineMode.Intersect);
+            OverlayTextRenderer.Draw(graphics, Text, font, new PointF(8, 11), Color.White, false);
+            graphics.Restore(state);
+            using var button = new SolidBrush(Color.FromArgb(76, 88, 108));
+            graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds);
+            state = graphics.Save(); graphics.SetClip(ModeBounds, CombineMode.Intersect);
+            OverlayTextRenderer.Draw(graphics, OverlayRegions.ModeTitle(RegionSettings.Mode) + " ▾", font, new PointF(ModeBounds.X + 4, 11), Color.White, false);
+            graphics.Restore(state);
+            OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 8, 11), Color.White, false);
             using var pen = new Pen(Color.FromArgb(100, 160, 210));
             graphics.DrawRectangle(pen, 0, 0, Math.Max(0, ClientSize.Width - 1), Math.Max(0, ClientSize.Height - 1));
+            foreach (var p in new[] { new Point(1, 1), new Point(ClientSize.Width - 7, 1), new Point(1, ClientSize.Height - 7), new Point(ClientSize.Width - 7, ClientSize.Height - 7) })
+                graphics.DrawRectangle(pen, p.X, p.Y, 5, 5);
         }
     }
 
@@ -259,18 +279,56 @@ public abstract class OverlaySurface : Forms.Form
             return;
         }
         base.WndProc(ref m);
-        if (m.Msg != 0x0084 || ViewModel.Settings.Display.LayoutLocked) return;
+        if (m.Msg != 0x0084 || !Editing) return;
         var packed = m.LParam.ToInt64();
         var p = PointToClient(new Point(unchecked((short)(packed & 0xffff)), unchecked((short)((packed >> 16) & 0xffff))));
         var left = p.X < 8; var right = p.X >= ClientSize.Width - 8;
         var top = p.Y < 8; var bottom = p.Y >= ClientSize.Height - 8;
-        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : p.Y < ContentTop ? 2 : 1);
+        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : ModeBounds.Contains(p) || DoneBounds.Contains(p) ? 1 : p.Y < ContentTop ? 2 : 1);
+    }
+
+    protected override async void OnMouseClick(Forms.MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (!Editing || e.Button != Forms.MouseButtons.Left) return;
+        if (DoneBounds.Contains(e.Location)) { await FinishEditingAsync(); return; }
+        if (!ModeBounds.Contains(e.Location)) return;
+        _editorMenu?.Dispose(); _editorMenu = new();
+        foreach (var mode in OverlayRegions.Modes(Kind))
+        {
+            var item = new Forms.ToolStripMenuItem(OverlayRegions.ModeTitle(mode)) { Checked = RegionSettings.Mode == mode };
+            item.Click += async (_, _) =>
+            {
+                try
+                {
+                    var current = OverlayRegions.Get(ViewModel.Settings.Display, Kind) with { Mode = mode, ModeVersion = 1, X = Left, Y = Top, Width = Width, Height = Height };
+                    await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind, current) });
+                }
+                catch (Exception ex) { ViewModel.ReportSettingsError("保存显示类型失败：" + ex.Message); }
+            };
+            _editorMenu.Items.Add(item);
+        }
+        AddEditorMenuItems(_editorMenu);
+        _editorMenu.Show(this, new Point(ModeBounds.Left, ContentTop));
+    }
+
+    protected virtual void AddEditorMenuItems(Forms.ContextMenuStrip menu) { }
+
+    private async Task FinishEditingAsync()
+    {
+        try
+        {
+            if (!ViewModel.Settings.Display.LayoutLocked)
+                await ViewModel.SaveAsync(ViewModel.Settings with { Display = ViewModel.Settings.Display with { LayoutLocked = true } });
+            ViewModel.EndOverlayInteraction();
+        }
+        catch (Exception ex) { ViewModel.ReportSettingsError("结束浮窗调整失败：" + ex.Message); }
     }
 
     protected override async void OnResizeEnd(EventArgs e)
     {
         base.OnResizeEnd(e);
-        if (ViewModel.Settings.Display.LayoutLocked || IsDisposed) return;
+        if (!Editing || IsDisposed) return;
         try
         {
             var current = OverlayRegions.Get(ViewModel.Settings.Display, Kind) with { X = Left, Y = Top, Width = Width, Height = Height };
@@ -281,7 +339,7 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _canvas?.Dispose(); _canvas = null; }
+        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }
 

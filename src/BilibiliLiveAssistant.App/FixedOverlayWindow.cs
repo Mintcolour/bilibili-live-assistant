@@ -154,21 +154,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     private IReadOnlyList<LiveEvent> CreateBulletinParts()
     {
-        var metrics = new List<LiveAudienceMetric>(2);
-        if (RegionSettings.ShowAudienceStats && _online is not null)
-        {
-            if (_online.Extra.TryGetValue("popularity", out var popularity) && popularity is string { Length: > 0 } p)
-                metrics.Add(new(LiveAudienceMetricKind.Popularity, p));
-            if (_online.Extra.TryGetValue("watched", out var watched) && watched is string { Length: > 0 } w)
-                metrics.Add(new(LiveAudienceMetricKind.Watched, w.Replace("人看过", "", StringComparison.Ordinal).Trim()));
-            if (metrics.Count == 0)
-                foreach (var text in _online.Content.Split('·', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(2))
-                {
-                    var normalized = text.Replace('：', ':'); var colon = normalized.IndexOf(':');
-                    var value = (colon >= 0 ? normalized[(colon + 1)..] : normalized).Replace("人看过", "", StringComparison.Ordinal).Trim();
-                    metrics.Add(new(text.Contains("看过", StringComparison.Ordinal) ? LiveAudienceMetricKind.Watched : LiveAudienceMetricKind.Popularity, value));
-                }
-        }
+        var metrics = OverlayBulletinRenderer.AudienceMetrics(_rank, _online, RegionSettings.ShowAudienceStats);
         var members = _rank is null ? Array.Empty<LiveRankMember>() : ViewModel.GetRankMembers(_rank, RegionSettings.RankCount);
         return OverlayBulletinRenderer.CreateParts(metrics, members, _rank is not null, RegionSettings, _style, ViewModel.Images, RowHeight);
     }

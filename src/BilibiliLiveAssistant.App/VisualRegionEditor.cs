@@ -77,7 +77,7 @@ internal sealed class VisualRegionEditor : StackPanel
         _columns.Visibility = mode == OverlayDisplayMode.Grid ? Visibility.Visible : Visibility.Collapsed;
         _background.Visibility = _backgroundOpacity.Visibility = fixedMode ? Visibility.Visible : Visibility.Collapsed;
         _broadcast.Visibility = _kind == OverlayRegionKind.Status && !fixedMode ? Visibility.Visible : Visibility.Collapsed;
-        _modeHint.Text = cards ? "到期前保护当前卡片。礼物待播 64 条/60 秒；上舰与 SC 各 64 条/5 分钟。高度不足减少实际数量；点击未展示数量查看省略提示。"
+        _modeHint.Text = cards ? "到期前保护当前卡片。礼物待播 64 条/60 秒；上舰与 SC 各 64 条/5 分钟。高度不足减少实际数量；调整浮窗时从类型菜单查看未展示记录。"
             : mode == OverlayDisplayMode.Grid ? "固定槽位，最多 32 张；沿用概览卡片的精确合并和防刷屏规则。临时交互时悬停保护、点击查看发言者、右键隐藏。"
             : mode == OverlayDisplayMode.List ? "只保存最近 100 条；临时交互时滚轮翻阅。仅可见行加载图片。"
             : mode == OverlayDisplayMode.Panel ? "收到新数据后更新固定面板，无持续动画；临时交互时滚轮查看其余名次。" : "";
