@@ -69,7 +69,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     internal LiveEvent? LatestOnline { get; private set; }
     internal LiveEvent? LatestRank { get; private set; }
     internal LiveRoomProfile? RoomProfile { get; private set; }
-    internal List<PopularitySample> PopularityHistory { get; } = new(240);
+    internal List<AudienceCountSample> AudienceHistory { get; } = new(240);
     internal CookieOptions DashboardCookies => ConnectionCookies;
     public long ReceivedEventCount => Interlocked.Read(ref _receivedEvents);
     public long BufferedDroppedCount => _pendingEvents.DroppedCount;
@@ -131,7 +131,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_client.IsRunning) return;
         if (newMonitoring)
         {
-            PopularityHistory.Clear();
+            AudienceHistory.Clear();
             CloseHistorySegment();
             _historyContext = History.Begin(roomId);
         }
@@ -394,6 +394,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             Metadata: new Dictionary<string, object?>(sample)
             {
                 ["rank_names"] = Enumerable.Range(1, 10).Select(i => $"{i}.示例观众{i}").ToArray(),
+                ["rank_total"] = 620L,
                 ["rank_members"] = Enumerable.Range(1, 10).Select(i => new LiveRankMember(i, 10000 + i, $"示例观众{i}",
                     new() { AvatarUrl = entryAvatar, MedalName = "示例牌", MedalLevel = 20 + i, MedalColor = "#4388BC",
                         GuardLevel = i switch { 1 => 3, 2 => 2, 3 => 1, _ => 0 } })).ToArray(),
@@ -420,6 +421,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             if (_disposed || !ReferenceEquals(run, _connectionRun) || run?.IsCancellationRequested == true && value == "已连接") return;
             Status = value;
             IsConnected = value == "已连接";
+            if (!available && previous == 1) AddAudienceSample(DateTimeOffset.UtcNow, null);
             OnPropertyChanged(nameof(IsListening));
             OnPropertyChanged(nameof(ConnectionModeText));
         }
@@ -469,21 +471,17 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                     if (value.Extra.TryGetValue("room_summary", out var summary) && summary is string text) RoomSummary = text;
                     if (value.Extra.TryGetValue("room_profile", out var profile) && profile is LiveRoomProfile suppliedProfile)
                     {
-                        RoomProfile = suppliedProfile with { EnergyMembers = RoomProfile?.EnergyMembers };
+                        RoomProfile = suppliedProfile with { EnergyMembers = LatestRank?.Extra.GetValueOrDefault("rank_total") as long? };
                         OnPropertyChanged(nameof(RoomProfile));
-                    }
-                    if (IsListening && long.TryParse(_popularity, out var count) && count >= 0
-                        && (PopularityHistory.Count == 0 || value.OccurredAt - PopularityHistory[^1].Time >= TimeSpan.FromSeconds(15)))
-                    {
-                        if (PopularityHistory.Count >= 240) PopularityHistory.RemoveAt(0);
-                        PopularityHistory.Add(new(value.OccurredAt, count));
                     }
                 }
                 if (value.Type == LiveEventType.Rank)
                 {
                     LatestRank = value; RankText = value.Content;
-                    if (RoomProfile is { } profile && value.Extra.TryGetValue("rank_total", out var total) && total is long number)
-                    { RoomProfile = profile with { EnergyMembers = number }; OnPropertyChanged(nameof(RoomProfile)); }
+                    var count = value.Extra.GetValueOrDefault("rank_total") as long?;
+                    if (RoomProfile is { } profile)
+                    { RoomProfile = profile with { EnergyMembers = count }; OnPropertyChanged(nameof(RoomProfile)); }
+                    if (IsListening) AddAudienceSample(value.OccurredAt, count is >= 0 ? count : null);
                 }
             }
             Dashboard.AddBatch(batch, _settings.Dashboard, OverlayRegions.Get(_settings.Display, OverlayRegionKind.Gift).MergeSeconds);
@@ -499,11 +497,20 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_pendingEvents.Count > 0) ScheduleFlush();
     }
 
+    private void AddAudienceSample(DateTimeOffset time, long? value)
+    {
+        // Rank observations only; popularity and loaded member count are different metrics.
+        if (AudienceHistory.Count > 0 && time <= AudienceHistory[^1].Time) time = AudienceHistory[^1].Time.AddTicks(1);
+        if (AudienceHistory.Count >= 240) AudienceHistory.RemoveAt(0);
+        AudienceHistory.Add(new(time, value));
+        OnPropertyChanged(nameof(AudienceHistory));
+    }
+
     private void ResetRoomHistory()
     {
         _pendingEvents.Clear(); Events.Clear(); Dashboard.Clear();
         LatestOnline = null; LatestRank = null;
-        RoomProfile = null; PopularityHistory.Clear(); OnPropertyChanged(nameof(RoomProfile));
+        RoomProfile = null; AudienceHistory.Clear(); OnPropertyChanged(nameof(RoomProfile));
         _popularity = ""; _watched = "";
         RoomHistoryReset?.Invoke();
         OnlineText = "--"; RankText = "暂无榜单"; RoomSummary = "房间状态暂无数据";

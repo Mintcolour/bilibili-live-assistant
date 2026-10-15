@@ -30,6 +30,11 @@ internal sealed class HistoryPage : Page
     private readonly TextBlock _page = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _storage = new() { FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly Button _newRecords = UiFactory.Button("有新记录 · 刷新"), _previous = UiFactory.Button("上一页"), _next = UiFactory.Button("更早 100 条");
+    private readonly Button _moreAnchors = UiFactory.Button("更多主播");
+    private readonly List<HistoryAnchor> _anchorEntries = new();
+    private bool _anchorsLoaded, _pageLoaded;
+    private string _loadedAnchorSearch = "";
+    private int _anchorOffset;
     private readonly HistoryMessageList _messages;
     private readonly HistoryMessageList _changes;
     private readonly HistoryAnalysisView _analysis;
@@ -38,6 +43,7 @@ internal sealed class HistoryPage : Page
     private int _selectedTab;
     private readonly List<(long? Id, DateTimeOffset? At)> _cursors = new() { (null, null) };
     private CancellationTokenSource? _query;
+    private CancellationTokenSource? _anchorQuery;
     private CancellationTokenSource? _maintenance;
     private IReadOnlyList<HistoryRow> _rows = [];
     private HistoryDetails? _details;
@@ -64,11 +70,13 @@ internal sealed class HistoryPage : Page
         var searchRow = new Grid { ColumnSpacing = 4 }; searchRow.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); searchRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         _anchorSearch.PlaceholderText = "搜索主播"; searchRow.Children.Add(_anchorSearch);
         var findAnchor = DashboardUi.Button("\uE721", "查询主播 / 曾用名 / UID / 房间号"); findAnchor.Click += async (_, _) => await RefreshAsync(true); Grid.SetColumn(findAnchor, 1); searchRow.Children.Add(findAnchor); anchorHeader.Children.Add(searchRow);
-        ToolTipService.SetToolTip(_anchorSearch, "昵称 / 曾用名 / UID / 房间号；显示最近 2000 位，搜索可查找更早存档。");
-        _anchorSearch.TextChanged += (_, _) => { if (!_loading) _query?.Cancel(); };
+        ToolTipService.SetToolTip(_anchorSearch, "默认显示所有已监视主播，按最近监视排序；可按昵称、曾用名、UID 或房间号筛选。");
+        _anchorSearch.TextChanged += async (_, _) => { if (!_loading) { _query?.Cancel(); _anchorQuery?.Cancel(); if (_anchorSearch.Text.Length == 0) await RefreshAsync(true); } };
         _anchorSearch.KeyDown += async (_, args) => { if (args.Key == Windows.System.VirtualKey.Enter) { args.Handled = true; await RefreshAsync(true); } };
         left.Children.Add(anchorHeader); Grid.SetRow(_anchorList, 1); left.Children.Add(_anchorList);
-        Grid.SetRow(_storage, 2); left.Children.Add(_storage); body.Children.Add(Surface(left, 12));
+        _moreAnchors.Visibility = Visibility.Collapsed; _moreAnchors.Click += async (_, _) => await LoadMoreAnchorsAsync();
+        var anchorFooter = new StackPanel { Spacing = 8, Children = { _moreAnchors, _storage } };
+        Grid.SetRow(anchorFooter, 2); left.Children.Add(anchorFooter); body.Children.Add(Surface(left, 12));
         var right = new Grid { RowSpacing = 12 };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) right.RowDefinitions.Add(new() { Height = height });
         var title = new Grid { ColumnSpacing = 12 }; title.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); title.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -133,7 +141,7 @@ internal sealed class HistoryPage : Page
         _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += (_, _) => ConditionsChanged();
         foreach (var input in new[] { _uid, _name, _keyword }) input.TextChanged += (_, _) => ConditionsChanged();
         _history.Committed += OnCommitted; _vm.PropertyChanged += OnVmChanged;
-        Loaded += async (_, _) => { _active = _visible(); SetTabActive(); _anchorList.SetActive(_active); if (_active) await RefreshAsync(true); };
+        Loaded += (_, _) => { _pageLoaded = true; SetActive(_visible()); };
         Unloaded += OnUnloaded; UpdateStorage(); UpdatePager();
     }
     private static Border Surface(UIElement child, double padding) => new() { Child = child, Padding = new Thickness(padding), CornerRadius = new CornerRadius(8), Background = MessageCard.Brush("#222732") };
@@ -189,21 +197,17 @@ internal sealed class HistoryPage : Page
     private async Task RefreshAsync(bool anchors, bool resetSession = false)
     {
         if (_disposed || !_active || _managing) return;
+        // Anchor discovery has its own cancellation scope: date/tab changes must not
+        // erase the default anchor list while the page finishes its first layout.
+        if (anchors) _query?.Cancel();
+        if (anchors && !await LoadAnchorsAsync(false)) return;
+        if (_disposed || !_active || _managing) return;
         var run = NewQuery(); ResetPages(); _status.Text = "查询中…"; SetPagerEnabled(false);
         _rows = []; _messages.SetRows([]); _details = null; _gaps = []; ShowSummary(null);
         _changes.SetRows([]); _analysis.Clear();
         Interlocked.Exchange(ref _hasNewRecords, 0); _newRecords.Visibility = Visibility.Collapsed;
         try
         {
-            if (anchors)
-            {
-                var selected = _anchors.SelectedItem as HistoryAnchor;
-                var values = await _history.AnchorsAsync(run.Token, _anchorSearch.Text.Trim()); if (!Current(run)) return;
-                _loading = true;
-                _anchorList.SetItems(values);
-                _anchors.SelectedItem = selected is null ? values.FirstOrDefault() : values.FirstOrDefault(a => a.Uid == selected.Uid && (a.Uid is > 0 || a.RoomId == selected.RoomId)) ?? values.FirstOrDefault();
-                _loading = false;
-            }
             if (_anchors.SelectedItem is not HistoryAnchor)
             { ShowSummary(null); _summary.Text = "尚无本地记录"; _status.Text = "开启监视后开始归档；测试与示例不会保存。"; _rows = []; _messages.SetRows([]); _details = null; _gaps = []; _loading = true; _sessions.ItemsSource = null; _loading = false; UpdatePager(); return; }
             var oldSession = resetSession ? null : (_sessions.SelectedItem as HistorySession)?.Id;
@@ -352,14 +356,40 @@ internal sealed class HistoryPage : Page
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed) _status.Text = "整理失败：" + ex.Message; }
         finally { _managing = false; _maintenance?.Dispose(); _maintenance = null; if (!_disposed) UpdateStorage(); }
     }
-    internal void SetActive(bool active)
+    private async Task LoadMoreAnchorsAsync() { await LoadAnchorsAsync(true); }
+    private async Task<bool> LoadAnchorsAsync(bool append)
     {
-        if (_disposed) return; _active = active;
-        if (!active) _query?.Cancel(); SetTabActive(); _anchorList.SetActive(active);
+        if (!_active || _disposed || _managing) return false;
+        _anchorQuery?.Cancel(); _anchorQuery?.Dispose(); var run = _anchorQuery = new(); _moreAnchors.IsEnabled = false;
+        bool CurrentAnchors() => !_disposed && _active && ReferenceEquals(_anchorQuery, run) && !run.IsCancellationRequested;
+        try
+        {
+            var search = append ? _loadedAnchorSearch : _anchorSearch.Text.Trim();
+            var values = await _history.AnchorsAsync(run.Token, search, 200, append ? _anchorOffset : 0); if (!CurrentAnchors()) return false;
+            var selected = _anchors.SelectedItem as HistoryAnchor; _loading = true;
+            if (!append) { _anchorEntries.Clear(); _anchorOffset = 0; }
+            _anchorOffset += values.Count; _loadedAnchorSearch = search;
+            foreach (var value in values) if (!_anchorEntries.Any(a => a.Uid == value.Uid && (a.Uid is > 0 || a.RoomId == value.RoomId))) _anchorEntries.Add(value);
+            _anchorList.SetItems(_anchorEntries.ToArray());
+            _anchors.SelectedItem = selected is null ? _anchorEntries.FirstOrDefault() : _anchorEntries.FirstOrDefault(a => a.Uid == selected.Uid && (a.Uid is > 0 || a.RoomId == selected.RoomId)) ?? _anchorEntries.FirstOrDefault();
+            _loading = false; _anchorsLoaded = true; UpdateAnchorHeading();
+            _moreAnchors.Visibility = values.Count == 200 ? Visibility.Visible : Visibility.Collapsed;
+            return true;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { if (CurrentAnchors()) _status.Text = "加载主播失败：" + ex.Message; }
+        finally { _loading = false; if (!_disposed) _moreAnchors.IsEnabled = true; }
+        return false;
+    }
+    internal async void SetActive(bool active)
+    {
+        if (_disposed) return; var becameActive = active && !_active; _active = active;
+        if (!active) { _query?.Cancel(); _anchorQuery?.Cancel(); } SetTabActive(); _anchorList.SetActive(active);
+        if (active && _pageLoaded && (becameActive || _query is null && _anchorQuery is null)) await RefreshAsync(!_anchorsLoaded);
     }
     private void OnUnloaded(object sender, RoutedEventArgs args)
     {
-        _disposed = true; _active = false; _query?.Cancel(); _query?.Dispose(); _maintenance?.Cancel();
+        _disposed = true; _active = false; _query?.Cancel(); _query?.Dispose(); _anchorQuery?.Cancel(); _anchorQuery?.Dispose(); _maintenance?.Cancel();
         _history.Committed -= OnCommitted; _vm.PropertyChanged -= OnVmChanged; _messages.Dispose(); _anchorList.Dispose(); Unloaded -= OnUnloaded;
         _changes.Dispose(); _analysis.Dispose();
     }

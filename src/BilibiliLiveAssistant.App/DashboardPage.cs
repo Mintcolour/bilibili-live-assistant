@@ -44,7 +44,7 @@ internal sealed class DashboardPage : Page
     private readonly ToggleButton _rankExpanded = new() { Content = "榜单", Padding = new Thickness(8, 3, 8, 3), MinHeight = 28 };
     private readonly TextBlock _headingTitle = new() { Text = "直播概览", FontSize = 18, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
     private readonly Button _monitor = new() { Content = "开启监视", Padding = new Thickness(10, 5, 10, 5), MinWidth = 92 };
-    private readonly ToggleButton _interact = DashboardUi.Toggle("\uE7C9", "临时交互悬浮窗 / 恢复穿透");
+    private readonly ToggleButton _interact = DashboardUi.Toggle("\uE7C9", "调整浮窗位置、大小与显示类型 / 完成调整");
     private readonly ToggleSwitch _anonymous = new() { Header = "匿名读取", OnContent = "无需登录", OffContent = "使用账号", MinWidth = 160 };
     private bool _connectionBusy, _loadingLayout;
     private readonly DashboardList _danmaku;
@@ -314,16 +314,12 @@ internal sealed class DashboardPage : Page
             _duration.Foreground = Brush(parts[0] is "直播中" or "轮播中" ? "#76CFA6" : "#9BA5BD");
             DashboardUi.Describe(_durationInfo, _lastSummary);
         }
-        if (_lastOnline != _vm.OnlineText)
+        var audience = (_vm.LatestRank?.Extra.GetValueOrDefault("rank_total") as long?)?.ToString("N0") ?? "—";
+        var audienceDetails = $"房间人数（高能榜人数）：{audience}\n看过：{_vm.LatestOnline?.Extra.GetValueOrDefault("watched") as string ?? "—"}";
+        if (_lastOnline != audienceDetails)
         {
-            _lastOnline = _vm.OnlineText;
-            var parts = _lastOnline.Split(" · ", StringSplitOptions.TrimEntries);
-            var number = parts.LastOrDefault() ?? "—";
-            var colon = number.IndexOf(':');
-            if (colon >= 0) number = number[(colon + 1)..].Trim();
-            number = number.Replace("人看过", "", StringComparison.Ordinal).Replace("人气", "", StringComparison.Ordinal).Trim();
-            _audience.Text = number is "--" or "" ? "—" : number;
-            DashboardUi.Describe(_audienceInfo, $"人气 / 看过\n{_lastOnline}");
+            _lastOnline = audienceDetails; _audience.Text = audience;
+            DashboardUi.Describe(_audienceInfo, audienceDetails);
         }
     }
     private static string ShortRankName(string name)

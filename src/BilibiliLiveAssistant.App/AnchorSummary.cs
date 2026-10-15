@@ -33,7 +33,7 @@ internal sealed class AnchorSummary : Button, IDisposable
         var content = new Grid { ColumnSpacing = 7 }; content.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); content.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         content.Children.Add(_avatarHost); Grid.SetColumn(_summary, 1); content.Children.Add(_summary); Content = content;
         _flyout = new Flyout { Content = new StackPanel { Width = 360, Spacing = 10, Children = { _title, _subtitle, _stats,
-            new TextBlock { Text = "本次监视 · 人气", FontSize = 12, Opacity = 0.6 }, _chart, _range } } };
+            new TextBlock { Text = "本次监视 · 房间人数（高能榜人数）", FontSize = 12, Opacity = 0.6 }, _chart, _range } } };
         _flyout.Opening += (_, _) => { _open = true; RefreshDetails(); }; _flyout.Closed += (_, _) => { _open = false; _chart.Children.Clear(); };
         Flyout = _flyout; DashboardUi.Describe(this, "主播统计 · 点击展开"); Loaded += (_, _) => _avatar?.Activate(XamlRoot?.RasterizationScale ?? 1);
         Refresh();
@@ -50,14 +50,14 @@ internal sealed class AnchorSummary : Button, IDisposable
         }
         if (_visible()) _avatar.Activate(XamlRoot?.RasterizationScale ?? 1);
         _summary.Text = p is null ? "主播统计" : $"⚓ {Number(p.Guards)}   {(!string.IsNullOrEmpty(p.MedalName) ? p.MedalName : "粉丝团")} {Number(p.FansClub)}   ★ {Number(p.EnergyMembers)}";
-        var latestSample = _vm.PopularityHistory.LastOrDefault()?.Time ?? default;
+        var latestSample = _vm.AudienceHistory.LastOrDefault()?.Time ?? default;
         if (_open && _visible() && (_detailProfile != p || _detailOnline != _vm.OnlineText || _detailSample != latestSample)) RefreshDetails();
     }
     private static string Number(long? value) => value is { } n ? n >= 10000 ? $"{n / 10000d:0.#}万" : n.ToString("N0") : "—";
     private void RefreshDetails()
     {
         var p = _vm.RoomProfile; _title.Text = p?.Name is { Length: > 0 } name ? name : "主播信息暂无数据";
-        _detailProfile = p; _detailOnline = _vm.OnlineText; _detailSample = _vm.PopularityHistory.LastOrDefault()?.Time ?? default;
+        _detailProfile = p; _detailOnline = _vm.OnlineText; _detailSample = _vm.AudienceHistory.LastOrDefault()?.Time ?? default;
         _subtitle.Text = p?.Title is { Length: > 0 } title ? title : _vm.RoomSummary;
         _stats.Children.Clear(); _stats.ColumnDefinitions.Clear();
         var values = new[] { ("大航海", Number(p?.Guards)), (p?.MedalName is { Length: > 0 } medal ? medal : "粉丝团", Number(p?.FansClub)),
@@ -69,14 +69,21 @@ internal sealed class AnchorSummary : Button, IDisposable
                 new TextBlock { Text = values[i].Item2, FontSize = 13, FontWeight = new(600), TextTrimming = TextTrimming.CharacterEllipsis } } };
             Grid.SetColumn(item, i); _stats.Children.Add(item);
         }
-        _chart.Children.Clear(); var samples = _vm.PopularityHistory;
-        if (samples.Count == 0) { _range.Text = "暂无采样 · 最多保留 240 个点"; return; }
-        var max = Math.Max(1, samples.Max(s => s.Value)); var line = new Polyline { Stroke = MessageCard.Brush("#FC85AA"), StrokeThickness = 2 };
+        _chart.Children.Clear(); var samples = _vm.AudienceHistory;
+        var valid = samples.Where(s => s.Value.HasValue).ToArray();
+        if (valid.Length == 0) { _range.Text = "暂无人数采样"; return; }
+        var highest = valid.Max(s => s.Value!.Value); var max = Math.Max(1, highest);
+        Polyline? line = null;
         var seconds = Math.Max(1, (samples[^1].Time - samples[0].Time).TotalSeconds);
-        foreach (var sample in samples) line.Points.Add(new Point(8 + (sample.Time - samples[0].Time).TotalSeconds / seconds * 344, 100 - sample.Value / (double)max * 90));
-        _chart.Children.Add(line); var last = line.Points[^1];
-        var dot = new Ellipse { Width = 6, Height = 6, Fill = line.Stroke }; Canvas.SetLeft(dot, last.X - 3); Canvas.SetTop(dot, last.Y - 3); _chart.Children.Add(dot);
-        _range.Text = $"{samples[0].Time:HH:mm} — {samples[^1].Time:HH:mm}  ·  当前 {samples[^1].Value:N0}  ·  最高 {max:N0}";
+        foreach (var sample in samples)
+        {
+            if (sample.Value is not { } count) { line = null; continue; }
+            if (line is null) { line = new() { Stroke = MessageCard.Brush("#FC85AA"), StrokeThickness = 2 }; _chart.Children.Add(line); }
+            var point = new Point(8 + (sample.Time - samples[0].Time).TotalSeconds / seconds * 344, 100 - count / (double)max * 90);
+            line.Points.Add(point);
+            var dot = new Ellipse { Width = 4, Height = 4, Fill = line.Stroke }; Canvas.SetLeft(dot, point.X - 2); Canvas.SetTop(dot, point.Y - 2); _chart.Children.Add(dot);
+        }
+        _range.Text = $"{samples[0].Time:HH:mm} — {samples[^1].Time:HH:mm}  ·  当前 {Number(samples[^1].Value)}  ·  最高 {highest:N0}";
     }
     public void Suspend() { _open = false; _flyout.Hide(); _chart.Children.Clear(); _avatar?.Deactivate(); }
     public void Dispose() { Suspend(); _avatar?.Dispose(); _avatar = null; _avatarHost.Children.Clear(); }

@@ -203,15 +203,15 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         if (filter.SessionId is { Length: > 0 }) { where += " AND s.id=$session"; command.Parameters.AddWithValue("$session", filter.SessionId); }
         return where;
     }
-    public Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "", int limit = 2000) => ReadAsync<IReadOnlyList<HistoryAnchor>>(connection =>
+    public Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "", int limit = 2000, int offset = 0) => ReadAsync<IReadOnlyList<HistoryAnchor>>(connection =>
     {
         using var command = Command(connection, """
             SELECT s.anchor_uid,MIN(s.room),COALESCE(a.name,''),COALESCE(a.avatar,'') FROM sessions s LEFT JOIN anchors a ON a.uid=s.anchor_uid
             WHERE $search='' OR CAST(a.uid AS TEXT)=$search OR CAST(s.room AS TEXT)=$search OR instr(COALESCE(a.name,''),$search)>0
                 OR EXISTS(SELECT 1 FROM anchor_names n WHERE n.uid=a.uid AND instr(n.name,$search)>0)
                 OR EXISTS(SELECT 1 FROM room_aliases r WHERE r.uid=a.uid AND CAST(r.room AS TEXT)=$search)
-            GROUP BY COALESCE('u:'||s.anchor_uid,'r:'||s.room) ORDER BY MAX(s.started) DESC LIMIT $limit;
-            """, ("$search", search), ("$limit", Math.Clamp(limit, 1, 2000)));
+            GROUP BY COALESCE('u:'||s.anchor_uid,'r:'||s.room) ORDER BY MAX(s.started) DESC,COALESCE('u:'||s.anchor_uid,'r:'||s.room) LIMIT $limit OFFSET $offset;
+            """, ("$search", search), ("$limit", Math.Clamp(limit, 1, 2000)), ("$offset", Math.Max(0, offset)));
         using var reader = command.ExecuteReader(); var rows = new List<HistoryAnchor>();
         while (reader.Read()) rows.Add(new(reader.IsDBNull(0) ? null : reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2), reader.GetString(3)));
         return rows;
