@@ -9,6 +9,14 @@ internal static class OverlayBulletinRenderer
 {
     private const int WidthLimit = 4096;
     private const int Gap = 14;
+    internal const int PanelGap = 2;
+
+    internal static int PanelRowHeight(OverlayRegionSettings region, DashboardSettings style)
+    {
+        var pad = region.Shadow ? Math.Max(4, region.ShadowOffset + region.ShadowSize + 2) : 4;
+        var avatar = style.ShowAvatars ? Math.Min((int)Math.Round(style.AvatarSize * region.ContentScale), region.FontSize + 10) + (style.ShowIdentity ? 6 : 0) : 0;
+        return Math.Max(36, (int)Math.Ceiling(Math.Max(region.FontSize * 1.5 + Math.Clamp(style.LineSpacing, 3, 10), avatar)) + pad * 2);
+    }
 
     internal static IReadOnlyList<LiveAudienceMetric> AudienceMetrics(LiveEvent? rank, LiveEvent? online, bool enabled)
     {

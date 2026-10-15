@@ -77,11 +77,22 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         }
         if (Kind == OverlayRegionKind.Interaction)
         {
-            ExpireEntries(now);
-            while (_sprites.Count >= Lanes) { _sprites[0].Dispose(); _sprites.RemoveAt(0); }
+            var expiredEntries = ExpireEntries(now);
+            while (_sprites.Count >= Lanes)
+            {
+                var replace = _sprites.FindIndex(s => !LiveInteractions.IsFollow(s.Event));
+                // Entry bursts cannot evict a follow before its configured expiry.
+                if (replace < 0 && !LiveInteractions.IsFollow(value))
+                {
+                    if (expiredEntries) { PositionEntries(); RequestRender(); ScheduleWake(); }
+                    return;
+                }
+                if (replace < 0) replace = 0; // Follow bursts still keep the newest within the same bound.
+                _sprites[replace].Dispose(); _sprites.RemoveAt(replace);
+            }
             var sprite = AddSprite(value, 0, 8);
             sprite.CreatedAt = now;
-            sprite.ExpiresAt = After(now, RegionSettings.DurationSeconds);
+            sprite.ExpiresAt = After(now, InteractionDuration(value));
             PositionEntries(); RequestRender(); ScheduleWake(); return;
         }
         if (Kind == OverlayRegionKind.Gift && RegionSettings.MergeSeconds > 0)
@@ -193,8 +204,15 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         return changed;
     }
 
+    private double InteractionDuration(LiveEvent value) => LiveInteractions.IsFollow(value) ? RegionSettings.FollowDurationSeconds : RegionSettings.DurationSeconds;
+
     private void PositionEntries()
-    { for (var i = 0; i < _sprites.Count; i++) _sprites[i].Y = ContentTop + i * RowHeight; }
+    {
+        var row = 0;
+        for (var pass = 0; pass < 2; pass++)
+            foreach (var sprite in _sprites)
+                if (LiveInteractions.IsFollow(sprite.Event) == (pass == 0)) sprite.Y = ContentTop + row++ * RowHeight;
+    }
 
     private Sprite AddSprite(LiveEvent value, int lane, double x)
     {
@@ -309,7 +327,11 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     private void RefreshEntries()
     {
-        while (_sprites.Count > Lanes) { _sprites[0].Dispose(); _sprites.RemoveAt(0); }
+        while (_sprites.Count > Lanes)
+        {
+            var index = _sprites.FindIndex(s => !LiveInteractions.IsFollow(s.Event)); if (index < 0) index = 0;
+            _sprites[index].Dispose(); _sprites.RemoveAt(index);
+        }
         PositionEntries();
         foreach (var sprite in _sprites)
         {
@@ -333,7 +355,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         if (Kind != OverlayRegionKind.Interaction) PositionScrolling();
         if (Kind == OverlayRegionKind.Interaction)
         {
-            foreach (var sprite in _sprites) sprite.ExpiresAt = After(sprite.CreatedAt, RegionSettings.DurationSeconds);
+            foreach (var sprite in _sprites) sprite.ExpiresAt = After(sprite.CreatedAt, InteractionDuration(sprite.Event));
             RefreshEntries();
         }
         else if (appearanceChanged)

@@ -26,11 +26,12 @@ internal sealed class OverlayEditorPreview : IDisposable
         IsScrolling = !stationary;
         var columns = region.Mode == OverlayDisplayMode.Grid ? Math.Max(1, Math.Min(region.CardColumns, (width - 8) / 208)) : 1;
         var cellWidth = Math.Max(24, (width - 16 - (columns - 1) * 8) / columns);
-        var cellHeight = stationary && kind != OverlayRegionKind.Status
+        var gap = stationary && kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelGap : kind == OverlayRegionKind.Interaction ? 0 : 8;
+        var cellHeight = stationary && kind is not (OverlayRegionKind.Status or OverlayRegionKind.Interaction)
             ? Math.Max(region.CardHeight, region.FontSize * 3 + 24)
-            : kind == OverlayRegionKind.Status ? Math.Max(48, region.FontSize * 2 + 12)
+            : kind == OverlayRegionKind.Status && stationary ? OverlayBulletinRenderer.PanelRowHeight(region, style)
             : Math.Max(region.FontSize * 2 + 12, region.EmoteSize + 8);
-        var count = Math.Clamp((available + 8) / (cellHeight + 8) * columns, 1, 8);
+        var count = Math.Clamp((available + gap) / (cellHeight + gap) * columns, 1, 8);
         if (kind == OverlayRegionKind.Interaction) count = Math.Min(count, Math.Min(3, region.MaxVisible));
         if (region.Mode == OverlayDisplayMode.Cards) count = Math.Min(count, region.MaxVisible);
         var messages = Samples(kind, region, stationary);
@@ -40,7 +41,7 @@ internal sealed class OverlayEditorPreview : IDisposable
         {
             for (var slot = 0; slot < count; slot++)
             {
-                var x = 8 + slot % columns * (cellWidth + 8); var y = top + slot / columns * (cellHeight + 8);
+                var x = 8 + slot % columns * (cellWidth + 8); var y = top + slot / columns * (cellHeight + gap);
                 var visibleHeight = Math.Min(cellHeight, height - y - 8);
                 var reservedWidth = stationary || kind == OverlayRegionKind.Interaction ? cellWidth : 4096;
                 visibleHeight = (int)Math.Min(visibleHeight, (16 * 1024 * 1024 - bytes) / Math.Max(1, reservedWidth * 4L));
@@ -99,7 +100,9 @@ internal sealed class OverlayEditorPreview : IDisposable
         {
             OverlayRegionKind.Gift => [Sample(LiveEventType.Gift, "礼物示例", "赠送 小心心 × 3"), Sample(LiveEventType.Guard, "上舰示例", "开通 舰长 × 1", 2)],
             OverlayRegionKind.SuperChat => [Sample(LiveEventType.SuperChat, "SC 示例", "¥30 这是一条醒目留言，谢谢陪伴 😊")],
-            OverlayRegionKind.Interaction => Enumerable.Range(1, 3).Select(i => Sample(LiveEventType.Enter, $"进房示例{i}", "进入了直播间", i)).ToArray(),
+            OverlayRegionKind.Interaction => [Sample(LiveEventType.Enter, "新关注示例", "关注了主播") with { HistoryFields = new(InteractionKind: 2) },
+                Sample(LiveEventType.Enter, "特别关注示例", "特别关注了主播", 2) with { HistoryFields = new(InteractionKind: 4) },
+                Sample(LiveEventType.Enter, "进房示例", "进入了直播间", 3)],
             _ => [Sample(LiveEventType.Danmaku, "弹幕示例", "这是一条普通弹幕，预览字体和大小 😊"), Sample(LiveEventType.Danmaku, "观众示例", "一起享受直播时光！", 2)],
         };
     }

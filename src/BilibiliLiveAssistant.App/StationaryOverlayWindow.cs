@@ -39,9 +39,10 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
     private bool GridMode => RegionSettings.Mode == OverlayDisplayMode.Grid;
     private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, (ClientSize.Width - 8) / 208)) : 1;
-    private int CellHeight => Kind == OverlayRegionKind.Status ? Math.Max(48, RegionSettings.FontSize * 2 + 12)
+    private int CellGap => Kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelGap : 8;
+    private int CellHeight => Kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelRowHeight(RegionSettings, ViewModel.Settings.Dashboard)
         : Math.Max(RegionSettings.CardHeight, RegionSettings.FontSize * 3 + 24);
-    private int Capacity => GridMode && ClientSize.Width < 216 ? 0 : Math.Clamp(Math.Min((ClientSize.Height - ContentTop) / (CellHeight + 8) * Columns,
+    private int Capacity => GridMode && ClientSize.Width < 216 ? 0 : Math.Clamp(Math.Min((ClientSize.Height - ContentTop) / (CellHeight + CellGap) * Columns,
         16 * 1024 * 1024 / Math.Max(1, (ClientSize.Width / Columns) * CellHeight * 4)), 0,
         Timed ? Math.Min(6, RegionSettings.MaxVisible) : 32);
     private DashboardSettings Style => ViewModel.Settings.Dashboard with
@@ -151,7 +152,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 if (value is null) continue;
                 var caption = GridMode ? $"×{_board.Slots[i]!.Count}" : "";
                 var width = Math.Max(120, (ClientSize.Width - 16 - (Columns - 1) * 8) / Columns);
-                var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + 8), width, CellHeight);
+                var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + CellGap), width, CellHeight);
                 keep.Add(i);
                 if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.Value, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
                 Release(i); var view = new CardView(value, bounds, caption); _views.Add(i, view);

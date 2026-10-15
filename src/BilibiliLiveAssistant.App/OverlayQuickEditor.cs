@@ -51,6 +51,7 @@ internal sealed class OverlayQuickEditor : Forms.Form
             Slider(kind == OverlayRegionKind.Gift ? "普通礼物停留时间" : "每条停留时间", kind == OverlayRegionKind.Interaction ? 1 : 5, 300,
                 (int)initial.DurationSeconds, " 秒", v => _draft = _draft with { DurationSeconds = v });
             if (kind == OverlayRegionKind.Gift) Slider("上舰停留时间", 5, 300, (int)initial.GuardDurationSeconds, " 秒", v => _draft = _draft with { GuardDurationSeconds = v });
+            if (kind == OverlayRegionKind.Interaction) Slider("关注提醒停留时间", 5, 300, (int)initial.FollowDurationSeconds, " 秒", v => _draft = _draft with { FollowDurationSeconds = v });
         }
         else if (initial.Mode == OverlayDisplayMode.Scrolling)
             Slider("滚动速度（决定完整滚出所需时间）", 30, 500, initial.ScrollSpeed, " px/s", v => _draft = _draft with { ScrollSpeed = v });

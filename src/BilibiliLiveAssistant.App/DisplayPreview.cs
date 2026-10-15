@@ -99,7 +99,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             var region = OverlayRegions.ForRendering(stationary && kind == OverlayRegionKind.Gift ? _region with { Bold = true } : _region);
             using var rendered = OverlayMessageRenderer.Render(message, region, renderStyle, _vm.Images,
                 width: stationary ? cellWidth : kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0,
-                maxHeight: stationary ? kind == OverlayRegionKind.Status ? Math.Max(48, region.FontSize * 2 + 12) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
+                maxHeight: stationary ? kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelRowHeight(region, _style) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
                 card: stationary && kind != OverlayRegionKind.Status, background: !stationary);
             using var bitmap = new System.Drawing.Bitmap(rendered.Width, stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : rendered.Height, PixelFormat.Format32bppPArgb);
             using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
@@ -115,7 +115,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             var image = new Image { Source = source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
             if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(region.CardHeight, region.FontSize * 3 + 24) + 8);
             Canvas.SetTop(image, y); Canvas.SetLeft(image, stationary ? 12 + slot % columns * (cellWidth + 8) : 0); _canvas.Children.Add(image);
-            if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : bitmap.Height) + 8;
+            if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : stationary ? OverlayBulletinRenderer.PanelRowHeight(region, _style) : bitmap.Height) + (stationary && kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelGap : 8);
             slot++;
             ElementCompositionPreview.SetIsTranslationEnabled(image, true);
             var visual = ElementCompositionPreview.GetElementVisual(image); _visuals.Add(visual);
@@ -129,16 +129,17 @@ internal sealed class DisplayPreview : Grid, IDisposable
             else if (!stationary)
             {
                 Canvas.SetLeft(image, 12);
+                var duration = LiveInteractions.IsFollow(message) ? _region.FollowDurationSeconds : _region.DurationSeconds;
                 var animation = visual.Compositor.CreateScalarKeyFrameAnimation(); animation.InsertKeyFrame(0, (float)_region.Opacity);
-                animation.InsertKeyFrame((float)(_region.DurationSeconds / (_region.DurationSeconds + 1)), (float)_region.Opacity);
-                animation.InsertKeyFrame(1, 0, visual.Compositor.CreateStepEasingFunction()); animation.Duration = TimeSpan.FromSeconds(_region.DurationSeconds + 1);
+                animation.InsertKeyFrame((float)(duration / (duration + 1)), (float)_region.Opacity);
+                animation.InsertKeyFrame(1, 0, visual.Compositor.CreateStepEasingFunction()); animation.Duration = TimeSpan.FromSeconds(duration + 1);
                 animation.IterationBehavior = AnimationIterationBehavior.Forever; visual.StartAnimation("Opacity", animation); animation.Dispose();
             }
         }
         var effective = OverlayRegions.ForRendering(_region);
         _canvas.Height = Math.Max(280, y + (stationary && columns > 1 ? Math.Max(effective.CardHeight, effective.FontSize * 3 + 24) + 12 : 0)); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
         _hint.Text = stationary ? $"{OverlayRegions.ModeTitle(_region.Mode)} · 高度 {_region.CardHeight} px" + (_region.Mode == OverlayDisplayMode.Cards ? $" · 每条 {_region.DurationSeconds:0} 秒 / 上舰 {_region.GuardDurationSeconds:0} 秒 · 最多 {_region.MaxVisible} 张" : " · 无持续动画")
-            : kind == OverlayRegionKind.Interaction ? $"固定停留 {_region.DurationSeconds:0.#} 秒 · 最新 {_region.MaxVisible} 条"
+            : kind == OverlayRegionKind.Interaction ? $"进房 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
         var download = new CancellationTokenSource(); _downloads = download;
         var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)).Distinct().Take(16).Where(url => _vm.Images.TryGetFrame(url) is null).ToArray();
@@ -168,7 +169,9 @@ internal static class PreviewSamples
     {
         var type = kind switch { OverlayRegionKind.Gift => LiveEventType.Gift, OverlayRegionKind.SuperChat => LiveEventType.SuperChat,
             OverlayRegionKind.Interaction => LiveEventType.Enter, _ => LiveEventType.Danmaku };
-        if (kind == OverlayRegionKind.Interaction) return Enumerable.Range(1, 3).Select(i => new LiveEvent(type, $"进房观众{i}", "进入了直播间", "#71C6A6", i, Appearance: Appearance)).ToArray();
+        if (kind == OverlayRegionKind.Interaction) return [new(type, "关注观众", "关注了主播", "#FF8AB3", 1, Appearance: Appearance) { HistoryFields = new(InteractionKind: 2) },
+            new(type, "特别关注观众", "特别关注了主播", "#FF8AB3", 2, Appearance: Appearance) { HistoryFields = new(InteractionKind: 4) },
+            new(type, "进房观众", "进入了直播间", "#71C6A6", 3, Appearance: Appearance)];
         return new[] { new LiveEvent(type, "示例观众", kind == OverlayRegionKind.Gift ? "赠送 小心心 × 3" : kind == OverlayRegionKind.SuperChat ? "¥30 这是一条醒目留言 [热] 😊" : "这是一条带图片表情的弹幕 [热] 😊", "#FFFFFF", 1, Appearance: Appearance),
             new LiveEvent(LiveEventType.Danmaku, "大表情示例", "[图片表情]", "#FFFFFF", 2, Appearance: Appearance with
             { FullEmote = new("[图片表情]", "https://i0.hdslb.com/bfs/live/a98e35996545509188fe4d24bd1a56518ea5af48.png", 183, 60) }) }.Take(kind == OverlayRegionKind.Gift ? 1 : 2).ToArray();

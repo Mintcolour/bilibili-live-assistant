@@ -107,6 +107,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
     private Border BuildInteraction(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, DashboardSettings style)
     {
         var message = record.Event;
+        var follow = LiveInteractions.IsFollow(message);
         var appearance = message.Appearance;
         var effect = appearance?.EntryEffect;
         Margin = new(0, 0, 0, Math.Min(style.MessageSpacing, 5));
@@ -129,11 +130,12 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
         var text = new RichTextBlock
         {
-            FontFamily = new(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(effect?.TextColor ?? "#A7B1C2"),
+            FontFamily = new(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(follow ? "#FFD275" : effect?.TextColor ?? "#A7B1C2"),
             TextWrapping = TextWrapping.Wrap, Opacity = style.TextOpacity, VerticalAlignment = VerticalAlignment.Center,
             LineHeight = style.FontSize * 1.25 + Math.Min(style.LineSpacing, 4),
         };
         var paragraph = new Paragraph { Margin = new(0) };
+        if (follow) AddBadge(paragraph, LiveInteractions.FollowLabel(message), "#AD3E6C", style.BadgeSize);
         if (style.ShowIdentity && appearance is not null)
         {
             var guard = appearance.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" };
@@ -154,8 +156,8 @@ internal sealed class MessageCard : ContentControl, IDisposable
         if (style.ShowMedals && appearance is { MedalName.Length: > 0, MedalLevel: > 0 })
             AddBadge(paragraph, $"{appearance.MedalName} {appearance.MedalLevel}", appearance.MedalColor, style.BadgeSize);
         paragraph.Inlines.Add(new Run { Text = message.Username + "  ", FontSize = style.UsernameFontSize,
-            FontWeight = new(600), Foreground = Brush(LiveEntryStyles.UsernameColor(appearance, style.UsernameColor)) });
-        paragraph.Inlines.Add(new Run { Text = message.Content + "  " });
+            FontWeight = new(600), Foreground = Brush(follow ? "#FFE4EF" : LiveEntryStyles.UsernameColor(appearance, style.UsernameColor)) });
+        paragraph.Inlines.Add(new Run { Text = message.Content + "  ", FontWeight = new(follow ? (ushort)600 : (ushort)400) });
         if (style.ShowIdentity && appearance is not null)
         {
             if (appearance.InteractionIconUrl.Length > 0)
@@ -197,7 +199,21 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
         bannerLayout.Children.Add(banner);
         Grid.SetColumn(bannerLayout, 1); layout.Children.Add(bannerLayout);
-        var border = new Border { Padding = new(3, 2, 3, 2), Child = layout };
+        if (follow && vm.Dashboard.Interactions.Contains(record))
+        {
+            layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            FrameworkElement thanks;
+            if (record.IsThanked) thanks = new TextBlock { Text = "✓ 已感谢", FontSize = 11, Foreground = Brush("#FFB2CF"), VerticalAlignment = VerticalAlignment.Center };
+            else
+            {
+                var button = new Button { Content = "已感谢", FontSize = 11, Padding = new(6, 3, 6, 3), VerticalAlignment = VerticalAlignment.Center };
+                button.Click += (_, _) => vm.Dashboard.Mark(record, true); thanks = button;
+            }
+            Grid.SetColumn(thanks, 2); layout.Children.Add(thanks);
+        }
+        var border = new Border { Padding = follow ? new(7, 5, 7, 5) : new(3, 2, 3, 2), Child = layout,
+            CornerRadius = new(6), BorderThickness = follow ? new(3, 0, 0, 0) : new(0), BorderBrush = follow ? Brush("#FF8AB3") : null,
+            Background = follow ? Brush("#AD3E6C", 0.16) : null };
         DashboardUi.Describe(border, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}" +
             (appearance?.InteractionHint is { Length: > 0 } hint ? $" · {hint}" : ""));
         return border;

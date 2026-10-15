@@ -9,6 +9,7 @@ public sealed record OverlayRegionSettings
     public OverlayDisplayMode Mode { get; init; }
     public int ModeVersion { get; init; }
     public double GuardDurationSeconds { get; init; } = 30;
+    public double FollowDurationSeconds { get; init; } = 15;
     public int CardHeight { get; init; } = 140;
     public int CardColumns { get; init; } = 2;
     public string BackgroundColor { get; init; } = "#242833";
@@ -48,6 +49,7 @@ public sealed record OverlayRegionSettings
     {
         Mode = Enum.IsDefined(Mode) ? Mode : OverlayDisplayMode.Scrolling,
         GuardDurationSeconds = double.IsFinite(GuardDurationSeconds) ? Math.Clamp(GuardDurationSeconds, 5, 300) : 30,
+        FollowDurationSeconds = double.IsFinite(FollowDurationSeconds) ? Math.Clamp(FollowDurationSeconds, 5, 300) : 15,
         CardHeight = Math.Clamp(CardHeight, 100, 400), CardColumns = Math.Clamp(CardColumns, 1, 4),
         BackgroundColor = IsColor(BackgroundColor) ? BackgroundColor : "#242833",
         BackgroundOpacity = double.IsFinite(BackgroundOpacity) ? Math.Clamp(BackgroundOpacity, 0, 1) : 0.9,

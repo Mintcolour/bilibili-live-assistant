@@ -414,6 +414,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         Example(new LiveEvent(LiveEventType.Enter, "专属进场示例", "来了", "#4CAF50", 8,
             Appearance: new LiveMessageAppearance { AvatarUrl = entryAvatar, MedalName = "示例牌", MedalLevel = 33, GuardLevel = 3,
                 EntryEffect = new(HighlightColor: "#FFE96D") }));
+        Example(new LiveEvent(LiveEventType.Enter, "新关注示例", "关注了主播", "#FF8AB3", 11,
+            Appearance: new LiveMessageAppearance { AvatarUrl = entryAvatar }) { HistoryFields = new(InteractionKind: 2) });
         var sample = new Dictionary<string, object?> { ["sample"] = true };
         Example(new LiveEvent(LiveEventType.Online, "示例系统", "示例人气：1234 · 看过：5678", "#2196F3", Metadata: sample));
         Example(new LiveEvent(LiveEventType.Rank, "示例系统", "高能榜: 1.示例观众甲 | 2.示例观众乙 | 3.示例观众丙", "#9C27B0",

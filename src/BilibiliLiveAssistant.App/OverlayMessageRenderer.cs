@@ -78,13 +78,14 @@ internal static class OverlayMessageRenderer
         style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };
         var rankMember = value.Extra.TryGetValue("rank_position", out var rankPosition);
         var entry = value.Type == LiveEventType.Enter && !string.IsNullOrEmpty(value.Username);
+        var follow = LiveInteractions.IsFollow(value);
         if (entry) card = false;
         maxHeight = Math.Max(36, maxHeight);
         var maxWidth = Math.Clamp(width > 0 ? width : rankMember ? 3000 : 4096, 24, 7680);
         var pad = Math.Max(card ? (int)(Math.Clamp(style.Padding, 10, 24) * region.ContentScale) : 4, region.Shadow ? region.ShadowOffset + region.ShadowSize + 2 : 4);
         var system = value.Type is LiveEventType.Online or LiveEventType.Rank || string.IsNullOrEmpty(value.Username);
-        var accent = OverlayTextRenderer.Color(value.Type == LiveEventType.Rank ? "#B998FF" : region.Color);
-        using var bodyFont = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold, region.Italic);
+        var accent = OverlayTextRenderer.Color(follow ? "#FF8AB3" : value.Type == LiveEventType.Rank ? "#B998FF" : region.Color);
+        using var bodyFont = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold || follow, region.Italic);
         using var nameFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(12, region.FontSize * (entry || rankMember ? 1 : 0.8f)), true);
         using var badgeFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(8, Math.Min(15 * (float)region.ContentScale, region.FontSize * 0.5f)), true);
         using var measureImage = new Bitmap(1, 1);
@@ -114,9 +115,10 @@ internal static class OverlayMessageRenderer
                 pieces.Add(new Piece { Image = Load(value.Appearance?.AvatarUrl ?? ""), Bounds = bounds, Avatar = true });
                 if (framedAvatar && Load(value.Appearance!.AvatarFrameUrl) is { } frame)
                     pieces.Add(new Piece { Image = frame, Bounds = new(bounds.X - 3, bounds.Y - 3, size + 6, size + 6) });
-                x += size + (framedAvatar ? 6 : 0) + 8;
+                x += size + (framedAvatar ? 6 : 0) + (rankMember ? 4 : 8);
             }
             startX = x;
+            if (follow) Badge(LiveInteractions.FollowLabel(value), OverlayTextRenderer.Color("#AD3E6C"));
             if (rankMember) Badge($"#{rankPosition}", accent);
             if (card || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), accent);
             if (entry && style.ShowIdentity && value.Appearance is { GuardLevel: 0, WealthLevel: > 0, EntryEffect: { } entryEffect } wealth)
@@ -133,7 +135,7 @@ internal static class OverlayMessageRenderer
             }
             if (!system)
                 Text((value.Username.Length > 48 ? value.Username[..48] + "…" : value.Username) + " ", nameFont,
-                    OverlayTextRenderer.Color(entry ? LiveEntryStyles.UsernameColor(value.Appearance, style.UsernameColor) : style.UsernameColor, style.TextOpacity), true);
+                    OverlayTextRenderer.Color(follow ? "#FFE4EF" : entry ? LiveEntryStyles.UsernameColor(value.Appearance, style.UsernameColor) : style.UsernameColor, style.TextOpacity), true);
             if (card && !system) { NewLine(); lineHeight = rowHeight; bottom = y + lineHeight; }
             else if (card) { startX = x; lineHeight = Math.Max(headerHeight, rowHeight); bottom = y + lineHeight; }
             if (card && value.Type is LiveEventType.Gift or LiveEventType.Guard)
@@ -150,7 +152,7 @@ internal static class OverlayMessageRenderer
             foreach (var segment in RichMessageSegments.Split(content, value.Appearance))
             {
                 if (stop) break;
-                if (segment.Emote is not { } emote) { Text(segment.Text, bodyFont, OverlayTextRenderer.Color(entry ? value.Appearance?.EntryEffect?.TextColor ?? "#B2BDCD" : card ? style.TextColor : region.Color, style.TextOpacity)); continue; }
+                if (segment.Emote is not { } emote) { Text(segment.Text, bodyFont, OverlayTextRenderer.Color(follow ? "#FFD275" : entry ? value.Appearance?.EntryEffect?.TextColor ?? "#B2BDCD" : card ? style.TextColor : region.Color, style.TextOpacity)); continue; }
                 var large = value.Appearance?.FullEmote is not null;
                 var aspect = Math.Max(1f, emote.Width) / Math.Max(1, emote.Height);
                 var h = Math.Min(large ? region.LargeEmoteHeight : region.EmoteSize, Math.Max(0, maxHeight - y - pad));
@@ -179,6 +181,11 @@ internal static class OverlayMessageRenderer
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
             if (background) DrawBackground(graphics, sprite.Size, region, accent);
+            if (follow)
+            {
+                using var rail = new Pen(accent, 3);
+                graphics.DrawLine(rail, 2, 5, 2, height - 5);
+            }
             if (entry && value.Appearance?.EntryEffect is { } effect && imageWidth > startX + pad + 1)
             {
                 var bounds = new RectangleF(startX - 3, pad, imageWidth - startX - pad + 3, height - pad * 2);
@@ -271,7 +278,7 @@ internal static class OverlayMessageRenderer
                 NewLine();
             }
             pieces.Add(new Piece { Text = text, Bounds = new(x, y + (lineHeight - badgeHeight) / 2, badgeWidth, badgeHeight), Badge = true, Color = color });
-            x += badgeWidth + 5; furthest = Math.Max(furthest, x);
+            x += badgeWidth + (rankMember ? 3 : 5); furthest = Math.Max(furthest, x);
         }
         void Text(string remaining, Font font, Color color, bool header = false)
         {

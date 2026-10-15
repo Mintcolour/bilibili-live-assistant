@@ -475,7 +475,7 @@ internal sealed class DashboardList : Grid, IDisposable
         if (_version == _vm.Dashboard.Version && !styleChanged) return;
         _version = _vm.Dashboard.Version;
         var unread = source.Count(x => !x.IsRead);
-        var thanked = _important ? source.Count(x => x.IsThanked) : 0;
+        var thanked = source.Count(x => x.IsThanked);
         var first = source.Count == 0 ? Guid.Empty : source[0].Id;
         var last = source.Count == 0 ? Guid.Empty : source[^1].Id;
         var revision = source.Sum(x => x.Revision);
