@@ -54,6 +54,7 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
             await HeaderAsync();
             while (!token.IsCancellationRequested)
             {
+                await Task.Delay(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
                 // One outstanding low-priority UI pulse, even if the UI is blocked for minutes.
                 if (pulse is null || pulse.Task.IsCompleted)
                 {
@@ -77,7 +78,14 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
                         finally { completion.TrySetResult(); }
                     })) break;
                 }
-                await Task.Delay(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                // Align the UI snapshot with process counters instead of always
+                // correlating CPU with the previous five-second UI interval.
+                // A blocked UI never delays process sampling indefinitely.
+                if (pulse is not null && !pulse.Task.IsCompleted)
+                {
+                    try { await pulse.Task.WaitAsync(TimeSpan.FromMilliseconds(200), token).ConfigureAwait(false); }
+                    catch (TimeoutException) { }
+                }
                 process.Refresh();
                 var now = Stopwatch.GetTimestamp();
                 var elapsed = Stopwatch.GetElapsedTime(previous, now).TotalSeconds;
@@ -132,7 +140,7 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
             await writer.FlushAsync(token).ConfigureAwait(false);
             length += Encoding.UTF8.GetByteCount(line) + 1;
         }
-        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 1, session, utc = DateTimeOffset.UtcNow,
+        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 2, session, utc = DateTimeOffset.UtcNow,
             version = typeof(App).Assembly.GetName().Version?.ToString(),
             build = typeof(App).Assembly.GetCustomAttributes(false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion,
             logicalProcessors = Environment.ProcessorCount, sampleSeconds = 5, processScope = "app-only",

@@ -1,6 +1,8 @@
 param(
     [string]$LogDirectory = (Join-Path $env:LOCALAPPDATA 'BilibiliLiveAssistant/diagnostics'),
     [string]$Session = '',
+    [Nullable[DateTimeOffset]]$FromTime = $null,
+    [Nullable[DateTimeOffset]]$ToTime = $null,
     [string]$OutputPath = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -20,7 +22,12 @@ foreach ($index in 0..3) {
         }
     } finally { $reader.Dispose() }
 }
-if ($samples.Count -eq 0) { throw '没有可分析的性能采样，请先在软件的“性能诊断”页记录至少 5 秒。' }
+if ($null -ne $FromTime -or $null -ne $ToTime) {
+    $filtered = @($samples | Where-Object { ($null -eq $FromTime -or [DateTimeOffset]$_.utc -ge $FromTime) -and
+        ($null -eq $ToTime -or [DateTimeOffset]$_.utc -le $ToTime) })
+    $samples.Clear(); $samples.AddRange([object[]]$filtered)
+}
+if ($samples.Count -eq 0) { throw '指定时段没有可分析的性能采样。' }
 if (-not $Session) { $Session = ($samples | Sort-Object utc | Select-Object -Last 1).session }
 $ordered = @($samples | Where-Object session -EQ $Session | Sort-Object uptimeSeconds)
 if ($ordered.Count -eq 0) { throw '未找到指定采样会话。' }
@@ -85,6 +92,12 @@ $phases = foreach ($segment in $segments) {
         UiAgeMaxMs = Percentile @($rows.uiAgeMs) 1
         UiPendingPeak = ($rows.ui | Measure-Object pending -Maximum).Maximum
         ImageCachePeakMiB = [math]::Round(($rows.ui.images | Measure-Object estimatedBytes -Maximum).Maximum / 1MB, 2)
+        ImageLoadsDelta = Get-Delta $rows { param($r) $r.ui.images.loads }
+        ImageEvictedDelta = Get-Delta $rows { param($r) $r.ui.images.evicted }
+        ImageDiskHitsDelta = Get-Delta $rows { param($r) $r.ui.images.diskHits }
+        ImageNetworkRequestsDelta = Get-Delta $rows { param($r) $r.ui.images.networkRequests }
+        ImageFrameHitsDelta = Get-Delta $rows { param($r) $r.ui.images.frameHits }
+        ImageFrameMissesDelta = Get-Delta $rows { param($r) $r.ui.images.frameMisses }
         CanvasPeakMiB = [math]::Round(($rows.ui | Measure-Object canvasBytes -Maximum).Maximum / 1MB, 2)
         ArchivePendingPeak = ($rows.ui.history | Measure-Object pending -Maximum).Maximum
         BufferDroppedDelta = Get-Delta $rows { param($r) $r.ui.bufferDropped }
@@ -94,6 +107,8 @@ $phases = foreach ($segment in $segments) {
         GdiObjectsPeak = ($rows | Measure-Object gdiObjects -Maximum).Maximum
         FrameGapMaxMs = ($rows.timings.frameCadence | Measure-Object maxGapMs -Maximum).Maximum
         LateFrames = ($rows.timings.frameCadence | Measure-Object lateFrames -Sum).Sum
+        BlitSourcePixels = ($rows.timings.blits | Measure-Object sourcePixels -Sum).Sum
+        BlitSubmittedPixels = ($rows.timings.blits | Measure-Object submittedPixels -Sum).Sum
         Timings = @($timings)
     }
 }
