@@ -13,6 +13,11 @@ internal sealed record BiliImageAsset(byte[][] Frames, int[] Delays, int Width, 
 /// <summary>Shared bounded CDN downloads and decoded PNG frames. No account lookups or cookies.</summary>
 internal sealed class BiliImageCache : IDisposable
 {
+    private static readonly (string Host, string Suffix)[] AllowedHosts =
+    [
+        ("hdslb.com", ".hdslb.com"), ("biliimg.com", ".biliimg.com"), ("bilivideo.com", ".bilivideo.com"),
+        ("steamstatic.com", ".steamstatic.com"), ("steamusercontent.com", ".steamusercontent.com"),
+    ];
     private const int DownloadLimit = 2 * 1024 * 1024;
     private const long MemoryLimit = 24 * 1024 * 1024;
     private const long DiskLimit = 128 * 1024 * 1024;
@@ -127,8 +132,16 @@ internal sealed class BiliImageCache : IDisposable
         if (value.StartsWith("//", StringComparison.Ordinal)) value = "https:" + value;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(uri.UserInfo)) return null;
         var host = uri.DnsSafeHost;
-        if (!new[] { "hdslb.com", "biliimg.com", "bilivideo.com", "steamstatic.com", "steamusercontent.com" }.Any(domain => host.Equals(domain, StringComparison.OrdinalIgnoreCase) || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase))
-            && !host.Equals("steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase)) return null;
+        var allowed = host.Equals("steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase);
+        foreach (var domain in AllowedHosts)
+        {
+            if (!host.Equals(domain.Host, StringComparison.OrdinalIgnoreCase) && !host.EndsWith(domain.Suffix, StringComparison.OrdinalIgnoreCase)) continue;
+            allowed = true; break;
+        }
+        if (!allowed) return null;
+        // Typical CDN URLs are already canonical. Keep the same whitelist,
+        // HTTPS upgrade, default port and fragment policy for all other inputs.
+        if (uri.Scheme == "https" && uri.IsDefaultPort && uri.Fragment.Length == 0) return uri;
         return new UriBuilder(uri) { Scheme = "https", Port = -1, Fragment = "" }.Uri;
     }
 
@@ -155,12 +168,13 @@ internal sealed class BiliImageCache : IDisposable
             lock (_gate)
             {
                 if (_disposed) return null;
-                while (_bytes + asset.Size > MemoryLimit && _memory.Count > 0)
+                var assetSize = asset.Size;
+                while (_bytes + assetSize > MemoryLimit && _memory.Count > 0)
                 {
                     var oldest = _memory.MinBy(item => item.Value.Used);
                     _bytes -= oldest.Value.Asset.Size; _memory.Remove(oldest.Key); _evicted++;
                 }
-                if (asset.Size <= MemoryLimit) { _memory[key] = (asset, ++_useSequence); _bytes += asset.Size; }
+                if (assetSize <= MemoryLimit) { _memory[key] = (asset, ++_useSequence); _bytes += assetSize; }
             }
             return asset;
         }
