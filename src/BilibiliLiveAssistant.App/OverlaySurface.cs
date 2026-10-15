@@ -69,6 +69,8 @@ public abstract class OverlaySurface : Forms.Form
 
     private void OnSettingsChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive))
+        { SetClickThrough(ViewModel.Settings.Display.LayoutLocked && !ViewModel.OverlayInteractive); OnInteractionChanged(); RequestRender(); return; }
         if (e.PropertyName != nameof(LiveAssistantViewModel.Settings) || IsDisposed) return;
         var previous = RegionSettings;
         ApplySurfaceSettings();
@@ -77,12 +79,13 @@ public abstract class OverlaySurface : Forms.Form
     }
 
     protected virtual void OnRegionSettingsChanged(OverlayRegionSettings previous) { }
+    protected virtual void OnInteractionChanged() { }
 
     private void ApplySurfaceSettings()
     {
         RegionSettings = OverlayRegions.Get(ViewModel.Settings.Display, Kind);
         // Region opacity is applied by the alpha presenter, never via color-key attributes.
-        SetClickThrough(ViewModel.Settings.Display.LayoutLocked);
+        SetClickThrough(ViewModel.Settings.Display.LayoutLocked && !ViewModel.OverlayInteractive);
         var bounds = OverlayLayout.Bounds(ViewModel.Settings.Display, Kind, RegionSettings);
         if (Bounds != bounds) Bounds = bounds;
     }
@@ -261,7 +264,7 @@ public abstract class OverlaySurface : Forms.Form
         var p = PointToClient(new Point(unchecked((short)(packed & 0xffff)), unchecked((short)((packed >> 16) & 0xffff))));
         var left = p.X < 8; var right = p.X >= ClientSize.Width - 8;
         var top = p.Y < 8; var bottom = p.Y >= ClientSize.Height - 8;
-        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : 2);
+        m.Result = new nint(top ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : p.Y < ContentTop ? 2 : 1);
     }
 
     protected override async void OnResizeEnd(EventArgs e)

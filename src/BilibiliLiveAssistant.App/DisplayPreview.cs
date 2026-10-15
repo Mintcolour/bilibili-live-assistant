@@ -79,35 +79,48 @@ internal sealed class DisplayPreview : Grid, IDisposable
         }
         _canvas.Visibility = Visibility.Visible; _cards.Visibility = Visibility.Collapsed;
         var kind = _kind.Value;
+        var stationary = _region.Mode != OverlayDisplayMode.Scrolling;
+        var renderStyle = stationary ? _style with { BackgroundColor = _region.BackgroundColor, BackgroundOpacity = _region.BackgroundOpacity, TextColor = _region.Color } : _style;
         if (kind == OverlayRegionKind.Status)
         {
             var members = Enumerable.Range(1, _region.RankCount).Select(i => new LiveRankMember(i, i, $"示例观众{i}", PreviewSamples.Appearance with { GuardLevel = i == 1 ? 3 : 0 })).ToArray();
-            messages = OverlayBulletinRenderer.CreateParts(_region.ShowAudienceStats ? new[] { new LiveAudienceMetric(LiveAudienceMetricKind.Watched, "1.2万"), new LiveAudienceMetric(LiveAudienceMetricKind.Popularity, "3456") } : Array.Empty<LiveAudienceMetric>(),
+            var metrics = _region.ShowAudienceStats ? new[] { new LiveAudienceMetric(LiveAudienceMetricKind.Watched, "1.2万"), new LiveAudienceMetric(LiveAudienceMetricKind.Popularity, "3456") } : Array.Empty<LiveAudienceMetric>();
+            messages = OverlayBulletinRenderer.CreateParts(metrics,
                 members, true, _region, _style, _vm.Images, 160).Take(1).ToArray();
+            if (stationary) messages = new[] { new LiveEvent(LiveEventType.Rank, "", "", _region.Color, Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }) }
+                .Concat(members.Select(m => OverlayBulletinRenderer.MemberEvent(m, _region.Color))).ToArray();
         }
         if (kind == OverlayRegionKind.Interaction) messages = messages.Take(Math.Min(3, _region.MaxVisible)).ToArray();
-        var y = 12d;
+        if (stationary && kind != OverlayRegionKind.Status) messages = Enumerable.Range(0, _region.Mode == OverlayDisplayMode.Grid ? 4 : Math.Min(3, _region.MaxVisible)).Select(i => messages[i % messages.Length]).ToArray();
+        var y = 12d; var slot = 0; var columns = _region.Mode == OverlayDisplayMode.Grid ? Math.Max(1, Math.Min(_region.CardColumns, (int)_canvas.ActualWidth / 200)) : 1;
+        var cellWidth = Math.Max(140, ((int)_canvas.ActualWidth - 24 - (columns - 1) * 8) / columns);
         foreach (var message in messages)
         {
-            using var bitmap = OverlayMessageRenderer.Render(message, _region, _style, _vm.Images,
-                width: kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0, maxHeight: Math.Max(160, _region.LargeEmoteHeight + 16));
+            var region = stationary && kind == OverlayRegionKind.Gift ? _region with { Bold = true } : _region;
+            using var bitmap = OverlayMessageRenderer.Render(message, region, renderStyle, _vm.Images,
+                width: stationary ? cellWidth : kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0,
+                maxHeight: stationary ? kind == OverlayRegionKind.Status ? Math.Max(48, region.FontSize * 2 + 12) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
+                card: stationary && kind != OverlayRegionKind.Status);
             using var memory = new MemoryStream(); bitmap.Save(memory, ImageFormat.Png);
             using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream.GetOutputStreamAt(0));
             writer.WriteBytes(memory.ToArray()); await writer.StoreAsync(); await writer.FlushAsync(); writer.DetachStream(); stream.Seek(0);
             var source = new BitmapImage(); await source.SetSourceAsync(stream);
             if (_disposed || generation != _generation || !_active || !_visible()) return;
             var image = new Image { Source = source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
-            Canvas.SetTop(image, y); _canvas.Children.Add(image); y += bitmap.Height + 12;
+            if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) + 8);
+            Canvas.SetTop(image, y); Canvas.SetLeft(image, stationary ? 12 + slot % columns * (cellWidth + 8) : 0); _canvas.Children.Add(image);
+            if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) : bitmap.Height) + 8;
+            slot++;
             ElementCompositionPreview.SetIsTranslationEnabled(image, true);
             var visual = ElementCompositionPreview.GetElementVisual(image); _visuals.Add(visual);
-            if (kind != OverlayRegionKind.Interaction)
+            if (!stationary && kind != OverlayRegionKind.Interaction)
             {
                 var animation = visual.Compositor.CreateScalarKeyFrameAnimation(); animation.InsertKeyFrame(0, (float)_canvas.ActualWidth);
                 animation.InsertKeyFrame(1, -(float)bitmap.Width, visual.Compositor.CreateLinearEasingFunction());
                 animation.Duration = TimeSpan.FromSeconds((_canvas.ActualWidth + bitmap.Width) / Math.Max(30, _region.ScrollSpeed));
                 animation.IterationBehavior = AnimationIterationBehavior.Forever; visual.StartAnimation("Translation.X", animation); animation.Dispose();
             }
-            else
+            else if (!stationary)
             {
                 Canvas.SetLeft(image, 12);
                 var animation = visual.Compositor.CreateScalarKeyFrameAnimation(); animation.InsertKeyFrame(0, (float)_region.Opacity);
@@ -116,8 +129,9 @@ internal sealed class DisplayPreview : Grid, IDisposable
                 animation.IterationBehavior = AnimationIterationBehavior.Forever; visual.StartAnimation("Opacity", animation); animation.Dispose();
             }
         }
-        _canvas.Height = Math.Max(280, y); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
-        _hint.Text = kind == OverlayRegionKind.Interaction ? $"固定停留 {_region.DurationSeconds:0.#} 秒 · 最新 {_region.MaxVisible} 条"
+        _canvas.Height = Math.Max(280, y + (stationary && columns > 1 ? Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) + 12 : 0)); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
+        _hint.Text = stationary ? $"{OverlayRegions.ModeTitle(_region.Mode)} · 高度 {_region.CardHeight} px" + (_region.Mode == OverlayDisplayMode.Cards ? $" · 每条 {_region.DurationSeconds:0} 秒 / 上舰 {_region.GuardDurationSeconds:0} 秒 · 最多 {_region.MaxVisible} 张" : " · 无持续动画")
+            : kind == OverlayRegionKind.Interaction ? $"固定停留 {_region.DurationSeconds:0.#} 秒 · 最新 {_region.MaxVisible} 条"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
         var download = new CancellationTokenSource(); _downloads = download;
         var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)).Distinct().Take(16).Where(url => _vm.Images.TryGetFrame(url) is null).ToArray();

@@ -28,7 +28,8 @@ internal static class BiliEventParser
             case "SEND_GIFT":
                 var gift = root.GetProperty("data");
                 EmitGift(emit, Text(gift, "uname"), Number(gift, "uid"), Text(gift, "giftName"), Number(gift, "num"),
-                    Text(gift, "action"), Text(gift, "coin_type"), OptionalNumber(gift, "total_coin"), Number(gift, "giftId"), OptionalNumber(gift, "price"), Text(gift, "tid"), BiliMessageAppearanceParser.Common(gift), SourceTime(gift, "timestamp"));
+                    Text(gift, "action"), Text(gift, "coin_type"), OptionalNumber(gift, "total_coin"), Number(gift, "giftId"), OptionalNumber(gift, "price"), Text(gift, "tid"), BiliMessageAppearanceParser.Common(gift), SourceTime(gift, "timestamp"),
+                    Text(gift, "gift_icon") is { Length: > 0 } icon ? icon : BiliMessageAppearanceParser.Text(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(gift, "gift_info"), "img_basic")));
                 break;
             case "SEND_GIFT_V2":
                 var broadcast = Decode<SendGiftBroadcast>(root.GetProperty("data"));
@@ -80,7 +81,7 @@ internal static class BiliEventParser
     }
 
     private static void EmitGift(Action<LiveEvent> emit, string username, long uid, string name, long count,
-        string action, string coinType, long? totalCoin, long giftId, long? price, string transactionId, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null)
+        string action, string coinType, long? totalCoin, long giftId, long? price, string transactionId, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null, string iconUrl = "")
     {
         if (name.Length == 0 || count <= 0) return;
         var amount = coinType == "gold" && totalCoin > 0
@@ -91,10 +92,11 @@ internal static class BiliEventParser
                 ["gift_id"] = giftId, ["num"] = count, ["coin_type"] = coinType,
                 ["total_coin"] = totalCoin, ["price"] = price, ["transaction_id"] = transactionId,
                 ["gift_name"] = name,
+                ["gift_icon"] = iconUrl,
             }, Appearance: appearance)
         { HistoryFields = new(UpstreamTime: upstream, GiftId: giftId > 0 ? giftId : null, GiftName: name, Quantity: count,
             CoinType: coinType, UnitPrice: price, TotalCoin: totalCoin, AmountMilliYuan: coinType == "gold" && totalCoin is >= 0 ? totalCoin : null,
-            TransactionId: transactionId.Length > 0 ? transactionId : null) });
+            TransactionId: transactionId.Length > 0 ? transactionId : null, GiftIconUrl: iconUrl.Length > 0 ? iconUrl : null) });
     }
 
     private static void EmitInteraction(Action<LiveEvent> emit, string username, long uid, int type, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null)

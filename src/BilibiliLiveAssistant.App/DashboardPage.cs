@@ -44,6 +44,7 @@ internal sealed class DashboardPage : Page
     private readonly ToggleButton _rankExpanded = new() { Content = "榜单", Padding = new Thickness(8, 3, 8, 3), MinHeight = 28 };
     private readonly TextBlock _headingTitle = new() { Text = "直播概览", FontSize = 18, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
     private readonly Button _monitor = new() { Content = "开启监视", Padding = new Thickness(10, 5, 10, 5), MinWidth = 92 };
+    private readonly ToggleButton _interact = DashboardUi.Toggle("\uE7C9", "临时交互悬浮窗 / 恢复穿透");
     private readonly ToggleSwitch _anonymous = new() { Header = "匿名读取", OnContent = "无需登录", OffContent = "使用账号", MinWidth = 160 };
     private bool _connectionBusy, _loadingLayout;
     private readonly DashboardList _danmaku;
@@ -122,6 +123,9 @@ internal sealed class DashboardPage : Page
         overlay.IsChecked = overlayVisible;
         overlay.Checked += (_, _) => setOverlayVisible(true);
         overlay.Unchecked += (_, _) => setOverlayVisible(false);
+        _interact.IsChecked = vm.OverlayInteractive;
+        _interact.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.ToggleOverlayInteraction(); _interact.IsChecked = vm.OverlayInteractive; };
+        toolbar.Children.Add(_interact);
         var examples = DashboardUi.Button("\uE899", "显示示例消息");
         examples.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.SendDisplayExamples(); };
         var clear = new MenuFlyoutItem { Text = "清空本次记录", Icon = new SymbolIcon(Symbol.Delete) };
@@ -344,6 +348,7 @@ internal sealed class DashboardPage : Page
     }
     private void OnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive)) _interact.IsChecked = _vm.OverlayInteractive;
         if (e.PropertyName == nameof(LiveAssistantViewModel.Settings)) { _settingsDirty = true; _refresh.Interval = TimeSpan.FromMilliseconds(_vm.Settings.Dashboard.RefreshIntervalMs); }
         Dirty();
     }

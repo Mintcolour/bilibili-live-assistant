@@ -1,0 +1,279 @@
+using System.Drawing;
+using BilibiliLiveAssistant.Core;
+using Forms = System.Windows.Forms;
+
+namespace BilibiliLiveAssistant.App;
+
+// Cached, event-driven surfaces. Queues carry data; only visible slots own bitmaps or downloads.
+internal sealed class StationaryOverlayWindow : OverlaySurface
+{
+    private sealed class TimedCard(LiveEvent value, DateTimeOffset displayed, DateTimeOffset expires)
+    {
+        public LiveEvent Value { get; } = value;
+        public DateTimeOffset Displayed { get; } = displayed;
+        public DateTimeOffset Expires { get; } = expires;
+    }
+    private sealed class CardView(LiveEvent value, Rectangle bounds, string caption) : IDisposable
+    {
+        public LiveEvent Value { get; } = value;
+        public Rectangle Bounds { get; } = bounds;
+        public string Caption { get; } = caption;
+        public Bitmap? Image;
+        public OverlayMediaAttachment? Media;
+        public CancellationTokenSource Cancellation { get; } = new();
+        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Media?.Dispose(); Image?.Dispose(); }
+    }
+    private readonly Forms.Timer _wake = new();
+    private readonly TimedOverlayQueue _queue = new();
+    private readonly TimedCard?[] _timed = new TimedCard?[6];
+    private readonly DanmakuCardBoard _board = new();
+    private readonly List<LiveEvent> _list = new(100), _ranking = new(12);
+    private readonly Dictionary<int, CardView> _views = new();
+    private LiveEvent? _online, _rank;
+    private int _offset, _hover = -1;
+    private bool _disposed, _dirty, _rebuilding;
+    private DateTimeOffset? _intakeDue;
+    private Forms.Form? _detail;
+    public OverlayRegionKind RegionKind => Kind;
+    private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
+    private bool GridMode => RegionSettings.Mode == OverlayDisplayMode.Grid;
+    private int FooterHeight => 28;
+    private int Columns => GridMode ? Math.Max(1, Math.Min(RegionSettings.CardColumns, ClientSize.Width / 200)) : 1;
+    private int CellHeight => Kind == OverlayRegionKind.Status ? Math.Max(48, RegionSettings.FontSize * 2 + 12)
+        : Math.Max(RegionSettings.CardHeight, RegionSettings.FontSize * 3 + 24);
+    private int Capacity => Math.Clamp(Math.Min((ClientSize.Height - ContentTop - FooterHeight) / (CellHeight + 8) * Columns,
+        16 * 1024 * 1024 / Math.Max(1, (ClientSize.Width / Columns) * CellHeight * 4)), 0,
+        Timed ? Math.Min(6, RegionSettings.MaxVisible) : 32);
+    private DashboardSettings Style => ViewModel.Settings.Dashboard with
+    { BackgroundColor = RegionSettings.BackgroundColor, BackgroundOpacity = RegionSettings.BackgroundOpacity, TextColor = RegionSettings.Color, TextOpacity = 1 };
+
+    public StationaryOverlayWindow(LiveAssistantViewModel vm, OverlayRegionKind kind) : base(vm, kind)
+    {
+        _queue.Dropped += vm.RecordOverlayDropped;
+        _wake.Tick += (_, _) => Process();
+        vm.RoomHistoryReset += ResetContent;
+    }
+    public void ShowRegion()
+    {
+        if (Visible) return;
+        ShowSurface();
+        if (Kind == OverlayRegionKind.Status) { _online = ViewModel.LatestOnline; _rank = ViewModel.LatestRank; RefreshRanking(); }
+        _dirty = true; Process();
+    }
+    public void HideRegion() { if (!Visible) return; ResetContent(); Hide(); }
+    public void EnqueueBatch(IReadOnlyList<LiveEvent> batch)
+    {
+        if (!Visible || _disposed || batch.Count == 0) return;
+        var now = DateTimeOffset.UtcNow;
+        foreach (var value in batch)
+        {
+            if (Kind == OverlayRegionKind.Status)
+            { if (value.Type == LiveEventType.Online) _online = value.Extra.GetValueOrDefault("sample") is true ? value : ViewModel.LatestOnline ?? value; if (value.Type == LiveEventType.Rank) _rank = value; }
+            else if (Timed) _queue.Add(value, now, RegionSettings.MergeSeconds);
+            else if (!GridMode)
+            {
+                if (_offset > 0) _offset++;
+                _list.Insert(0, value); if (_list.Count > 100) _list.RemoveAt(100);
+            }
+        }
+        if (GridMode && Capacity > 0) { _board.Resize(Capacity); _board.AddBatch(batch, ViewModel.Settings.Cards); }
+        _dirty = true;
+        _intakeDue ??= now.AddMilliseconds(RegionSettings.UpdateIntervalMs);
+        Schedule();
+    }
+    private void RefreshRanking()
+    {
+        var previous = _ranking.ToArray(); _ranking.Clear(); var metrics = new List<LiveAudienceMetric>();
+        if (RegionSettings.ShowAudienceStats && _online is not null)
+        {
+            if (_online.Extra.GetValueOrDefault("popularity") is string { Length: > 0 } p) metrics.Add(new(LiveAudienceMetricKind.Popularity, p));
+            if (_online.Extra.GetValueOrDefault("watched") is string { Length: > 0 } w) metrics.Add(new(LiveAudienceMetricKind.Watched, w.Replace("人看过", "", StringComparison.Ordinal).Trim()));
+        }
+        if (metrics.Count > 0) _ranking.Add(new(LiveEventType.Rank, "", string.Join(" | ", metrics.Select(m => m.Value)), RegionSettings.Color,
+            Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }));
+        if (_rank is not null) _ranking.AddRange(ViewModel.GetRankMembers(_rank, RegionSettings.RankCount).Select(m => OverlayBulletinRenderer.MemberEvent(m, RegionSettings.Color)));
+        for (var i = 0; i < Math.Min(previous.Length, _ranking.Count); i++)
+        {
+            var a = previous[i]; var b = _ranking[i];
+            if (a.Type == b.Type && a.Username == b.Username && a.Uid == b.Uid && a.Content == b.Content && a.Appearance == b.Appearance
+                && Equals(a.Extra.GetValueOrDefault("rank_position"), b.Extra.GetValueOrDefault("rank_position"))) _ranking[i] = a;
+        }
+    }
+    private void Process()
+    {
+        _wake.Stop(); if (_disposed || !Visible) return;
+        var now = DateTimeOffset.UtcNow;
+        var changed = _dirty && (_intakeDue is null || _intakeDue <= now);
+        if (changed) { _dirty = false; _intakeDue = null; if (Kind == OverlayRegionKind.Status) RefreshRanking(); }
+        if (Timed)
+        {
+            _queue.Expire(now);
+            for (var i = 0; i < _timed.Length; i++) if (_timed[i] is { } item && item.Expires <= now) { _timed[i] = null; changed = true; }
+            for (var i = 0; i < Capacity; i++)
+            {
+                if (_timed[i] is not null) continue;
+                var next = _queue.Take(now, Kind == OverlayRegionKind.SuperChat); if (next is null) break;
+                var seconds = next.Type == LiveEventType.Guard ? RegionSettings.GuardDurationSeconds : RegionSettings.DurationSeconds;
+                _timed[i] = new(next, now, now.AddSeconds(seconds)); changed = true;
+            }
+        }
+        if (changed) Rebuild(); else if (Timed) RequestRender(new Rectangle(0, ClientSize.Height - FooterHeight, ClientSize.Width, FooterHeight));
+        Schedule();
+    }
+    private void Schedule()
+    {
+        _wake.Stop(); if (_disposed || !Visible) return;
+        DateTimeOffset? due = _intakeDue;
+        void Include(DateTimeOffset? at) { if (at is not null && (due is null || at < due)) due = at; }
+        if (Timed)
+        {
+            foreach (var card in _timed) if (card is not null) Include(card.Expires);
+            Include(_queue.NextWake(Enumerable.Range(0, Capacity).Any(i => _timed[i] is null)));
+        }
+        if (due is null) return;
+        _wake.Interval = (int)Math.Clamp(Math.Ceiling((due.Value - DateTimeOffset.UtcNow).TotalMilliseconds), 1, int.MaxValue); _wake.Start();
+    }
+    private void Rebuild()
+    {
+        if (_disposed || !Visible || _rebuilding) return; _rebuilding = true;
+        try
+        {
+            var capacity = Capacity;
+            if (GridMode) _board.Resize(Math.Max(1, capacity));
+            var data = Kind == OverlayRegionKind.Status ? _ranking : _list;
+            _offset = Math.Clamp(_offset, 0, Math.Max(0, data.Count - Math.Max(1, capacity)));
+            var keep = new HashSet<int>();
+            for (var i = 0; i < capacity; i++)
+            {
+                var value = Timed ? _timed[i]?.Value : GridMode ? _board.Slots[i]?.Record.Event : data.Skip(_offset + i).FirstOrDefault();
+                if (value is null) continue;
+                var caption = GridMode ? $"×{_board.Slots[i]!.Count} · 点击查看发言者" : value.Type == LiveEventType.SuperChat ? "点击展开完整 SC" : "";
+                var width = Math.Max(120, (ClientSize.Width - 16 - (Columns - 1) * 8) / Columns);
+                var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + 8), width, CellHeight);
+                keep.Add(i);
+                if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.Value, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
+                Release(i); var view = new CardView(value, bounds, caption); _views.Add(i, view);
+                AdmitMedia(view); UpdateBitmap(view); _ = LoadImagesAsync(i, view);
+                if (view.Media is { } media) _ = media.LoadAsync(() => { if (Current(i, view)) { UpdateBitmap(view); RequestRender(view.Bounds); } });
+            }
+            foreach (var key in _views.Keys.Where(k => !keep.Contains(k)).ToArray()) Release(key);
+            RequestRender();
+        }
+        finally { _rebuilding = false; }
+    }
+    private void AdmitMedia(CardView view)
+    {
+        if (Kind is not (OverlayRegionKind.Danmaku or OverlayRegionKind.SuperChat) || view.Value.MediaReferences.Count == 0) return;
+        var settings = ViewModel.Settings.MediaPreview; var body = Math.Max(60, RegionSettings.FontSize * 2 + 32);
+        if (settings.Width > view.Bounds.Width || OverlayMediaAttachment.RequiredHeight(body, settings, RegionSettings) > view.Bounds.Height - 22 || !ViewModel.AcquireOverlayMedia()) return;
+        view.Media = new(ViewModel, view.Value.MediaReferences[0], body, RegionSettings);
+    }
+    private void UpdateBitmap(CardView view)
+    {
+        var region = view.Value.Type is LiveEventType.Gift or LiveEventType.Guard ? RegionSettings with { Bold = true } : RegionSettings;
+        var captionHeight = view.Caption.Length > 0 ? 22 : 0;
+        using var body = OverlayMessageRenderer.Render(view.Value, region, Style, ViewModel.Images, view.Bounds.Width,
+            view.Media?.BodyHeight ?? view.Bounds.Height - captionHeight, card: Kind != OverlayRegionKind.Status);
+        var replacement = new Bitmap(view.Bounds.Width, view.Bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(replacement))
+        {
+            using var fill = new SolidBrush(OverlayTextRenderer.Color(RegionSettings.BackgroundColor, RegionSettings.BackgroundOpacity)); g.FillRectangle(fill, 0, 0, replacement.Width, replacement.Height);
+            if (view.Media is { } media) { using var image = media.Compose(body, region); g.DrawImageUnscaled(image, 0, 0); } else g.DrawImageUnscaled(body, 0, 0);
+            if (captionHeight > 0) { using var font = OverlayTextRenderer.CreateFont(region.FontFamily, 12); OverlayTextRenderer.Draw(g, view.Caption, font, new(10, replacement.Height - 20), Color.FromArgb(240, 196, 207, 226), false); }
+        }
+        view.Image?.Dispose(); view.Image = replacement;
+    }
+    private bool Current(int slot, CardView view) => !_disposed && Visible && _views.GetValueOrDefault(slot) == view;
+    private async Task LoadImagesAsync(int slot, CardView view)
+    {
+        try
+        {
+            var token = view.Cancellation.Token;
+            foreach (var url in OverlayMessageRenderer.ImageUrls(view.Value, Style).Distinct().Take(16))
+            {
+                if (!Current(slot, view)) return;
+                if (ViewModel.Images.TryGetFrame(url) is not null) continue;
+                if (await ViewModel.Images.GetForViewAsync(url, false, token) is null) continue;
+                if (!Current(slot, view)) return;
+                UpdateBitmap(view); RequestRender(view.Bounds);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+    }
+    private void Release(int slot) { if (_views.Remove(slot, out var view)) view.Dispose(); }
+    private void ClearViews() { foreach (var key in _views.Keys.ToArray()) Release(key); }
+    protected override void DrawContent(Graphics graphics, Rectangle clip)
+    {
+        foreach (var view in _views.Values) if (view.Image is not null && view.Bounds.IntersectsWith(clip)) graphics.DrawImageUnscaled(view.Image, view.Bounds.Location);
+        using var font = OverlayTextRenderer.CreateFont(RegionSettings.FontFamily, 12);
+        var message = Capacity == 0 ? "区域高度不足，请在设置中增高区域" : Timed
+            ? $"显示 {_views.Count}/{Capacity} · 待播 {_queue.Count} · 未展示 {_queue.Omitted}（点击查看）" : GridMode ? "固定网格 · 点击查看详情，右键隐藏" : $"{(Kind == OverlayRegionKind.Status ? "高能榜" : "最近消息")} · {_offset + 1} 起 · 交互时滚轮翻阅";
+        if (Timed && Capacity < RegionSettings.MaxVisible && Capacity > 0) message = $"高度仅容纳 {Capacity}/{RegionSettings.MaxVisible} 张 · 未展示 {_queue.Omitted}";
+        using var brush = new SolidBrush(Color.FromArgb(210, 27, 32, 43)); graphics.FillRectangle(brush, 0, ClientSize.Height - FooterHeight, ClientSize.Width, FooterHeight);
+        OverlayTextRenderer.Draw(graphics, message, font, new(8, ClientSize.Height - FooterHeight + 5), Color.FromArgb(255, 204, 214, 235), false);
+    }
+    protected override void OnMouseWheel(Forms.MouseEventArgs e)
+    {
+        base.OnMouseWheel(e); if (Timed || GridMode) return;
+        _offset += e.Delta > 0 ? -1 : 1; Rebuild();
+    }
+    protected override void OnMouseMove(Forms.MouseEventArgs e)
+    {
+        base.OnMouseMove(e); if (!GridMode) return;
+        foreach (var item in _board.Slots) if (item is not null) item.Protected = false;
+        _hover = _views.FirstOrDefault(v => v.Value.Bounds.Contains(e.Location)).Key;
+        if (_views.TryGetValue(_hover, out var view) && view.Bounds.Contains(e.Location) && _board.Slots[_hover] is { } entry) entry.Protected = true;
+        else _hover = -1;
+    }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); ClearHover(); }
+    private void ClearHover() { _hover = -1; foreach (var entry in _board.Slots) if (entry is not null) entry.Protected = false; }
+    protected override void OnInteractionChanged() { ClearHover(); if (!ViewModel.OverlayInteractive) { _detail?.Close(); _detail = null; } }
+    protected override void OnMouseClick(Forms.MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Y >= ClientSize.Height - FooterHeight && Timed)
+        { ShowText("未展示提示（最近 100 项）", $"累计 {_queue.Omitted} 条；原消息仍可在概览与历史查看。\r\n\r\n" + string.Join("\r\n\r\n", _queue.Omissions.Reverse().Select(o => $"{o.At.ToLocalTime():HH:mm:ss} {o.Name} · {o.Reason}\r\n{o.Content}"))); return; }
+        var pair = _views.FirstOrDefault(v => v.Value.Bounds.Contains(e.Location));
+        if (pair.Value is not { } view)
+        {
+            if (GridMode && e.Button == Forms.MouseButtons.Right)
+            { _board.ClearHidden(); RequestRender(); }
+            return;
+        }
+        if (GridMode && _board.Slots[pair.Key] is { } entry)
+        {
+            if (e.Button == Forms.MouseButtons.Right)
+            {
+                if (!_board.Hide(entry)) ShowText("隐藏清单已满", "最多隐藏 512 项。右键空白处可清空隐藏清单。");
+                Rebuild(); return;
+            }
+            ShowText($"重复 {entry.Count} 次", $"{view.Value.Content}\r\n\r\n" + string.Join("\r\n", entry.Senders.Values.Select(s => $"{s.Name} · UID {s.Uid} · {s.Count} 次 · {s.LastSeen.ToLocalTime():HH:mm:ss}")) + $"\r\n身份未知 {entry.UnknownCount} 次 · 未展开 {entry.UnlistedCount} 次");
+        }
+        else ShowText(view.Value.Username, view.Value.Content);
+    }
+    private void ShowText(string title, string text)
+    {
+        _detail?.Close();
+        _detail = new Forms.Form { Text = title, Width = 540, Height = 420, StartPosition = Forms.FormStartPosition.CenterScreen, TopMost = true, ShowInTaskbar = false };
+        var font = new Font("Microsoft YaHei UI", 12);
+        _detail.Controls.Add(new Forms.TextBox { Dock = Forms.DockStyle.Fill, Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = Forms.ScrollBars.Vertical, Text = text, Font = font });
+        _detail.FormClosed += (_, _) => font.Dispose();
+        _detail.Show(this);
+    }
+    protected override void OnResize(EventArgs e) { base.OnResize(e); if (_views is null) return; ClearViews(); _dirty = true; if (Visible) Process(); }
+    protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
+    {
+        if (previous.Mode != RegionSettings.Mode) { ResetContent(); return; }
+        ClearViews(); _dirty = true; if (Visible) Process();
+    }
+    private void ResetContent()
+    {
+        _wake.Stop(); _detail?.Close(); _detail = null; ClearViews(); Array.Clear(_timed); _queue.Clear(); _list.Clear(); _ranking.Clear(); _board.Clear(); _online = _rank = null; _offset = 0; _intakeDue = null; _dirty = false; ClearHover(); RequestRender();
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_disposed) { _disposed = true; ViewModel.RoomHistoryReset -= ResetContent; ResetContent(); _wake.Dispose(); _queue.Dropped -= ViewModel.RecordOverlayDropped; }
+        base.Dispose(disposing);
+    }
+}

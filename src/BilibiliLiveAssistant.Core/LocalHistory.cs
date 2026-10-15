@@ -16,7 +16,7 @@ public sealed record HistorySettings
 public sealed record HistoryEventFields(DateTimeOffset? UpstreamTime = null, string? UniqueId = null,
     long? GiftId = null, string? GiftName = null, long? Quantity = null, string? CoinType = null,
     long? UnitPrice = null, long? TotalCoin = null, long? AmountMilliYuan = null, int? GuardLevel = null,
-    int? InteractionKind = null, string? TransactionId = null, string? RawBody = null);
+    int? InteractionKind = null, string? TransactionId = null, string? RawBody = null, string? GiftIconUrl = null);
 public sealed record HistoryContext(string Id, int RoomId, DateTimeOffset StartedAt);
 public sealed record HistoryEnvelope(HistoryContext Context, DateTimeOffset ReceivedAt, string LocalDay,
     LiveEvent Event, HistoryEventFields Fields);

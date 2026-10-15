@@ -51,6 +51,8 @@ internal static class OverlayMessageRenderer
     }
     public static IEnumerable<string> ImageUrls(LiveEvent value, DashboardSettings style)
     {
+        if (value.HistoryFields?.GiftIconUrl is { Length: > 0 } giftIcon) yield return giftIcon;
+        else if (value.Extra.GetValueOrDefault("gift_icon") is string { Length: > 0 } rawIcon) yield return rawIcon;
         if (value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
         {
             foreach (var member in bulletin.Members.Take(10))
@@ -133,6 +135,12 @@ internal static class OverlayMessageRenderer
                     OverlayTextRenderer.Color(entry ? LiveEntryStyles.UsernameColor(value.Appearance, style.UsernameColor) : style.UsernameColor, style.TextOpacity), true);
             if (card && !system) { NewLine(); lineHeight = rowHeight; bottom = y + lineHeight; }
             else if (card) { startX = x; lineHeight = Math.Max(headerHeight, rowHeight); bottom = y + lineHeight; }
+            if (card && value.Type is LiveEventType.Gift or LiveEventType.Guard)
+            {
+                var size = Math.Min(28, rowHeight); var iconUrl = value.HistoryFields?.GiftIconUrl ?? value.Extra.GetValueOrDefault("gift_icon") as string ?? "";
+                pieces.Add(new Piece { Image = Load(iconUrl) ?? MakeGiftIcon(value.Type == LiveEventType.Guard), Bounds = new(x, y + (rowHeight - size) / 2, size, size) });
+                x += size + 6;
+            }
             stop = false;
             var content = Content(value);
             if (!card) content = content.Replace('\r', ' ').Replace('\n', ' ');
@@ -223,6 +231,17 @@ internal static class OverlayMessageRenderer
             if (cache.TryGetFrame(url) is not { } bytes) return null;
             try { using var stream = new MemoryStream(bytes); using var raw = Image.FromStream(stream); return images[url] = new Bitmap(raw); }
             catch (ArgumentException) { return null; }
+        }
+        Bitmap MakeGiftIcon(bool guard)
+        {
+            var key = guard ? "local:guard" : "local:gift";
+            if (images.TryGetValue(key, out var existing) && existing is not null) return existing;
+            var icon = new Bitmap(32, 32, PixelFormat.Format32bppPArgb); images[key] = icon;
+            using var g = Graphics.FromImage(icon); g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(accent, 2.4f) { LineJoin = LineJoin.Round };
+            if (guard) { g.DrawPolygon(pen, [new PointF(4, 8), new(11, 14), new(16, 5), new(21, 14), new(28, 8), new(25, 26), new(7, 26)]); g.DrawLine(pen, 8, 21, 25, 21); }
+            else { g.DrawRectangle(pen, 5, 13, 22, 15); g.DrawRectangle(pen, 3, 9, 26, 5); g.DrawLine(pen, 16, 9, 16, 28); g.DrawEllipse(pen, 7, 2, 9, 8); g.DrawEllipse(pen, 16, 2, 9, 8); }
+            return icon;
         }
         void NewLine() { x = startX; y = bottom + (card ? 3 : 0); bottom = y + lineHeight; }
         bool ImageBadge(string url)

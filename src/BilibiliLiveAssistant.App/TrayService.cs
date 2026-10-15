@@ -16,6 +16,10 @@ public sealed class TrayService : IDisposable
         // The native tray menu also works while the WinUI window is hidden.
         _menu.Items.Add("打开主窗口", null, (_, _) => window.ShowMainWindow());
         _menu.Items.Add("打开弹幕悬浮窗", null, (_, _) => window.OpenOverlay());
+        var interact = new Forms.ToolStripMenuItem("临时交互悬浮窗") { CheckOnClick = false };
+        interact.Click += (_, _) => window.ToggleOverlayInteraction();
+        _menu.Opening += (_, _) => { interact.Checked = window.OverlayInteractive; interact.Text = window.OverlayInteractive ? "结束交互，恢复穿透" : "临时交互悬浮窗"; };
+        _menu.Items.Add(interact);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         var quit = _menu.Items.Add("退出软件");
         quit.Click += async (_, _) =>

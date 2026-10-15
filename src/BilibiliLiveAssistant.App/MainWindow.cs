@@ -108,7 +108,7 @@ public sealed class MainWindow : Window
             "audio" => new AudioTestPage(),
             "account" => new AccountPage(_vm),
             "about" => new AboutPage(),
-            _ => new DashboardPage(_vm, _overlay?.Visible == true, SetOverlayVisible,
+            _ => new DashboardPage(_vm, _overlay?.OverlayVisible == true, SetOverlayVisible,
                 IsMainVisible),
         };
     }
@@ -149,6 +149,8 @@ public sealed class MainWindow : Window
 
         _overlay?.HideOverlay();
     }
+    public bool OverlayInteractive => _vm.OverlayInteractive;
+    public void ToggleOverlayInteraction() { OpenOverlay(); _vm.ToggleOverlayInteraction(); }
 
     public void HideToTray()
     {

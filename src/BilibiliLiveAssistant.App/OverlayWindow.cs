@@ -13,6 +13,8 @@ public sealed class OverlayWindow : OverlaySurface
     private readonly LiveEventBuffer _incoming = new(64);
     private readonly LiveEventBuffer _pendingItems = new(64);
     private readonly FixedOverlayWindow[] _fixedRegions;
+    private readonly StationaryOverlayWindow[] _stationary;
+    public bool OverlayVisible => _overlayVisible;
     private int _nextTrack;
     private bool _overlayVisible;
     private bool _cleaned;
@@ -26,6 +28,8 @@ public sealed class OverlayWindow : OverlaySurface
         _mediaStyle = vm.Settings.MediaPreview;
         _fixedRegions = new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status }
             .Select(kind => new FixedOverlayWindow(vm, kind, _frames)).ToArray();
+        _stationary = new[] { OverlayRegionKind.Danmaku, OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Status }
+            .Select(kind => new StationaryOverlayWindow(vm, kind)).ToArray();
         _vm.EventBatchReceived += OnEventBatch;
         _vm.RoomHistoryReset += ResetContent;
         _vm.PropertyChanged += OnViewModelPropertyChanged;
@@ -36,7 +40,6 @@ public sealed class OverlayWindow : OverlaySurface
     {
         _overlayVisible = true;
         ConfigureFrameRate();
-        ShowSurface();
         SyncRegionVisibility();
         if (_items.Count > 0) StartAnimation();
     }
@@ -50,14 +53,21 @@ public sealed class OverlayWindow : OverlaySurface
         _incoming.Clear();
         _pendingItems.Clear();
         foreach (var region in _fixedRegions) region.HideRegion();
+        foreach (var region in _stationary) region.HideRegion();
+        _vm.EndOverlayInteraction();
         Hide();
     }
 
     private void SyncRegionVisibility()
     {
         if (!_overlayVisible) return;
+        if (OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
+        else if (!Visible) ShowSurface();
         foreach (var region in _fixedRegions)
-            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
+            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind) && !OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
+            else region.HideRegion();
+        foreach (var region in _stationary)
+            if (OverlayRegions.Enabled(_vm.Settings.Display, region.RegionKind) && OverlayRegions.Stationary(_vm.Settings.Display, region.RegionKind)) region.ShowRegion();
             else region.HideRegion();
     }
 
@@ -82,11 +92,16 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void OnEventBatch(IReadOnlyList<LiveEvent> batch)
     {
-        if (!Visible || IsDisposed) return;
+        if (!_overlayVisible || IsDisposed) return;
+        static OverlayRegionKind EventKind(LiveEvent e) => e.Type switch
+        { LiveEventType.Danmaku => OverlayRegionKind.Danmaku, LiveEventType.Gift or LiveEventType.Guard => OverlayRegionKind.Gift,
+            LiveEventType.SuperChat => OverlayRegionKind.SuperChat, LiveEventType.Enter => OverlayRegionKind.Interaction, _ => OverlayRegionKind.Status };
+        foreach (var region in _stationary)
+            if (region.Visible) region.EnqueueBatch(batch.Where(e => EventKind(e) == region.RegionKind).ToArray());
         var before = _incoming.DroppedCount;
         foreach (var item in batch)
         {
-            if (item.Type == LiveEventType.Danmaku) _incoming.Enqueue(item);
+            if (item.Type == LiveEventType.Danmaku) { if (Visible) _incoming.Enqueue(item); }
             else
             {
                 var kind = item.Type switch
@@ -277,6 +292,7 @@ public sealed class OverlayWindow : OverlaySurface
             _frames.Stop(OnFrame); _intakeTimer.Dispose();
             ClearItems();
             foreach (var region in _fixedRegions) region.Dispose();
+            foreach (var region in _stationary) region.Dispose();
             _frames.Dispose();
         }
         base.Dispose(disposing);

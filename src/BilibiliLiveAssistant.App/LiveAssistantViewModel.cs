@@ -34,6 +34,10 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private int _historyNoticeScheduled;
     private string _historyConfigurationWarning = "";
     public bool IsMonitoring => _monitorRequested;
+    private bool _overlayInteractive;
+    public bool OverlayInteractive => _overlayInteractive;
+    public void ToggleOverlayInteraction() { _overlayInteractive = !_overlayInteractive; OnPropertyChanged(nameof(OverlayInteractive)); }
+    internal void EndOverlayInteraction() { if (!_overlayInteractive) return; _overlayInteractive = false; OnPropertyChanged(nameof(OverlayInteractive)); }
     public string HistoryWarning => string.Join("\n", new[] { _historyConfigurationWarning,
         History.Status.Faulted || History.Status.Dropped > 0 || History.Status.CapacityWarning
         ? History.Status.Message + (History.Status.CapacityWarning ? " · 存档达到容量提醒阈值" : "") : "" }.Where(value => value.Length > 0));

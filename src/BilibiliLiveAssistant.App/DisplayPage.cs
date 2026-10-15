@@ -23,7 +23,7 @@ internal sealed class DisplayPage : Page
     private readonly TextBlock _layoutLabel = new() { Text = "桌面布局 · 拖动区域，右下角缩放", FontSize = 14 };
     private readonly VisualLayoutEditor _layout = new();
     private readonly ToggleSwitch _enabled = new() { Header = "显示这一类悬浮内容" };
-    private readonly ToggleSwitch _locked = new() { Header = "锁定实际窗口位置（鼠标穿透）" };
+    private readonly ToggleSwitch _locked = new() { Header = "锁定实际窗口位置" };
     private readonly HashSet<OverlayRegionKind> _layoutDirty = new();
     private readonly CheckBox _avatars = new() { Content = "头像" }, _medals = new() { Content = "粉丝牌" }, _identity = new() { Content = "身份徽章" };
     private readonly StackPanel _shared = new() { Spacing = 8 };

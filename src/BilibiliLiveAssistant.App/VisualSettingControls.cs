@@ -22,6 +22,7 @@ internal sealed class SettingSlider : StackPanel
     }
     public double Value { get => _slider.Value; set { _slider.Value = value; _value.Text = $"{_slider.Value:0.#}{_unit}"; } }
     public double Maximum { get => _slider.Maximum; set => _slider.Maximum = value; }
+    public double Minimum { get => _slider.Minimum; set => _slider.Minimum = value; }
     public bool IsEnabled { get => _slider.IsEnabled; set { _slider.IsEnabled = value; Opacity = value ? 1 : 0.5; } }
 }
 
