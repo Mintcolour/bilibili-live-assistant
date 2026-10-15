@@ -38,11 +38,18 @@ public sealed partial class SqliteLocalHistory
         }
         foreach (var table in new[] { "events", "profiles", "snapshots", "analysis_samples", "member_changes", "gaps", "summaries" })
         {
+            // Event deletion subtracts from daily aggregates. A daily row may
+            // cover several broadcasts, so never delete it by a broadcast span.
+            if (table == "summaries" && filter.BroadcastId is not null) continue;
             while (true)
             {
                 token.ThrowIfCancellationRequested();
                 using var transaction = new HistoryTransaction(connection); using var delete = connection.CreateCommand();
-                var where = Scope(filter, delete);
+                var where = Scope(filter, delete, timeColumn: table == "gaps" ? "first_at" : "received");
+                // A loss count spanning several broadcasts cannot be split
+                // reliably. Keep it unless wholly within the selected broadcast.
+                if (table == "gaps" && filter.BroadcastId is { } broadcast && broadcast != HistoryBroadcast.Unidentified)
+                    where += " AND EXISTS(SELECT 1 FROM broadcast_spans p WHERE p.session_id=s.id AND p.broadcast_id=$broadcast AND p.started<=e.first_at AND (p.ended IS NULL OR p.ended>e.last_at))";
                 if (table == "events")
                 {
                     delete.CommandText = $"""
@@ -64,6 +71,7 @@ public sealed partial class SqliteLocalHistory
                 var count = delete.ExecuteNonQuery(); transaction.Commit(); if (count == 0) break;
             }
         }
+        Execute(connection, "DELETE FROM summaries WHERE count<=0;");
         // Keep partially selected sessions; only entirely empty completed sessions can disappear.
         using var cleanup = connection.CreateCommand(); var scope = Scope(filter, cleanup, "s")
             .Replace("s.local_day >= $from AND s.local_day <= $to", "s.last_day >= $from AND s.first_day <= $to");
@@ -79,6 +87,7 @@ public sealed partial class SqliteLocalHistory
             """;
         cleanup.ExecuteNonQuery();
         using var catalogue = new HistoryTransaction(connection);
+        Execute(connection, "DELETE FROM broadcasts WHERE NOT EXISTS(SELECT 1 FROM broadcast_spans p WHERE p.broadcast_id=broadcasts.id);");
         Execute(connection, "DELETE FROM room_aliases WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=room_aliases.uid);");
         Execute(connection, "DELETE FROM anchor_names WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=anchor_names.uid);");
         Execute(connection, "DELETE FROM anchors WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE anchor_uid=anchors.uid);");

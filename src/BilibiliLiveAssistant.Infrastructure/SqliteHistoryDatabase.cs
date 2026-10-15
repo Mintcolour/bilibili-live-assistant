@@ -41,7 +41,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         Execute(connection, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         using var versionCommand = Command(connection, "PRAGMA user_version;");
         var version = Convert.ToInt32(versionCommand.ExecuteScalar());
-        if (version > 2) throw new InvalidDataException("历史数据库来自更新的软件版本，请使用新版打开");
+        if (version > 3) throw new InvalidDataException("历史数据库来自更新的软件版本，请使用新版打开");
         if (version == 0)
         {
             using var transaction = new HistoryTransaction(connection);
@@ -89,6 +89,22 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 CREATE INDEX ix_changes_member ON member_changes(session_id,source,uid,received DESC,id DESC);
                 CREATE INDEX ix_profiles_received ON profiles(session_id,received DESC);
                 PRAGMA user_version=2;
+                """);
+            transaction.Commit();
+        }
+        if (version < 3)
+        {
+            using var transaction = new HistoryTransaction(connection);
+            Execute(connection, """
+                CREATE TABLE broadcasts(id TEXT PRIMARY KEY,anchor_uid INTEGER NOT NULL REFERENCES anchors(uid),room INTEGER NOT NULL,
+                    started INTEGER NOT NULL,title TEXT NOT NULL,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,ended_observed INTEGER,
+                    UNIQUE(anchor_uid,room,started));
+                CREATE INDEX ix_broadcast_anchor ON broadcasts(anchor_uid,started DESC);
+                CREATE TABLE broadcast_spans(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    started INTEGER NOT NULL,ended INTEGER,broadcast_id TEXT NOT NULL REFERENCES broadcasts(id),
+                    PRIMARY KEY(session_id,started));
+                CREATE INDEX ix_broadcast_spans ON broadcast_spans(broadcast_id,session_id,started,ended);
+                PRAGMA user_version=3;
                 """);
             transaction.Commit();
         }
@@ -155,6 +171,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
                 }
                 Execute(connection, "UPDATE sessions SET anchor_uid=$uid WHERE id=$s", ("$uid", profile.Uid), ("$s", item.Context.Id));
             }
+            WriteBroadcastProfile(connection, item, profile);
         }
         if (value.Extra.GetValueOrDefault("archive_profile_only") is true) return;
         // Capture merges the most recently observed fields before throttling to 60 seconds.
@@ -192,7 +209,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         }
         finally { _readGate.Release(); }
     }
-    private static string Scope(HistoryFilter filter, SqliteCommand command, string table = "e")
+    private static string Scope(HistoryFilter filter, SqliteCommand command, string table = "e", string timeColumn = "received")
     {
         command.Parameters.AddWithValue("$from", filter.FromDay); command.Parameters.AddWithValue("$to", filter.ToDay);
         var where = $"{table}.local_day >= $from AND {table}.local_day <= $to";
@@ -201,6 +218,21 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         else
         { where += " AND s.anchor_uid IS NULL AND s.room=$room"; command.Parameters.AddWithValue("$room", filter.Anchor.RoomId); }
         if (filter.SessionId is { Length: > 0 }) { where += " AND s.id=$session"; command.Parameters.AddWithValue("$session", filter.SessionId); }
+        if (filter.BroadcastId is { Length: > 0 } broadcast)
+        {
+            var span = table == "s" ? "p.session_id=s.id" : timeColumn == "first_at"
+                ? $"p.session_id=s.id AND p.started<={table}.last_at AND (p.ended IS NULL OR p.ended>{table}.first_at)"
+                : $"p.session_id=s.id AND p.started<={table}.{timeColumn} AND (p.ended IS NULL OR p.ended>{table}.{timeColumn})";
+            if (broadcast == HistoryBroadcast.Unidentified)
+            {
+                // A session may contain both identified and unidentified periods.
+                where += table == "s"
+                    ? " AND (NOT EXISTS(SELECT 1 FROM broadcast_spans p WHERE p.session_id=s.id AND p.started<=s.started AND (p.ended IS NULL OR p.ended>s.started)) OR EXISTS(SELECT 1 FROM broadcast_spans p WHERE p.session_id=s.id AND p.ended<COALESCE(s.ended,s.heartbeat) AND NOT EXISTS(SELECT 1 FROM broadcast_spans q WHERE q.session_id=s.id AND q.started<=p.ended AND (q.ended IS NULL OR q.ended>p.ended))))"
+                    : $" AND NOT EXISTS(SELECT 1 FROM broadcast_spans p WHERE {span})";
+            }
+            else
+            { where += $" AND EXISTS(SELECT 1 FROM broadcast_spans p WHERE {span} AND p.broadcast_id=$broadcast)"; command.Parameters.AddWithValue("$broadcast", broadcast); }
+        }
         return where;
     }
     public Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "", int limit = 2000, int offset = 0) => ReadAsync<IReadOnlyList<HistoryAnchor>>(connection =>
@@ -248,17 +280,25 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     public Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);
-        command.CommandText = $"""
+        command.CommandText = filter.BroadcastId is null ? $"""
             SELECT COALESCE(SUM(count),0),COALESCE(SUM(CASE WHEN type=0 THEN count ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN type=1 THEN count ELSE 0 END),0),COALESCE(SUM(CASE WHEN type=2 THEN count ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN type=4 THEN count ELSE 0 END),0),COALESCE(SUM(CASE WHEN type=3 THEN count ELSE 0 END),0),
             COALESCE(SUM(paid_amount),0),COALESCE(SUM(free_quantity),0),COALESCE(SUM(sc_amount),0),COALESCE(SUM(unknown),0)
             FROM summaries e JOIN sessions s ON s.id=e.session_id WHERE {where}
+            """ : $"""
+            SELECT COUNT(*),COALESCE(SUM(type=0),0),COALESCE(SUM(type=1),0),COALESCE(SUM(type=2),0),COALESCE(SUM(type=4),0),COALESCE(SUM(type=3),0),
+            COALESCE(SUM(CASE WHEN type IN(2,4) AND paid=1 THEN amount ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN type IN(2,4) AND paid=0 THEN quantity ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN type=3 THEN amount ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN (type IN(2,4) AND (paid IS NULL OR paid<>0) OR type=3) AND amount IS NULL THEN 1 ELSE 0 END),0)
+            FROM events e JOIN sessions s ON s.id=e.session_id WHERE {where}
             """;
         long[] totals;
         using (var reader = command.ExecuteReader()) { reader.Read(); totals = Enumerable.Range(0, 10).Select(reader.GetInt64).ToArray(); }
-        command.CommandText = $"SELECT COALESCE(SUM(count),0) FROM gaps e JOIN sessions s ON s.id=e.session_id WHERE {where}";
-        var missing = Convert.ToInt64(command.ExecuteScalar());
+        using var gapCommand = connection.CreateCommand(); var gapWhere = Scope(filter, gapCommand, timeColumn: "first_at");
+        gapCommand.CommandText = $"SELECT COALESCE(SUM(count),0) FROM gaps e JOIN sessions s ON s.id=e.session_id WHERE {gapWhere}";
+        var missing = Convert.ToInt64(gapCommand.ExecuteScalar());
         command.CommandText = "SELECT COALESCE(SUM(count),0) FROM gaps WHERE session_id IS NULL AND local_day<=$to AND last_day>=$from";
         var unassigned = Convert.ToInt64(command.ExecuteScalar());
         using var interruptedCommand = connection.CreateCommand();
@@ -269,7 +309,7 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     }, token);
     public Task<IReadOnlyList<HistoryGap>> GapsAsync(HistoryFilter filter, CancellationToken token) => ReadAsync<IReadOnlyList<HistoryGap>>(connection =>
     {
-        using var command = connection.CreateCommand(); var where = Scope(filter, command);
+        using var command = connection.CreateCommand(); var where = Scope(filter, command, timeColumn: "first_at");
         command.CommandText = $"SELECT e.session_id,e.room,e.type,e.count,e.first_at,e.last_at,e.reason FROM gaps e LEFT JOIN sessions s ON s.id=e.session_id WHERE ({where}) OR (e.session_id IS NULL AND e.local_day<=$to AND e.last_day>=$from) ORDER BY first_at DESC LIMIT 100";
         using var reader = command.ExecuteReader(); var result = new List<HistoryGap>();
         while (reader.Read()) result.Add(new(reader.IsDBNull(0) ? null : reader.GetString(0), reader.GetInt32(1), (LiveEventType)reader.GetInt32(2), reader.GetInt64(3), Time(reader.GetInt64(4)), Time(reader.GetInt64(5)), reader.GetString(6)));
@@ -278,8 +318,11 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     public Task<long> CountAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);
+        var gapWhere = where.Replace("p.started<=e.received", "p.started<=e.last_at").Replace("p.ended>e.received", "p.ended>e.first_at");
+        if (filter.BroadcastId is { } broadcast && broadcast != HistoryBroadcast.Unidentified)
+            gapWhere += " AND EXISTS(SELECT 1 FROM broadcast_spans p WHERE p.session_id=s.id AND p.broadcast_id=$broadcast AND p.started<=e.first_at AND (p.ended IS NULL OR p.ended>e.last_at))";
         command.CommandText = "SELECT SUM(n) FROM (" + string.Join(" UNION ALL ", new[] { "events", "profiles", "snapshots", "analysis_samples", "member_changes", "gaps" }
-            .Select(table => $"SELECT COUNT(*) AS n FROM {table} e JOIN sessions s ON s.id=e.session_id WHERE {where}")) + ")";
+            .Select(table => $"SELECT COUNT(*) AS n FROM {table} e JOIN sessions s ON s.id=e.session_id WHERE {(table == "gaps" ? gapWhere : where)}")) + ")";
         return Convert.ToInt64(command.ExecuteScalar());
     }, token);
     public Task<HistoryDetails> DetailsAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>

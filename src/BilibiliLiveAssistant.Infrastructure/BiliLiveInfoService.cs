@@ -111,7 +111,12 @@ public sealed class BiliLiveInfoService : ILiveInfoService, IDisposable
             BiliMessageAppearanceParser.Text(BiliMessageAppearanceParser.Get(medal, "medal_name")),
             BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(medal, "fansclub")),
             BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "guard_info"), "count")),
-            BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "like_info_v3"), "total_likes")), null);
+            BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(BiliMessageAppearanceParser.Get(data, "like_info_v3"), "total_likes")), null)
+        {
+            LiveStatus = live >= 0 ? live : null,
+            LiveStartedAt = BiliMessageAppearanceParser.Long(BiliMessageAppearanceParser.Get(room, "live_start_time")) is > 0 and var started
+                && started <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? DateTimeOffset.FromUnixTimeSeconds(started) : null,
+        };
         var state = live switch { 1 => "直播中", 2 => "轮播中", 0 => "未开播", _ => "状态暂无数据" };
         var duration = string.Empty;
         if (live == 1 && room.TryGetProperty("live_start_time", out var startNode) && startNode.TryGetInt64(out var start) && start > 0 && start < DateTimeOffset.UtcNow.ToUnixTimeSeconds())

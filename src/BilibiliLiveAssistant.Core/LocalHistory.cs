@@ -30,9 +30,17 @@ public sealed record HistorySession(string Id, int RoomId, DateTimeOffset Starte
 {
     public override string ToString() => $"{StartedAt.ToLocalTime():MM-dd HH:mm} · {Status switch { "active" => "记录中", "stopped" => "已停止", _ => "中断" }}";
 }
+public sealed record HistoryBroadcast(string Id, int RoomId, DateTimeOffset? StartedAt, string Title,
+    int MonitorCount, DateTimeOffset FirstObservedAt, DateTimeOffset LastObservedAt)
+{
+    public const string Unidentified = "unidentified";
+    public override string ToString() => StartedAt is { } start
+        ? $"{start.ToLocalTime():MM-dd HH:mm} · {(Title.Length > 24 ? Title[..24] + "…" : Title)} · {MonitorCount} 次监视"
+        : $"未识别场次（含旧版记录） · {MonitorCount} 次监视";
+}
 public sealed record HistoryFilter(HistoryAnchor Anchor, string FromDay, string ToDay, string? SessionId = null,
     LiveEventType? Type = null, long? SenderUid = null, string Nickname = "", string Keyword = "", long? BeforeId = null,
-    DateTimeOffset? BeforeReceivedAt = null);
+    DateTimeOffset? BeforeReceivedAt = null, string? BroadcastId = null);
 public sealed record HistoryDetails(LiveRoomProfile? Profile, long Snapshots, DateTimeOffset? SnapshotAt,
     long? Popularity, long? Watched, IReadOnlyList<LiveRankMember>? Rank, long? RankTotal);
 public sealed record HistoryRow(long Id, DateTimeOffset ReceivedAt, DateTimeOffset? UpstreamAt, string LocalDay,
@@ -56,6 +64,7 @@ public interface ILocalHistory : IAsyncDisposable
     void Capture(HistoryContext context, LiveEvent value, DateTimeOffset receivedAt);
     Task<IReadOnlyList<HistoryAnchor>> AnchorsAsync(CancellationToken token, string search = "", int limit = 2000, int offset = 0);
     Task<IReadOnlyList<HistorySession>> SessionsAsync(HistoryFilter filter, CancellationToken token);
+    Task<IReadOnlyList<HistoryBroadcast>> BroadcastsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryRow>> QueryAsync(HistoryFilter filter, CancellationToken token);
     Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token);
     Task<HistoryDetails> DetailsAsync(HistoryFilter filter, CancellationToken token);

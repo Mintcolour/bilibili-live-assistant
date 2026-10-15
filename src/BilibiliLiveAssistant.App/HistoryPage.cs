@@ -21,6 +21,7 @@ internal sealed class HistoryPage : Page
     private readonly CalendarDatePicker _from = new() { Header = "开始日期", Date = DateTimeOffset.Now.AddDays(-6), DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
     private readonly CalendarDatePicker _to = new() { Header = "结束日期", Date = DateTimeOffset.Now, DateFormat = "{year.full}-{month.integer(2)}-{day.integer(2)}" };
     private readonly ComboBox _sessions = new() { Header = "监视记录", HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 190 };
+    private readonly ComboBox _broadcasts = new() { Header = "直播场次", HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 250, MaxWidth = 400 };
     private readonly ComboBox _type = new() { Header = "消息类型", MinWidth = 110 };
     private readonly TextBox _uid = new() { Header = "UID", PlaceholderText = "全部", MaxLength = 20, MinWidth = 100 };
     private readonly TextBox _name = new() { Header = "昵称包含", PlaceholderText = "全部", MaxLength = 128, MinWidth = 110 };
@@ -95,7 +96,8 @@ internal sealed class HistoryPage : Page
         _type.Items.Add(new ComboBoxItem { Content = "全部互动" });
         foreach (var type in new[] { LiveEventType.Danmaku, LiveEventType.Gift, LiveEventType.SuperChat, LiveEventType.Guard, LiveEventType.Enter }) _type.Items.Add(new ComboBoxItem { Content = TypeName(type), Tag = type });
         _type.SelectedIndex = 0;
-        var dates = Strip(_from, _to, _type, apply); Grid.SetRow(dates, 1); right.Children.Add(dates);
+        var dates = Strip(_broadcasts, _from, _to, _type, apply); Grid.SetRow(dates, 1); right.Children.Add(dates);
+        ToolTipService.SetToolTip(_broadcasts, "按真实房间与开播时间归档，同一场直播的多次监视统一汇总；旧版或开播资料缺失的内容保留在未识别场次。");
         var stats = new StackPanel { Spacing = 8 };
         var statGrid = new Grid { ColumnSpacing = 10 };
         var labels = new[] { "弹幕", "礼物 / 上舰", "SC", "进房 / 互动" };
@@ -110,7 +112,7 @@ internal sealed class HistoryPage : Page
         var advancedFields = new StackPanel { Spacing = 8 };
         advancedFields.Children.Add(Strip(_sessions, _uid, _name));
         var cancel = UiFactory.Button("取消查询"); cancel.VerticalAlignment = VerticalAlignment.Bottom; cancel.Click += (_, _) => { _query?.Cancel(); _status.Text = "已取消查询"; };
-        var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += (_, _) => { _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0; _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; };
+        var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += (_, _) => { _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0; _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; _broadcasts.SelectedIndex = _broadcasts.Items.Count > 0 ? 0 : -1; };
         _keyword.MinWidth = 230; advancedFields.Children.Add(Strip(_keyword, reset, cancel)); advanced.Content = advancedFields;
         Grid.SetRow(advanced, 3); right.Children.Add(advanced);
         var tabHeader = new StackPanel { Spacing = 5, Children = { _tabs, _status } };
@@ -136,7 +138,8 @@ internal sealed class HistoryPage : Page
         };
         Grid.SetRow(pager, 6); right.Children.Add(pager); Grid.SetColumn(right, 1); body.Children.Add(right); Grid.SetRow(body, 1); root.Children.Add(body); Content = root;
         SizeChanged += (_, args) => body.ColumnDefinitions[0].Width = new(args.NewSize.Width < 900 ? 180 : 230);
-        _anchors.SelectionChanged += async (_, _) => { UpdateAnchorHeading(); if (!_loading && !_managing) await RefreshAsync(false, true); };
+        _anchors.SelectionChanged += async (_, _) => { UpdateAnchorHeading(); if (!_loading && !_managing) await RefreshAsync(false, true, true); };
+        _broadcasts.SelectionChanged += async (_, _) => { if (!_loading && !_managing) await RefreshAsync(false, true); };
         _from.DateChanged += (_, _) => ConditionsChanged(true); _to.DateChanged += (_, _) => ConditionsChanged(true);
         _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += (_, _) => ConditionsChanged();
         foreach (var input in new[] { _uid, _name, _keyword }) input.TextChanged += (_, _) => ConditionsChanged();
@@ -178,7 +181,8 @@ internal sealed class HistoryPage : Page
         var cursor = _cursors[^1];
         return new(anchor, from.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), to.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), (_sessions.SelectedItem as HistorySession)?.Id,
             list && (_type.SelectedItem as ComboBoxItem)?.Tag is LiveEventType type ? type : null, uid,
-            list ? _name.Text.Trim() : "", list ? _keyword.Text.Trim() : "", list ? cursor.Id : null, list ? cursor.At : null);
+            list ? _name.Text.Trim() : "", list ? _keyword.Text.Trim() : "", list ? cursor.Id : null, list ? cursor.At : null,
+            BroadcastId: (_broadcasts.SelectedItem as HistoryBroadcast)?.Id);
     }
     private void ConditionsChanged(bool scope = false)
     {
@@ -194,7 +198,7 @@ internal sealed class HistoryPage : Page
         _query?.Cancel(); _query?.Dispose(); return _query = new();
     }
     private bool Current(CancellationTokenSource run) => !_disposed && _active && ReferenceEquals(_query, run) && !run.IsCancellationRequested;
-    private async Task RefreshAsync(bool anchors, bool resetSession = false)
+    private async Task RefreshAsync(bool anchors, bool resetSession = false, bool resetBroadcast = false)
     {
         if (_disposed || !_active || _managing) return;
         // Anchor discovery has its own cancellation scope: date/tab changes must not
@@ -209,8 +213,12 @@ internal sealed class HistoryPage : Page
         try
         {
             if (_anchors.SelectedItem is not HistoryAnchor)
-            { ShowSummary(null); _summary.Text = "尚无本地记录"; _status.Text = "开启监视后开始归档；测试与示例不会保存。"; _rows = []; _messages.SetRows([]); _details = null; _gaps = []; _loading = true; _sessions.ItemsSource = null; _loading = false; UpdatePager(); return; }
+            { ShowSummary(null); _summary.Text = "尚无本地记录"; _status.Text = "开启监视后开始归档；测试与示例不会保存。"; _rows = []; _messages.SetRows([]); _details = null; _gaps = []; _loading = true; _sessions.ItemsSource = _broadcasts.ItemsSource = null; _loading = false; UpdatePager(); return; }
             var oldSession = resetSession ? null : (_sessions.SelectedItem as HistorySession)?.Id;
+            var oldBroadcast = resetBroadcast ? null : (_broadcasts.SelectedItem as HistoryBroadcast)?.Id;
+            var broadcasts = await _history.BroadcastsAsync(Filter() with { SessionId = null, BroadcastId = null }, run.Token); if (!Current(run)) return;
+            _loading = true; _broadcasts.ItemsSource = new object[] { "全部直播场次" }.Concat(broadcasts.Cast<object>()).ToArray();
+            _broadcasts.SelectedItem = oldBroadcast is null ? _broadcasts.Items[0] : broadcasts.FirstOrDefault(b => b.Id == oldBroadcast) as object ?? _broadcasts.Items[0]; _loading = false;
             var filter = Filter() with { SessionId = null };
             var sessions = await _history.SessionsAsync(filter, run.Token); if (!Current(run)) return;
             _loading = true; _sessions.ItemsSource = new object[] { "全部监视记录" }.Concat(sessions.Cast<object>()).ToArray();
@@ -220,6 +228,8 @@ internal sealed class HistoryPage : Page
             _details = await _history.DetailsAsync(filter, run.Token); if (!Current(run)) return;
             _gaps = await _history.GapsAsync(filter, run.Token); if (!Current(run)) return;
             ShowSummary(summary);
+            if (_broadcasts.SelectedItem is HistoryBroadcast selectedBroadcast)
+                _summary.Text += $"\n{(selectedBroadcast.StartedAt is { } started ? $"开播 {started.ToLocalTime():yyyy-MM-dd HH:mm}" : "开播时间未取得")} · {selectedBroadcast.MonitorCount} 次监视共同归档 · 仅汇总已采集数据";
             await QueryRowsAsync(run); if (!Current(run)) return;
             UpdateStorage();
         }
@@ -320,10 +330,10 @@ internal sealed class HistoryPage : Page
             try { result = await new ContentDialog
             {
                 Title = entireAnchor ? "删除此主播全部存档？" : "清理所选日期范围？",
-                Content = $"主播：{filter.Anchor.Label}\n" + (entireAnchor ? "范围：所有日期、所有监视记录" : $"日期：{filter.FromDay} ～ {filter.ToDay}\n监视记录：{filter.SessionId ?? "全部"}") +
+                Content = $"主播：{filter.Anchor.Label}\n" + (entireAnchor ? "范围：所有日期、所有监视记录" : $"日期：{filter.FromDay} ～ {filter.ToDay}\n场次：{_broadcasts.SelectedItem}\n监视记录：{filter.SessionId ?? "全部"}") +
                     $"\n存档条目：{count:N0} 条（互动、资料、快照、缺口）\n\n" +
                     (entireAnchor ? "将删除该主播的消息、资料、榜单快照、统计和监视记录，并从已监视主播列表移除。此操作无法撤销。" : "消息类型、昵称、关键词筛选不缩小清理范围。") +
-                    "\n涉及正在记录的监视段时须先停止监视。",
+                    (filter.BroadcastId is not null ? "\n跨场次且无法拆分计数的缺口会保留。" : "") + "\n涉及正在记录的监视段时须先停止监视。",
                 PrimaryButtonText = entireAnchor ? "删除全部存档" : "确认清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot,
             }.ShowAsync(); }
             finally { _dialogOpen = false; }
@@ -337,7 +347,7 @@ internal sealed class HistoryPage : Page
         {
             // Delete the selected anchor even when an active search would otherwise keep it selected.
             _loading = true; if (entireAnchor) _anchors.SelectedItem = null; _loading = false;
-            await RefreshAsync(true, entireAnchor);
+            await RefreshAsync(true, entireAnchor, entireAnchor);
             if (!_disposed && _active) _status.Text = entireAnchor ? "已删除该主播全部存档" : "所选范围已清理 · 空闲页可复用";
         }
     }

@@ -9,7 +9,11 @@ public sealed record DashboardRankPage(IReadOnlyList<LiveRankMember> Members, bo
     public DateTimeOffset SampledAt { get; init; } = DateTimeOffset.UtcNow;
 }
 public sealed record LiveRoomProfile(long Uid, int RoomId, string Name, string AvatarUrl, string Title,
-    string MedalName, long? FansClub, long? Guards, long? Likes, long? EnergyMembers);
+    string MedalName, long? FansClub, long? Guards, long? Likes, long? EnergyMembers)
+{
+    public int? LiveStatus { get; init; }
+    public DateTimeOffset? LiveStartedAt { get; init; }
+}
 public sealed record PopularitySample(DateTimeOffset Time, long Value);
 public sealed record AudienceCountSample(DateTimeOffset Time, long? Value);
 
