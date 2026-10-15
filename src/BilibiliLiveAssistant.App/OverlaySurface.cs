@@ -23,6 +23,8 @@ public abstract class OverlaySurface : Forms.Form
     private readonly Rectangle[] _frameDirtyRects = new Rectangle[32];
     private bool _inAnimationFrame;
     private Forms.ContextMenuStrip? _editorMenu;
+    private OverlayQuickEditor? _quickEditor;
+    private OverlayRegionSettings? _previewRegion;
     protected bool Editing => ViewModel.OverlayInteractive || !ViewModel.Settings.Display.LayoutLocked;
     protected int ContentTop => Editing ? 36 : 0;
     private Rectangle DoneBounds => new(Math.Max(8, ClientSize.Width - 52), 8, 44, 22);
@@ -77,7 +79,7 @@ public abstract class OverlaySurface : Forms.Form
         {
             if (IsDisposed) return;
             SetClickThrough(!Editing);
-            if (!Editing) _editorMenu?.Close();
+            if (!Editing) { _editorMenu?.Close(); _quickEditor?.Close(); }
             OnInteractionChanged(); OnRegionSettingsChanged(RegionSettings); RequestRender(); return;
         }
         if (e.PropertyName != nameof(LiveAssistantViewModel.Settings) || IsDisposed) return;
@@ -92,11 +94,11 @@ public abstract class OverlaySurface : Forms.Form
 
     private void ApplySurfaceSettings()
     {
-        RegionSettings = OverlayRegions.Get(ViewModel.Settings.Display, Kind);
+        RegionSettings = OverlayRegions.ForRendering(_previewRegion ?? OverlayRegions.Get(ViewModel.Settings.Display, Kind));
         // Region opacity is applied by the alpha presenter, never via color-key attributes.
         SetClickThrough(ViewModel.Settings.Display.LayoutLocked && !ViewModel.OverlayInteractive);
         var bounds = OverlayLayout.Bounds(ViewModel.Settings.Display, Kind, RegionSettings);
-        if (Bounds != bounds) Bounds = bounds;
+        if (_previewRegion is null && Bounds != bounds) Bounds = bounds;
     }
 
     protected override void OnPaintBackground(Forms.PaintEventArgs e) { }
@@ -162,6 +164,7 @@ public abstract class OverlaySurface : Forms.Form
         if (Visible) RequestRender();
         else
         {
+            _quickEditor?.Close();
             _pendingDirty = Rectangle.Empty;
             _dirtyRects.Clear();
             _renderQueued = false;
@@ -219,7 +222,7 @@ public abstract class OverlaySurface : Forms.Form
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
                 graphics.CompositingQuality = CompositingQuality.HighSpeed;
                 graphics.CompositingMode = CompositingMode.SourceCopy;
-                using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(225, 32, 36, 42)))
+                using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
                     graphics.FillRectangle(background, dirty);
                 graphics.CompositingMode = CompositingMode.SourceOver;
                 DrawContent(graphics, dirty);
@@ -258,7 +261,7 @@ public abstract class OverlaySurface : Forms.Form
             using var button = new SolidBrush(Color.FromArgb(76, 88, 108));
             graphics.FillRectangle(button, ModeBounds); graphics.FillRectangle(button, DoneBounds);
             state = graphics.Save(); graphics.SetClip(ModeBounds, CombineMode.Intersect);
-            OverlayTextRenderer.Draw(graphics, OverlayRegions.ModeTitle(RegionSettings.Mode) + " ▾", font, new PointF(ModeBounds.X + 4, 11), Color.White, false);
+            OverlayTextRenderer.Draw(graphics, "外观 / 类型 ▾", font, new PointF(ModeBounds.X + 4, 11), Color.White, false);
             graphics.Restore(state);
             OverlayTextRenderer.Draw(graphics, "完成", font, new PointF(DoneBounds.X + 8, 11), Color.White, false);
             using var pen = new Pen(Color.FromArgb(100, 160, 210));
@@ -301,6 +304,7 @@ public abstract class OverlaySurface : Forms.Form
             {
                 try
                 {
+                    _quickEditor?.Close();
                     var current = OverlayRegions.Get(ViewModel.Settings.Display, Kind) with { Mode = mode, ModeVersion = 1, X = Left, Y = Top, Width = Width, Height = Height };
                     await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind, current) });
                 }
@@ -308,11 +312,35 @@ public abstract class OverlaySurface : Forms.Form
             };
             _editorMenu.Items.Add(item);
         }
+        _editorMenu.Items.Add(new Forms.ToolStripSeparator());
+        var appearance = new Forms.ToolStripMenuItem("大小、透明度、背景与时间…");
+        appearance.Click += (_, _) => OpenQuickEditor(); _editorMenu.Items.Add(appearance);
         AddEditorMenuItems(_editorMenu);
         _editorMenu.Show(this, new Point(ModeBounds.Left, ContentTop));
     }
 
     protected virtual void AddEditorMenuItems(Forms.ContextMenuStrip menu) { }
+
+    private void OpenQuickEditor()
+    {
+        if (_quickEditor is { IsDisposed: false }) { _quickEditor.Activate(); return; }
+        var editor = new OverlayQuickEditor(Kind, OverlayRegions.Get(ViewModel.Settings.Display, Kind), PreviewRegion, async draft =>
+        {
+            await ViewModel.SaveAsync(ViewModel.Settings with { Display = OverlayRegions.With(ViewModel.Settings.Display, Kind,
+                draft with { X = Left, Y = Top, Width = Width, Height = Height }) });
+        });
+        _quickEditor = editor;
+        editor.FormClosed += (_, _) => { if (ReferenceEquals(_quickEditor, editor)) _quickEditor = null; PreviewRegion(null); };
+        editor.Show(this);
+    }
+
+    private void PreviewRegion(OverlayRegionSettings? draft)
+    {
+        if (IsDisposed || Disposing) return;
+        var previous = RegionSettings;
+        _previewRegion = draft is null ? null : draft with { X = Left, Y = Top, Width = Width, Height = Height };
+        ApplySurfaceSettings(); OnRegionSettingsChanged(previous); RequestRender();
+    }
 
     private async Task FinishEditingAsync()
     {
@@ -339,7 +367,7 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
+        if (disposing) { ViewModel.PropertyChanged -= OnSettingsChanged; _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }
 

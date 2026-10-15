@@ -86,7 +86,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             var members = Enumerable.Range(1, _region.RankCount).Select(i => new LiveRankMember(i, i, $"示例观众{i}", PreviewSamples.Appearance with { GuardLevel = i == 1 ? 3 : 0 })).ToArray();
             var metrics = _region.ShowAudienceStats ? new[] { new LiveAudienceMetric(LiveAudienceMetricKind.EnergyMembers, "620"), new LiveAudienceMetric(LiveAudienceMetricKind.Watched, "1.2万") } : Array.Empty<LiveAudienceMetric>();
             messages = OverlayBulletinRenderer.CreateParts(metrics,
-                members, true, _region, _style, _vm.Images, 160).Take(1).ToArray();
+                members, true, OverlayRegions.ForRendering(_region), _style, _vm.Images, 160).Take(1).ToArray();
             if (stationary) messages = new[] { new LiveEvent(LiveEventType.Rank, "", "", _region.Color, Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }) }
                 .Concat(members.Select(m => OverlayBulletinRenderer.MemberEvent(m, _region.Color))).ToArray();
         }
@@ -96,15 +96,15 @@ internal sealed class DisplayPreview : Grid, IDisposable
         var cellWidth = Math.Max(140, ((int)_canvas.ActualWidth - 24 - (columns - 1) * 8) / columns);
         foreach (var message in messages)
         {
-            var region = stationary && kind == OverlayRegionKind.Gift ? _region with { Bold = true } : _region;
+            var region = OverlayRegions.ForRendering(stationary && kind == OverlayRegionKind.Gift ? _region with { Bold = true } : _region);
             using var rendered = OverlayMessageRenderer.Render(message, region, renderStyle, _vm.Images,
                 width: stationary ? cellWidth : kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0,
                 maxHeight: stationary ? kind == OverlayRegionKind.Status ? Math.Max(48, region.FontSize * 2 + 12) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
-                card: stationary && kind != OverlayRegionKind.Status);
+                card: stationary && kind != OverlayRegionKind.Status, background: !stationary);
             using var bitmap = new System.Drawing.Bitmap(rendered.Width, stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : rendered.Height, PixelFormat.Format32bppPArgb);
             using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
             {
-                if (stationary) { using var fill = new System.Drawing.SolidBrush(OverlayTextRenderer.Color(region.BackgroundColor, region.BackgroundOpacity)); graphics.FillRectangle(fill, 0, 0, bitmap.Width, bitmap.Height); }
+                if (stationary) OverlayMessageRenderer.DrawBackground(graphics, bitmap.Size, region, OverlayTextRenderer.Color(region.Color));
                 graphics.DrawImageUnscaled(rendered, 0, 0);
             }
             using var memory = new MemoryStream(); bitmap.Save(memory, ImageFormat.Png);
@@ -113,9 +113,9 @@ internal sealed class DisplayPreview : Grid, IDisposable
             var source = new BitmapImage(); await source.SetSourceAsync(stream);
             if (_disposed || generation != _generation || !_active || !_visible()) return;
             var image = new Image { Source = source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
-            if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) + 8);
+            if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(region.CardHeight, region.FontSize * 3 + 24) + 8);
             Canvas.SetTop(image, y); Canvas.SetLeft(image, stationary ? 12 + slot % columns * (cellWidth + 8) : 0); _canvas.Children.Add(image);
-            if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) : bitmap.Height) + 8;
+            if (columns == 1) y += (stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : bitmap.Height) + 8;
             slot++;
             ElementCompositionPreview.SetIsTranslationEnabled(image, true);
             var visual = ElementCompositionPreview.GetElementVisual(image); _visuals.Add(visual);
@@ -135,7 +135,8 @@ internal sealed class DisplayPreview : Grid, IDisposable
                 animation.IterationBehavior = AnimationIterationBehavior.Forever; visual.StartAnimation("Opacity", animation); animation.Dispose();
             }
         }
-        _canvas.Height = Math.Max(280, y + (stationary && columns > 1 ? Math.Max(_region.CardHeight, _region.FontSize * 3 + 24) + 12 : 0)); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
+        var effective = OverlayRegions.ForRendering(_region);
+        _canvas.Height = Math.Max(280, y + (stationary && columns > 1 ? Math.Max(effective.CardHeight, effective.FontSize * 3 + 24) + 12 : 0)); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
         _hint.Text = stationary ? $"{OverlayRegions.ModeTitle(_region.Mode)} · 高度 {_region.CardHeight} px" + (_region.Mode == OverlayDisplayMode.Cards ? $" · 每条 {_region.DurationSeconds:0} 秒 / 上舰 {_region.GuardDurationSeconds:0} 秒 · 最多 {_region.MaxVisible} 张" : " · 无持续动画")
             : kind == OverlayRegionKind.Interaction ? $"固定停留 {_region.DurationSeconds:0.#} 秒 · 最新 {_region.MaxVisible} 条"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";

@@ -71,21 +71,22 @@ internal static class OverlayMessageRenderer
     }
 
     public static Bitmap Render(LiveEvent value, OverlayRegionSettings region, DashboardSettings style, BiliImageCache cache,
-        int width = 0, int maxHeight = 128, bool card = false)
+        int width = 0, int maxHeight = 128, bool card = false, bool background = true)
     {
         if (!card && value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
-            return OverlayBulletinRenderer.Render(bulletin, region, style, cache, maxHeight);
+            return OverlayBulletinRenderer.Render(bulletin, background ? region : region with { BackgroundOpacity = 0 }, style, cache, maxHeight);
+        style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };
         var rankMember = value.Extra.TryGetValue("rank_position", out var rankPosition);
         var entry = value.Type == LiveEventType.Enter && !string.IsNullOrEmpty(value.Username);
         if (entry) card = false;
         maxHeight = Math.Max(36, maxHeight);
         var maxWidth = Math.Clamp(width > 0 ? width : rankMember ? 3000 : 4096, 24, 7680);
-        var pad = card ? Math.Clamp(style.Padding, 10, 24) : 4;
+        var pad = Math.Max(card ? (int)(Math.Clamp(style.Padding, 10, 24) * region.ContentScale) : 4, region.Shadow ? region.ShadowOffset + region.ShadowSize + 2 : 4);
         var system = value.Type is LiveEventType.Online or LiveEventType.Rank || string.IsNullOrEmpty(value.Username);
         var accent = OverlayTextRenderer.Color(value.Type == LiveEventType.Rank ? "#B998FF" : region.Color);
         using var bodyFont = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold, region.Italic);
         using var nameFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(12, region.FontSize * (entry || rankMember ? 1 : 0.8f)), true);
-        using var badgeFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(10, Math.Min(15, region.FontSize * 0.5f)), true);
+        using var badgeFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(8, Math.Min(15 * (float)region.ContentScale, region.FontSize * 0.5f)), true);
         using var measureImage = new Bitmap(1, 1);
         using var measure = Graphics.FromImage(measureImage);
         var framedAvatar = style.ShowIdentity && value.Appearance?.AvatarFrameUrl is { Length: > 0 };
@@ -177,7 +178,7 @@ internal static class OverlayMessageRenderer
             using var graphics = Graphics.FromImage(sprite);
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
-            if (card) DrawCardBackground(graphics, sprite.Size, style, accent);
+            if (background) DrawBackground(graphics, sprite.Size, region, accent);
             if (entry && value.Appearance?.EntryEffect is { } effect && imageWidth > startX + pad + 1)
             {
                 var bounds = new RectangleF(startX - 3, pad, imageWidth - startX - pad + 3, height - pad * 2);
@@ -185,10 +186,10 @@ internal static class OverlayMessageRenderer
                 var color = OverlayTextRenderer.Color(LiveEntryStyles.Accent(value.Appearance));
                 using var fill = new LinearGradientBrush(bounds, Color.FromArgb(225, color), Color.FromArgb(0, color), LinearGradientMode.Horizontal);
                 graphics.FillPath(fill, shape);
-                if (Load(effect.BackgroundUrl) is { } background)
+                if (Load(effect.BackgroundUrl) is { } entryBackground)
                 {
                     var saved = graphics.Save(); graphics.SetClip(shape, CombineMode.Intersect);
-                    graphics.DrawImage(background, bounds); graphics.Restore(saved);
+                    graphics.DrawImage(entryBackground, bounds); graphics.Restore(saved);
                 }
             }
             foreach (var piece in pieces)
@@ -211,13 +212,13 @@ internal static class OverlayMessageRenderer
                 {
                     using var pill = OverlayTextRenderer.RoundedRectangle(piece.Bounds, 4);
                     using var fill = new SolidBrush(piece.Color); graphics.FillPath(fill, pill);
-                    OverlayTextRenderer.Draw(graphics, piece.Text, badgeFont, new(piece.Bounds.X + 5, piece.Bounds.Y + 3), Color.White, false);
+                    OverlayTextRenderer.Draw(graphics, piece.Text, badgeFont, new(piece.Bounds.X + 5, piece.Bounds.Y + 3), Color.White, false, region);
                     continue;
                 }
                 if (piece.Image is not null) { graphics.DrawImage(piece.Image, piece.Bounds); continue; }
                 var saved = graphics.Save();
                 if (piece.Clip) graphics.SetClip(piece.Bounds, CombineMode.Intersect);
-                OverlayTextRenderer.Draw(graphics, piece.Text, piece.Font!, piece.Bounds.Location, piece.Color, !card && region.Outline);
+                OverlayTextRenderer.Draw(graphics, piece.Text, piece.Font!, piece.Bounds.Location, piece.Color, region.Outline, region);
                 graphics.Restore(saved);
             }
             return sprite;
@@ -335,7 +336,7 @@ internal static class OverlayMessageRenderer
         var bitmap = new Bitmap(width, Math.Max(36, height), PixelFormat.Format32bppPArgb);
         using var graphics = Graphics.FromImage(bitmap);
         var accent = OverlayTextRenderer.Color(region.Color);
-        DrawCardBackground(graphics, bitmap.Size, style, accent);
+        DrawBackground(graphics, bitmap.Size, region, accent);
         OverlayTextRenderer.Draw(graphics, "近期进房 / 关注", titleFont, new(pad, 10), accent, false);
         var y = 32;
         for (var i = 0; i < shown; i++)
@@ -347,13 +348,14 @@ internal static class OverlayMessageRenderer
         return bitmap;
     }
 
-    private static void DrawCardBackground(Graphics graphics, Size size, DashboardSettings style, Color accent)
+    internal static void DrawBackground(Graphics graphics, Size size, OverlayRegionSettings region, Color accent)
     {
+        if (region.BackgroundOpacity <= 0) return;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var shape = OverlayTextRenderer.RoundedRectangle(new(0.5f, 0.5f, size.Width - 1, size.Height - 1), style.CornerRadius);
-        using var fill = new SolidBrush(OverlayTextRenderer.Color(style.BackgroundColor, style.BackgroundOpacity));
+        using var shape = OverlayTextRenderer.RoundedRectangle(new(0.5f, 0.5f, size.Width - 1, size.Height - 1), 8);
+        using var fill = new SolidBrush(OverlayTextRenderer.Color(region.BackgroundColor, region.BackgroundOpacity));
         graphics.FillPath(fill, shape);
-        using var border = new Pen(Color.FromArgb(160, accent), 1); graphics.DrawPath(border, shape);
+        using var border = new Pen(Color.FromArgb((int)(160 * region.BackgroundOpacity), accent), 1); graphics.DrawPath(border, shape);
     }
     private static string Label(LiveEvent value) => value.Type switch
     {

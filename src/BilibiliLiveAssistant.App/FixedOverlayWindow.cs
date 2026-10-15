@@ -18,6 +18,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     private LiveEvent? _currentSc;
     private LiveEvent? _online, _rank;
     private long _broadcastAt;
+    private long _nextDisplayAt;
     private bool _cleaned;
     private DashboardSettings _style;
     private MediaPreviewSettings _mediaStyle;
@@ -57,7 +58,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     private void ResetContent()
     {
         _wake.Stop(); _frames.Stop(OnFrame);
-        _waiting.Clear(); _scParts = null; _bulletinParts = null; _currentSc = null; _online = null; _rank = null; _broadcastAt = 0;
+        _waiting.Clear(); _scParts = null; _bulletinParts = null; _currentSc = null; _online = null; _rank = null; _broadcastAt = 0; _nextDisplayAt = 0;
         ClearSprites(); RequestRender();
     }
 
@@ -121,11 +122,12 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         }
         else
         {
-            var maxAge = Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, RegionSettings.MergeSeconds + 10);
+            var maxAge = Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, Math.Max(RegionSettings.MergeSeconds + 10, RegionSettings.DisplayIntervalSeconds + 2));
             var expired = _waiting.RemoveAll(p => Age(p.CreatedAt, now) >= maxAge);
             ViewModel.RecordOverlayDropped(expired);
             while (_sprites.Count < Lanes)
             {
+                if (_scParts is not { Count: > 0 } && now < _nextDisplayAt) break;
                 LiveEvent next;
                 if (_scParts is { Count: > 0 }) next = _scParts.Dequeue();
                 else
@@ -146,6 +148,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
                 }
                 var lane = Enumerable.Range(0, Lanes).First(i => _sprites.All(s => s.Lane != i));
                 AddSprite(next, lane, ClientSize.Width + 12);
+                if (_scParts is not { Count: > 0 }) _nextDisplayAt = After(now, RegionSettings.DisplayIntervalSeconds);
             }
         }
         if (Kind != OverlayRegionKind.Interaction && _sprites.Count > 0) _frames.Start(OnFrame);
@@ -260,8 +263,8 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             foreach (var sprite in _sprites) due = Math.Min(due, sprite.ExpiresAt);
         foreach (var pending in _waiting)
         {
-            if (_sprites.Count < Lanes) due = Math.Min(due, pending.ReadyAt);
-            due = Math.Min(due, After(pending.CreatedAt, Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, RegionSettings.MergeSeconds + 10)));
+            if (_sprites.Count < Lanes) due = Math.Min(due, Math.Max(pending.ReadyAt, _nextDisplayAt));
+            due = Math.Min(due, After(pending.CreatedAt, Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, Math.Max(RegionSettings.MergeSeconds + 10, RegionSettings.DisplayIntervalSeconds + 2))));
         }
         if (due == long.MaxValue) return;
         _wake.Interval = (int)Math.Clamp(Math.Ceiling(Age(now, due) * 1000), 1, int.MaxValue); _wake.Start();
@@ -318,10 +321,11 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
     {
+        if (previous.DisplayIntervalSeconds != RegionSettings.DisplayIntervalSeconds) _nextDisplayAt = After(Now, RegionSettings.DisplayIntervalSeconds);
         var appearanceChanged = previous.FontFamily != RegionSettings.FontFamily || previous.FontSize != RegionSettings.FontSize
             || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
             || previous.Color != RegionSettings.Color || previous.Bold != RegionSettings.Bold || previous.Italic != RegionSettings.Italic
-            || previous.Outline != RegionSettings.Outline || _style != ViewModel.Settings.Dashboard || _mediaStyle != ViewModel.Settings.MediaPreview;
+            || previous.Outline != RegionSettings.Outline || !previous.HasSameEffects(RegionSettings) || _style != ViewModel.Settings.Dashboard || _mediaStyle != ViewModel.Settings.MediaPreview;
         _style = ViewModel.Settings.Dashboard;
         _mediaStyle = ViewModel.Settings.MediaPreview;
         if (Kind != OverlayRegionKind.Interaction) PositionScrolling();
@@ -332,10 +336,12 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         }
         else if (appearanceChanged)
         {
-            ClearSprites();
-            if (Kind == OverlayRegionKind.SuperChat && _currentSc is not null)
-                _scParts = new Queue<LiveEvent>(OverlayMessageRenderer.ScrollParts(_currentSc, RegionSettings, _style, ViewModel.Images));
-            if (Kind == OverlayRegionKind.Status) { _bulletinParts = null; _broadcastAt = 0; }
+            foreach (var sprite in _sprites)
+            {
+                var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images, maxHeight: RowHeight);
+                sprite.Media?.Dispose(); sprite.Media = null; sprite.Image.Dispose(); sprite.Image = body;
+            }
+            PositionScrolling();
         }
         if (Kind == OverlayRegionKind.Status && previous.BroadcastIntervalSeconds != RegionSettings.BroadcastIntervalSeconds)
             _broadcastAt = After(Now, RegionSettings.BroadcastIntervalSeconds);

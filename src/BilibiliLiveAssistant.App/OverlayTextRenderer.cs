@@ -1,18 +1,32 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using BilibiliLiveAssistant.Core;
 
 namespace BilibiliLiveAssistant.App;
 
 internal static class OverlayTextRenderer
 {
     // Fill and outline share identical glyph geometry; no rectangle can reject only the fill.
-    public static void Draw(Graphics graphics, string text, Font font, PointF location, Color color, bool outline)
+    public static void Draw(Graphics graphics, string text, Font font, PointF location, Color color, bool outline, OverlayRegionSettings? effects = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         using var format = Format();
         using var path = new GraphicsPath();
         path.AddString(text, font.FontFamily, (int)font.Style, font.SizeInPoints * graphics.DpiY / 72f, location, format);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        if (effects is { Shadow: true, ShadowOpacity: > 0 })
+        {
+            var state = graphics.Save();
+            graphics.TranslateTransform(effects.ShadowOffset, effects.ShadowOffset);
+            var shadow = Color(effects.ShadowColor, effects.ShadowOpacity * color.A / 255d);
+            if (effects.ShadowSize > 0)
+            {
+                using var pen = new Pen(System.Drawing.Color.FromArgb(shadow.A / 2, shadow), effects.ShadowSize * 2f) { LineJoin = LineJoin.Round };
+                graphics.DrawPath(pen, path);
+            }
+            using var shade = new SolidBrush(shadow); graphics.FillPath(shade, path);
+            graphics.Restore(state);
+        }
         if (outline)
         {
             using var pen = new Pen(System.Drawing.Color.FromArgb(color.A, 16, 20, 28), Math.Clamp(font.Size / 22f, 0.9f, 1.6f)) { LineJoin = LineJoin.Round };

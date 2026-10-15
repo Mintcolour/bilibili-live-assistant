@@ -63,13 +63,14 @@ internal static class OverlayBulletinRenderer
         try
         {
             foreach (var member in bulletin.Members.Take(10))
-                images.Add(OverlayMessageRenderer.Render(MemberEvent(member, region.Color), region, style, cache, maxHeight: height));
+                images.Add(OverlayMessageRenderer.Render(MemberEvent(member, region.Color), region, style, cache, maxHeight: height, background: false));
             var width = Math.Clamp(prefix.Width + images.Sum(image => Gap + image.Width), 24, WidthLimit);
             var rowHeight = Math.Max(prefix.Height, images.Count == 0 ? 0 : images.Max(image => image.Height));
             var result = new Bitmap(width, Math.Clamp(rowHeight, 36, Math.Max(36, height)), PixelFormat.Format32bppPArgb);
             try
             {
                 using var graphics = Graphics.FromImage(result);
+                OverlayMessageRenderer.DrawBackground(graphics, result.Size, region, OverlayTextRenderer.Color(region.Color));
                 graphics.DrawImageUnscaled(prefix, 0, (result.Height - prefix.Height) / 2);
                 var x = prefix.Width;
                 foreach (var image in images)
@@ -114,7 +115,7 @@ internal static class OverlayBulletinRenderer
                 var color = OverlayTextRenderer.Color(piece.Icon == 2 ? "#B998FF" : region.Color);
                 DrawIcon(graphics, piece.Icon, new RectangleF(piece.X, (h - iconSize) / 2f, iconSize, iconSize), color, region.Outline);
                 OverlayTextRenderer.Draw(graphics, piece.Text, font,
-                    new PointF(piece.X + iconSize + 7, (h - font.GetHeight(graphics)) / 2), color, region.Outline);
+                    new PointF(piece.X + iconSize + 7, (h - font.GetHeight(graphics)) / 2), color, region.Outline, region);
             }
             return bitmap;
         }

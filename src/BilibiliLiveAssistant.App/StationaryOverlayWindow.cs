@@ -11,7 +11,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     {
         public LiveEvent Value { get; } = value;
         public DateTimeOffset Displayed { get; } = displayed;
-        public DateTimeOffset Expires { get; } = expires;
+        public DateTimeOffset Expires { get; set; } = expires;
     }
     private sealed class CardView(LiveEvent value, Rectangle bounds, string caption) : IDisposable
     {
@@ -33,6 +33,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private int _offset, _hover = -1;
     private bool _disposed, _dirty, _rebuilding;
     private DateTimeOffset? _intakeDue;
+    private DateTimeOffset _nextDisplayAt;
     private Forms.Form? _detail;
     public OverlayRegionKind RegionKind => Kind;
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
@@ -78,7 +79,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         }
         if (GridMode && Capacity > 0) { _board.Resize(Capacity); _board.AddBatch(batch, ViewModel.Settings.Cards); }
         _dirty = true;
-        _intakeDue ??= now.AddMilliseconds(RegionSettings.UpdateIntervalMs);
+        _intakeDue ??= now.AddMilliseconds(Math.Max(RegionSettings.UpdateIntervalMs, Timed ? 0 : RegionSettings.DisplayIntervalSeconds * 1000));
         Schedule();
     }
     private void RefreshRanking()
@@ -107,10 +108,12 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
             for (var i = 0; i < _timed.Length; i++) if (_timed[i] is { } item && item.Expires <= now) { _timed[i] = null; changed = true; }
             for (var i = 0; i < Capacity; i++)
             {
+                if (now < _nextDisplayAt) break;
                 if (_timed[i] is not null) continue;
                 var next = _queue.Take(now, Kind == OverlayRegionKind.SuperChat); if (next is null) break;
                 var seconds = next.Type == LiveEventType.Guard ? RegionSettings.GuardDurationSeconds : RegionSettings.DurationSeconds;
                 _timed[i] = new(next, now, now.AddSeconds(seconds)); changed = true;
+                _nextDisplayAt = now.AddSeconds(RegionSettings.DisplayIntervalSeconds);
             }
         }
         if (changed) Rebuild();
@@ -124,7 +127,9 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         if (Timed)
         {
             foreach (var card in _timed) if (card is not null) Include(card.Expires);
-            Include(_queue.NextWake(Enumerable.Range(0, Capacity).Any(i => _timed[i] is null)));
+            Include(_queue.NextWake(false));
+            if (Enumerable.Range(0, Capacity).Any(i => _timed[i] is null) && _queue.NextWake(true) is { } ready)
+                Include(ready < _nextDisplayAt ? _nextDisplayAt : ready);
         }
         if (due is null) return;
         _wake.Interval = (int)Math.Clamp(Math.Ceiling((due.Value - DateTimeOffset.UtcNow).TotalMilliseconds), 1, int.MaxValue); _wake.Start();
@@ -169,11 +174,11 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         var region = view.Value.Type is LiveEventType.Gift or LiveEventType.Guard ? RegionSettings with { Bold = true } : RegionSettings;
         var captionHeight = view.Caption.Length > 0 ? 22 : 0;
         using var body = OverlayMessageRenderer.Render(view.Value, region, Style, ViewModel.Images, view.Bounds.Width,
-            view.Media?.BodyHeight ?? view.Bounds.Height - captionHeight, card: Kind != OverlayRegionKind.Status);
+            view.Media?.BodyHeight ?? view.Bounds.Height - captionHeight, card: Kind != OverlayRegionKind.Status, background: false);
         var replacement = new Bitmap(view.Bounds.Width, view.Bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         using (var g = Graphics.FromImage(replacement))
         {
-            using var fill = new SolidBrush(OverlayTextRenderer.Color(RegionSettings.BackgroundColor, RegionSettings.BackgroundOpacity)); g.FillRectangle(fill, 0, 0, replacement.Width, replacement.Height);
+            OverlayMessageRenderer.DrawBackground(g, replacement.Size, region, OverlayTextRenderer.Color(region.Color));
             if (view.Media is { } media) { using var image = media.Compose(body, region); g.DrawImageUnscaled(image, 0, 0); } else g.DrawImageUnscaled(body, 0, 0);
             if (captionHeight > 0) { using var font = OverlayTextRenderer.CreateFont(region.FontFamily, 12); OverlayTextRenderer.Draw(g, view.Caption, font, new(10, replacement.Height - 20), Color.FromArgb(240, 196, 207, 226), false); }
         }
@@ -263,11 +268,14 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
     {
         if (previous.Mode != RegionSettings.Mode) { ResetContent(); return; }
-        ClearViews(); _dirty = true; if (Visible) Process();
+        if (previous.DisplayIntervalSeconds != RegionSettings.DisplayIntervalSeconds) _nextDisplayAt = DateTimeOffset.UtcNow.AddSeconds(RegionSettings.DisplayIntervalSeconds);
+        if (previous.DurationSeconds != RegionSettings.DurationSeconds || previous.GuardDurationSeconds != RegionSettings.GuardDurationSeconds)
+            foreach (var card in _timed) if (card is not null) card.Expires = card.Displayed.AddSeconds(card.Value.Type == LiveEventType.Guard ? RegionSettings.GuardDurationSeconds : RegionSettings.DurationSeconds);
+        ClearViews(); _intakeDue = null; _dirty = true; if (Visible) Process();
     }
     private void ResetContent()
     {
-        _wake.Stop(); _detail?.Close(); _detail = null; ClearViews(); Array.Clear(_timed); _queue.Clear(); _list.Clear(); _ranking.Clear(); _board.Clear(); _online = _rank = null; _offset = 0; _intakeDue = null; _dirty = false; ClearHover(); RequestRender();
+        _wake.Stop(); _detail?.Close(); _detail = null; ClearViews(); Array.Clear(_timed); _queue.Clear(); _list.Clear(); _ranking.Clear(); _board.Clear(); _online = _rank = null; _offset = 0; _intakeDue = null; _nextDisplayAt = default; _dirty = false; ClearHover(); RequestRender();
     }
     protected override void Dispose(bool disposing)
     {

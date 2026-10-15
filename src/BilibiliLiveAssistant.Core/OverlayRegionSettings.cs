@@ -12,6 +12,14 @@ public sealed record OverlayRegionSettings
     public int CardColumns { get; init; } = 2;
     public string BackgroundColor { get; init; } = "#242833";
     public double BackgroundOpacity { get; init; } = 0.9;
+    public int AppearanceVersion { get; init; }
+    public double ContentScale { get; init; } = 1;
+    public bool Shadow { get; init; } = true;
+    public double ShadowOpacity { get; init; } = 0.7;
+    public int ShadowSize { get; init; } = 2;
+    public int ShadowOffset { get; init; } = 2;
+    public string ShadowColor { get; init; } = "#000000";
+    public double DisplayIntervalSeconds { get; init; }
     public string FontFamily { get; init; } = "Microsoft YaHei UI";
     public int FontSize { get; init; } = 28;
     public int EmoteSize { get; init; } = 36;
@@ -42,6 +50,11 @@ public sealed record OverlayRegionSettings
         CardHeight = Math.Clamp(CardHeight, 100, 400), CardColumns = Math.Clamp(CardColumns, 1, 4),
         BackgroundColor = IsColor(BackgroundColor) ? BackgroundColor : "#242833",
         BackgroundOpacity = double.IsFinite(BackgroundOpacity) ? Math.Clamp(BackgroundOpacity, 0, 1) : 0.9,
+        ContentScale = double.IsFinite(ContentScale) ? Math.Clamp(ContentScale, 0.5, 2) : 1,
+        ShadowOpacity = double.IsFinite(ShadowOpacity) ? Math.Clamp(ShadowOpacity, 0, 1) : 0.7,
+        ShadowSize = Math.Clamp(ShadowSize, 0, 6), ShadowOffset = Math.Clamp(ShadowOffset, 0, 6),
+        ShadowColor = IsColor(ShadowColor) ? ShadowColor : "#000000",
+        DisplayIntervalSeconds = double.IsFinite(DisplayIntervalSeconds) ? Math.Clamp(DisplayIntervalSeconds, 0, 30) : 0,
         FontFamily = string.IsNullOrWhiteSpace(FontFamily) ? "Microsoft YaHei UI" : FontFamily.Trim(),
         FontSize = Math.Clamp(FontSize, 12, 72),
         EmoteSize = Math.Clamp(EmoteSize, 16, 128),
@@ -61,6 +74,9 @@ public sealed record OverlayRegionSettings
 
     public static bool IsColor(string? color) => color is { Length: 7 } && color[0] == '#'
         && color.AsSpan(1).IndexOfAnyExcept("0123456789abcdefABCDEF") < 0;
+    public bool HasSameEffects(OverlayRegionSettings other) => ContentScale == other.ContentScale && Shadow == other.Shadow
+        && ShadowOpacity == other.ShadowOpacity && ShadowSize == other.ShadowSize && ShadowOffset == other.ShadowOffset
+        && ShadowColor == other.ShadowColor && BackgroundColor == other.BackgroundColor && BackgroundOpacity == other.BackgroundOpacity;
 }
 
 public static class OverlayRegions
@@ -95,11 +111,24 @@ public static class OverlayRegions
             CardHeight = kind == OverlayRegionKind.Gift ? 100 : kind == OverlayRegionKind.SuperChat ? 180 : region.CardHeight,
         };
         var allowed = Modes(kind); if (!allowed.Contains(region.Mode)) region = region with { Mode = allowed[0] };
+        if (region.AppearanceVersion == 0) region = region with
+        {
+            AppearanceVersion = 1,
+            BackgroundOpacity = kind == OverlayRegionKind.Status || region.Mode == OverlayDisplayMode.Scrolling ? 0 : region.BackgroundOpacity,
+        };
         return region with { PlaybackVersion = 1, ModeVersion = 1,
             ScrollSpeed = region.ScrollSpeed > 0 ? region.ScrollSpeed : kind == OverlayRegionKind.Danmaku ? Math.Clamp(display.ScrollSpeed, 30, 500) : 120,
             DurationSeconds = kind is OverlayRegionKind.Gift or OverlayRegionKind.SuperChat ? Math.Max(5, region.DurationSeconds) : region.DurationSeconds,
             MaxVisible = kind == OverlayRegionKind.Interaction ? Math.Min(3, region.MaxVisible) : region.Mode == OverlayDisplayMode.Cards ? Math.Min(6, region.MaxVisible) : kind is OverlayRegionKind.SuperChat or OverlayRegionKind.Status ? 1 : region.MaxVisible };
     }
+    // Scale geometry before rasterization so text stays sharp and tracks reserve actual height.
+    public static OverlayRegionSettings ForRendering(OverlayRegionSettings region) => region with
+    {
+        FontSize = (int)Math.Round(region.FontSize * region.ContentScale),
+        EmoteSize = (int)Math.Round(region.EmoteSize * region.ContentScale),
+        LargeEmoteHeight = (int)Math.Round(region.LargeEmoteHeight * region.ContentScale),
+        CardHeight = (int)Math.Round(region.CardHeight * region.ContentScale),
+    };
     public static OverlayDisplayMode[] Modes(OverlayRegionKind kind) => kind switch
     {
         OverlayRegionKind.Danmaku => [OverlayDisplayMode.Scrolling, OverlayDisplayMode.List, OverlayDisplayMode.Grid],
