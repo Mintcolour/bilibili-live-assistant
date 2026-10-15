@@ -33,9 +33,17 @@ internal static class BiliEventParser
                 break;
             case "SEND_GIFT_V2":
                 var broadcast = Decode<SendGiftBroadcast>(root.GetProperty("data"));
+                var giftAppearance = new LiveMessageAppearance
+                {
+                    AvatarUrl = broadcast.Face.Length <= 2048 ? broadcast.Face : "",
+                    GuardLevel = broadcast.GuardLevel is >= 1 and <= 3 ? broadcast.GuardLevel : 0,
+                    MedalName = broadcast.Medal?.Name is { } medalName ? medalName[..Math.Min(medalName.Length, 64)] : "",
+                    MedalLevel = Math.Clamp(broadcast.Medal?.Level ?? 0, 0, 999),
+                };
                 foreach (var item in broadcast.Gifts)
                     EmitGift(emit, broadcast.Username, broadcast.Uid, item.Name, item.Count, item.Action,
-                        item.CoinType, item.TotalCoin, item.Id, item.Price, item.TransactionId);
+                        item.CoinType, item.TotalCoin, item.Id, item.Price, item.TransactionId, giftAppearance,
+                        SourceTime(item.Timestamp), item.Material?.IconUrl is { Length: <= 2048 } giftIcon ? giftIcon : "");
                 break;
             case "SUPER_CHAT_MESSAGE":
                 var sc = root.GetProperty("data");
@@ -164,7 +172,23 @@ internal sealed class SendGiftBroadcast
 {
     [ProtoMember(1)] public long Uid { get; set; }
     [ProtoMember(2)] public string Username { get; set; } = string.Empty;
+    [ProtoMember(3)] public string Face { get; set; } = string.Empty;
+    [ProtoMember(5)] public int GuardLevel { get; set; }
+    [ProtoMember(8)] public SendGiftMedal? Medal { get; set; }
     [ProtoMember(10)] public List<SendGiftItem> Gifts { get; } = new();
+}
+
+[ProtoContract]
+internal sealed class SendGiftMedal
+{
+    [ProtoMember(5)] public int Level { get; set; }
+    [ProtoMember(6)] public string Name { get; set; } = string.Empty;
+}
+
+[ProtoContract]
+internal sealed class SendGiftMaterial
+{
+    [ProtoMember(1)] public string IconUrl { get; set; } = string.Empty;
 }
 
 [ProtoContract]
@@ -177,5 +201,7 @@ internal sealed class SendGiftItem
     [ProtoMember(7)] public long? TotalCoin { get; set; }
     [ProtoMember(8)] public string CoinType { get; set; } = string.Empty;
     [ProtoMember(9)] public string TransactionId { get; set; } = string.Empty;
+    [ProtoMember(10)] public long Timestamp { get; set; }
     [ProtoMember(18)] public string Action { get; set; } = string.Empty;
+    [ProtoMember(35)] public SendGiftMaterial? Material { get; set; }
 }

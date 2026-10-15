@@ -20,11 +20,16 @@ internal static class BiliMessageAppearanceParser
         return ReadObjectOrJson(mode, node =>
         {
             var profile = Get(Get(node, "user"), "base");
+            var face = Text(Get(profile, "face"));
+            if (face.Length == 0) face = Text(Get(Get(Get(node, "uinfo"), "base"), "face"));
+            if (face.Length == 0) face = Text(Get(Get(Get(node, "sender_uinfo"), "base"), "face"));
+            if (face.Length == 0) face = Text(Get(Get(node, "user_info"), "face"));
+            if (face.Length == 0) face = First(Text(Get(node, "face")), Text(Get(node, "uface")));
             var full = ReadObjectOrJson(At(options, 13), e => Emote(e, ""));
             var emotes = ReadObjectOrJson(Get(node, "extra"), ReadInlineEmotes) ?? Array.Empty<LiveEmote>();
             return new LiveMessageAppearance
             {
-                AvatarUrl = Text(Get(profile, "face")), UsernameColor = Color(At(user, 7), ""),
+                AvatarUrl = Limit(face, 2048), UsernameColor = Color(At(user, 7), ""),
                 MedalName = Text(At(medal, 1)), MedalLevel = Int(At(medal, 0)), MedalColor = Color(At(medal, 4)),
                 GuardLevel = Int(At(info, 7)), IsAdmin = Int(At(user, 2)) == 1,
                 FullEmote = Int(At(options, 12)) == 1 ? full : null, Emotes = emotes,
@@ -40,24 +45,30 @@ internal static class BiliMessageAppearanceParser
     public static LiveMessageAppearance Common(JsonElement data)
     {
         var uinfo = Get(data, "uinfo");
-        if (uinfo.ValueKind != JsonValueKind.Object) uinfo = Get(data, "sender_uinfo");
+        var sender = Get(data, "sender_uinfo");
+        if (uinfo.ValueKind != JsonValueKind.Object) uinfo = sender;
+        if (uinfo.ValueKind != JsonValueKind.Object) uinfo = Get(data, "user");
         var user = Get(data, "user_info");
         if (user.ValueKind != JsonValueKind.Object) user = Get(uinfo, "base");
         var medal = Get(data, "medal_info");
         if (medal.ValueKind != JsonValueKind.Object) medal = Get(data, "fans_medal");
         if (medal.ValueKind != JsonValueKind.Object) medal = Get(uinfo, "medal");
+        if (medal.ValueKind != JsonValueKind.Object) medal = Get(sender, "medal");
         var face = Text(Get(user, "face"));
         if (face.Length == 0) face = Text(Get(data, "face"));
         if (face.Length == 0) face = Text(Get(Get(uinfo, "base"), "face"));
+        if (face.Length == 0) face = Text(Get(Get(sender, "base"), "face"));
+        if (face.Length == 0) face = Text(Get(data, "uface"));
         var level = Int(Get(user, "guard_level"));
         if (level == 0) level = Int(Get(Get(uinfo, "guard"), "level"));
+        if (level == 0) level = Int(Get(Get(sender, "guard"), "level"));
         if (level == 0) level = Int(Get(Get(data, "guard_info"), "guard_level"));
         if (level == 0) level = Int(Get(data, "privilege_type"));
         if (level == 0) level = Int(Get(medal, "guard_level"));
         var relation = Get(data, "relation_tail");
         return new LiveMessageAppearance
         {
-            AvatarUrl = Limit(face, 2048), AvatarFrameUrl = Limit(Text(Get(Get(uinfo, "uhead_frame"), "frame_img")), 2048),
+            AvatarUrl = Limit(face, 2048), AvatarFrameUrl = Limit(First(Text(Get(Get(uinfo, "uhead_frame"), "frame_img")), Text(Get(Get(sender, "uhead_frame"), "frame_img"))), 2048),
             UsernameColor = DisplayColor(First(Text(Get(data, "uname_color")), Text(Get(user, "name_color_str"))), Color(Get(user, "name_color"), "")),
             MedalName = Limit(First(Text(Get(medal, "medal_name")), Text(Get(medal, "name"))), 64),
             MedalLevel = Math.Clamp(Math.Max(Int(Get(medal, "medal_level")), Int(Get(medal, "level"))), 0, 999),
