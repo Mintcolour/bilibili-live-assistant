@@ -34,9 +34,18 @@ $steady = @($traffic | Where-Object seconds -ge ([math]::Max(60, $last.seconds -
 $allocationRate = if ($steady.Count -gt 1) { ($steady[-1].allocatedBytes - $steady[0].allocatedBytes) / ($steady[-1].seconds - $steady[0].seconds) / 1MB } else { $null }
 $frameIntervals = ($traffic.timing.frameCadence.intervals | Measure-Object -Sum).Sum
 $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Sum
+$maxTrafficGap = 0.0
+for ($i = 1; $i -lt $traffic.Count; $i++) { $maxTrafficGap = [math]::Max($maxTrafficGap, $traffic[$i].seconds - $traffic[$i - 1].seconds) }
+$visibleThroughout = $traffic.Count -gt 0 -and @($traffic | Where-Object {
+    $_.ui.window.mainVisible -ne $true -or $_.ui.window.page -ne 'dashboard' -or $_.ui.window.overlay.visible -ne $true
+}).Count -eq 0
+$samplingComplete = $traffic.Count -ge [math]::Floor($header.config.Seconds / 5 * 0.9) -and $maxTrafficGap -le 30 -and
+    $traffic.Count -gt 1 -and ($traffic[-1].seconds - $traffic[0].seconds) -ge ($header.config.Seconds - 10)
 $completeRenderingRun = $eligible -and $buildVerified -and $retentionPassed -and $null -ne $completed -and
-    $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
+    $visibleThroughout -and $samplingComplete -and $header.config.Seconds -ge 7200 -and
+    $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
 $privateWorkingSetSummary = Get-MemorySummary 'privateWorkingSetBytes'
+$privateWorkingSetMeasured = @($samples | Where-Object { $null -eq $_.privateWorkingSetBytes }).Count -eq 0
 function Get-TrafficWindow([object[]]$Window) {
     if ($Window.Count -lt 2) { return $null }
     $meanSeconds = ($Window.seconds | Measure-Object -Average).Average
@@ -70,10 +79,11 @@ $trafficWindows = @(for ($startMinute = 0; $startMinute * 60 -lt $last.seconds; 
     completedTrafficSeconds = if ($completed) { $header.config.Seconds } else { $null }
     twoHourTrafficCompleted = $null -ne $completed -and $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
     twoHourRenderingRunCompleted = $completeRenderingRun
+    displayAndSampling = [ordered]@{ visibleThroughout = $visibleThroughout; samplingComplete = $samplingComplete; trafficSamples = $traffic.Count; maximumGapSeconds = $maxTrafficGap }
     taskManagerMemoryAcceptance = [ordered]@{
         metric = 'privateWorkingSetBytes'
         thresholdBytes = 180MB
-        observedPass = $completeRenderingRun -and $null -ne $privateWorkingSetSummary -and $privateWorkingSetSummary.below180MiB
+        observedPass = $completeRenderingRun -and $privateWorkingSetMeasured -and $null -ne $privateWorkingSetSummary -and $privateWorkingSetSummary.below180MiB
         note = 'Task Manager commonly labels binary MiB as MB. This evaluates ~5-second observed samples, not unsampled transient peaks or all possible layouts.'
     }
     privateCommit = Get-MemorySummary 'privateBytes'
