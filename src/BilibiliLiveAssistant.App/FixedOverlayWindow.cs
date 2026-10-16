@@ -372,7 +372,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             || previous.Color != RegionSettings.Color || previous.Bold != RegionSettings.Bold || previous.Italic != RegionSettings.Italic
             || previous.Outline != RegionSettings.Outline || !previous.HasSameEffects(RegionSettings) || _style != ViewModel.Settings.Dashboard || _mediaStyle != ViewModel.Settings.MediaPreview;
         foreach (var sprite in _sprites)
-            if (_style.ShowsAvatar(sprite.Event) != ViewModel.Settings.Dashboard.ShowsAvatar(sprite.Event)) sprite.RestartImages();
+            if (appearanceChanged || _style.ShowsAvatar(sprite.Event) != ViewModel.Settings.Dashboard.ShowsAvatar(sprite.Event)) sprite.RestartImages();
         _style = ViewModel.Settings.Dashboard;
         _mediaStyle = ViewModel.Settings.MediaPreview;
         if (Kind != OverlayRegionKind.Interaction) PositionScrolling();
@@ -387,6 +387,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             {
                 var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images, maxHeight: RowHeight);
                 sprite.Media?.Dispose(); sprite.Media = null; sprite.Image.Dispose(); sprite.Image = body;
+                _ = LoadImagesAsync(sprite);
             }
             PositionScrolling();
         }

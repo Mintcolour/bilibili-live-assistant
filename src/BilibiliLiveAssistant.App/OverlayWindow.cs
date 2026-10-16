@@ -305,8 +305,12 @@ public sealed class OverlayWindow : OverlaySurface
             || previous.Outline != RegionSettings.Outline || previous.Color != RegionSettings.Color || !previous.HasSameEffects(RegionSettings))
         {
             foreach (var item in _items)
+            {
                 if (item.Media is not null) item.DropMedia(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
                 else item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
+                // Larger emoji/scale settings can require a higher pixel tier.
+                _ = LoadImagesAsync(item);
+            }
             var placed = new List<OverlayItem>();
             foreach (var item in _items.OrderBy(i => i.X))
             {

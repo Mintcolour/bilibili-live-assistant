@@ -57,11 +57,29 @@ internal static class OverlayMessageRenderer
                 if (member.Appearance?.AvatarUrl == url)
                     return ImageDecodeLimit(OverlayBulletinRenderer.MemberEvent(member, region.Color), url, style, region);
         }
-        // Keep large emotes, media and decorative resources at the existing limit.
-        if (value.Appearance is not { } appearance || appearance.AvatarUrl != url || appearance.FullEmote?.Url == url
-            || appearance.EntryEffect?.BackgroundUrl == url || appearance.Emotes.Any(e => e.Url == url)) return 256;
-        // Overlay coordinates are physical pixels, unlike WinUI's DPI-scaled DIPs.
-        return BiliImageCache.SizeTier(Math.Ceiling(style.AvatarSize * region.ContentScale));
+        // RegionSettings has already been scaled by ForRendering. Overlay
+        // coordinates are physical pixels, unlike WinUI's DPI-scaled DIPs.
+        var required = 0d;
+        if (value.Appearance is { } appearance)
+        {
+            // The banner is sized from its rendered text, so keep its full tier.
+            // These decorations also use their decoded aspect ratio for layout.
+            if (appearance.EntryEffect?.BackgroundUrl == url || appearance.InteractionIconUrl == url || appearance.EntryEffect?.BadgeUrl == url) return 256;
+            if (appearance.AvatarUrl == url) required = style.AvatarSize * region.ContentScale;
+            if (appearance.AvatarFrameUrl == url) required = Math.Max(required, style.AvatarSize * region.ContentScale + 6);
+            if (appearance.FullEmote is { } full && full.Url == url) IncludeEmote(full, region.LargeEmoteHeight);
+            foreach (var emote in appearance.Emotes)
+                if (emote.Url == url) IncludeEmote(emote, appearance.FullEmote is not null ? region.LargeEmoteHeight : region.EmoteSize);
+        }
+        if (value.HistoryFields?.GiftIconUrl == url || value.Extra.GetValueOrDefault("gift_icon") as string == url) required = Math.Max(required, 28);
+        return required > 0 ? BiliImageCache.SizeTier(Math.Ceiling(required)) : 256;
+        void IncludeEmote(LiveEmote emote, int height)
+        {
+            // Layout uses this same metadata ratio and can only shrink the image
+            // further to fit the row/card. A wide emote needs both dimensions.
+            var width = height * Math.Max(1d, emote.Width) / Math.Max(1, emote.Height);
+            required = Math.Max(required, Math.Max(width, height));
+        }
     }
 
     internal static BiliImageRole ImageRole(LiveEvent value, string url)
