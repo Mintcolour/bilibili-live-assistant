@@ -9,6 +9,9 @@ public static class LiveInteractions
     public static bool IsFollow(LiveEvent value) => value.Type == LiveEventType.Enter
         && value.HistoryFields?.InteractionKind is 2 or 4 or 5;
 
+    public static bool IsLike(LiveEvent value) => value.Type == LiveEventType.Enter
+        && value.HistoryFields?.InteractionKind == 6;
+
     public static string FollowLabel(LiveEvent value) => value.HistoryFields?.InteractionKind switch
     { 4 => "特别关注", 5 => "互粉", _ => "新关注" };
 }

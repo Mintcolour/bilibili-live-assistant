@@ -61,6 +61,18 @@ internal static class BiliEventParser
                 var legacy = root.GetProperty("data");
                 EmitInteraction(emit, Text(legacy, "uname"), Number(legacy, "uid"), (int)Number(legacy, "msg_type"), BiliMessageAppearanceParser.Common(legacy), SourceTime(legacy, "timestamp"));
                 break;
+            case "LIKE_INFO_V3_CLICK":
+                if (!root.TryGetProperty("data", out var like) || like.ValueKind != JsonValueKind.Object) break;
+                var likeUser = BiliMessageAppearanceParser.Get(like, "uinfo");
+                var likeName = Text(like, "uname");
+                if (likeName.Length == 0) likeName = Text(BiliMessageAppearanceParser.Get(likeUser, "base"), "name");
+                var likeUid = Number(like, "uid");
+                if (likeUid <= 0) likeUid = Number(likeUser, "uid");
+                EmitInteraction(emit, likeName, Math.Max(0, likeUid), 6, BiliMessageAppearanceParser.Common(like), SourceTime(like, "timestamp"));
+                break;
+            case "LIKE_INFO_V3_UPDATE":
+                // A room-wide total is not a named user's click notification.
+                break;
             case "ENTRY_EFFECT":
             case "ENTRY_EFFECT_MUST_RECEIVE":
                 EmitEntry(emit, root.GetProperty("data"));
@@ -110,7 +122,7 @@ internal static class BiliEventParser
     private static void EmitInteraction(Action<LiveEvent> emit, string username, long uid, int type, LiveMessageAppearance? appearance = null, DateTimeOffset? upstream = null)
     {
         var action = type switch { 1 => "进入了直播间", 2 => "关注了主播", 3 => "分享了直播间", 4 => "特别关注了主播", 5 => "互粉了", 6 => "为主播点赞了", _ => "互动了" };
-        emit(new LiveEvent(LiveEventType.Enter, Name(username), action, "#4CAF50", uid, Appearance: appearance)
+        emit(new LiveEvent(LiveEventType.Enter, Name(username), action, type == 6 ? "#FFAA78" : "#4CAF50", uid, Appearance: appearance)
         { HistoryFields = new(UpstreamTime: upstream, InteractionKind: type) });
     }
 
