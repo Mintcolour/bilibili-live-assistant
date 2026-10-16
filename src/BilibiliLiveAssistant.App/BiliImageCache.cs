@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using Windows.Graphics.Imaging;
@@ -58,12 +59,16 @@ internal sealed class BiliImageCache : IDisposable
     private int _diskCount;
     private bool _disposed;
     private long _hits, _loads, _evicted, _loadFailures, _frameHits, _frameMisses, _diskHits, _networkRequests;
+    private long _networkBytes, _diskBytes, _rawBodyBytesPeak, _exactLengthReads, _unknownLengthReads;
     internal object GetDiagnostics()
     {
         lock (_gate) return new { items = _memory.Count, estimatedBytes = _bytes, inflight = _inflight.Count,
             leases = _leases.Count, failureEntries = _failures.Count, hits = _hits, loads = _loads,
             evicted = _evicted, loadFailures = _loadFailures, frameHits = _frameHits, frameMisses = _frameMisses,
             diskHits = Interlocked.Read(ref _diskHits), networkRequests = Interlocked.Read(ref _networkRequests),
+            networkBytes = Interlocked.Read(ref _networkBytes), diskBytes = Interlocked.Read(ref _diskBytes),
+            rawBodyBytesPeak = Interlocked.Read(ref _rawBodyBytesPeak),
+            exactLengthReads = Interlocked.Read(ref _exactLengthReads), unknownLengthReads = Interlocked.Read(ref _unknownLengthReads),
             diskScans = Interlocked.Read(ref _diskScans), diskEvictions = Interlocked.Read(ref _diskEvictions),
             staticPixelBytes = _memory.Values.Sum(v => v.Asset is BiliStaticImageAsset s ? s.Frame.Bytes : 0),
             animationEncodedBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.Frames.Sum(f => (long)f.Length) : 0),
@@ -291,7 +296,11 @@ internal sealed class BiliImageCache : IDisposable
         {
             var file = new FileInfo(path);
             if (file.Exists && file.Length is > 0 and <= DownloadLimit)
-            { var cached = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false); Interlocked.Increment(ref _diskHits); return cached; }
+            {
+                var cached = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
+                Interlocked.Increment(ref _diskHits); Interlocked.Add(ref _diskBytes, cached.LongLength);
+                RecordRawBodySize(cached.LongLength); return cached;
+            }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
@@ -313,15 +322,9 @@ internal sealed class BiliImageCache : IDisposable
             response.EnsureSuccessStatusCode();
             if (response.Content.Headers.ContentLength > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
             await using var source = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
-            using var output = new MemoryStream();
-            var buffer = new byte[16384];
-            int count;
-            while ((count = await source.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
-            {
-                if (output.Length + count > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
-                output.Write(buffer, 0, count);
-            }
-            data = output.ToArray(); break;
+            data = await ReadImageBodyAsync(source, response.Content.Headers.ContentLength, token).ConfigureAwait(false);
+            Interlocked.Add(ref _networkBytes, data.LongLength); RecordRawBodySize(data.LongLength);
+            break;
         }
         if (data is null || data.Length == 0) throw new InvalidDataException("无效图片");
         await _diskGate.WaitAsync(token).ConfigureAwait(false);
@@ -341,6 +344,55 @@ internal sealed class BiliImageCache : IDisposable
         catch (UnauthorizedAccessException) { _diskIndex = null; _diskOrder.Clear(); }
         finally { _diskGate.Release(); }
         return data;
+    }
+
+    private async Task<byte[]> ReadImageBodyAsync(Stream source, long? contentLength, CancellationToken token)
+    {
+        if (contentLength is { } length)
+        {
+            if (length is < 0 or > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
+            // Most CDN responses supply a length. Fill the final owned array
+            // directly: no growing LOH buffer or second ToArray copy per image.
+            var result = GC.AllocateUninitializedArray<byte>(checked((int)length));
+            await source.ReadExactlyAsync(result.AsMemory(), token).ConfigureAwait(false);
+            var probe = ArrayPool<byte>.Shared.Rent(1);
+            try
+            {
+                if (await source.ReadAsync(probe.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
+                    throw new InvalidDataException("图片响应长度不一致");
+            }
+            finally { ArrayPool<byte>.Shared.Return(probe); }
+            Interlocked.Increment(ref _exactLengthReads);
+            return result;
+        }
+        // Unknown/chunked responses keep the bounded fallback. Pool only the
+        // small transfer buffer, never the asset bytes retained by consumers.
+        var buffer = ArrayPool<byte>.Shared.Rent(16384);
+        try
+        {
+            using var output = new MemoryStream();
+            int count;
+            while ((count = await source.ReadAsync(buffer.AsMemory(0, 16384), token).ConfigureAwait(false)) > 0)
+            {
+                if (output.Length + count > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
+                output.Write(buffer, 0, count);
+            }
+            var result = output.ToArray();
+            Interlocked.Increment(ref _unknownLengthReads);
+            return result;
+        }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
+    }
+
+    private void RecordRawBodySize(long size)
+    {
+        var peak = Interlocked.Read(ref _rawBodyBytesPeak);
+        while (size > peak)
+        {
+            var observed = Interlocked.CompareExchange(ref _rawBodyBytesPeak, size, peak);
+            if (observed == peak) break;
+            peak = observed;
+        }
     }
 
     private string DiskPath(Uri uri) => Path.Combine(_directory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(uri.AbsoluteUri))) + ".img");
