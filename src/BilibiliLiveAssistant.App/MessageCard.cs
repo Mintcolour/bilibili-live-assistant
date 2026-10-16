@@ -527,7 +527,7 @@ internal sealed class BiliImageView : Grid, IDisposable
     private TextBlock? _fallback;
     private UiImageSourceService.Lease? _first;
     private BiliAnimationAsset? _animation;
-    private BitmapImage?[]? _animationSources;
+    private UiPixelSource? _animationSource;
     private CancellationTokenSource? _loadCancellation, _animationCancellation;
     private int _generation, _animationGeneration, _frame;
     private bool _disposed, _active, _loading, _busy, _playing;
@@ -604,11 +604,11 @@ internal sealed class BiliImageView : Grid, IDisposable
 #if MEMORY_SOAK
             if (!App.CreateImageSources)
             {
-                await _cache.GetStaticForViewAsync(_displayUrl, cancellation, RequestedDecodeLimit);
+                await _cache.GetStaticForViewAsync(_displayUrl, cancellation, RequestedDecodeLimit, _avatar ? BiliImageRole.Avatar : BiliImageRole.Content);
                 return;
             }
 #endif
-            acquired = await _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation);
+            acquired = await _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation, _avatar ? BiliImageRole.Avatar : BiliImageRole.Content);
             if (_disposed || !_active || !_visible() || generation != _generation || acquired is null) return;
             _first = acquired; acquired = null;
             Bind(_first.Value.Source);
@@ -659,24 +659,28 @@ internal sealed class BiliImageView : Grid, IDisposable
                 var animation = await _cache.GetAnimationForViewAsync(_url, cancellation, RequestedDecodeLimit);
                 if (!CurrentAnimation(generation)) return;
                 if (animation is null || animation.Frames.Length <= 1) { _clock.Remove(this); return; }
-                _animation = animation; _animationSources = new BitmapImage?[animation.Frames.Length];
+                _animation = animation;
             }
-            var asset = _animation; var sources = _animationSources!;
+            var asset = _animation;
             var index = (_frame + 1) % asset.Frames.Length;
-            if (index == 0) { if (_first is not null) Bind(_first.Value.Source); }
+            if (index == 0)
+            {
+                if (_first is not null) Bind(_first.Value.Source);
+                _animationSource?.Dispose(); _animationSource = null;
+            }
             else
             {
-                var source = sources[index];
-                if (source is null)
+                UiPixelSource? source = null;
+                try
                 {
-                    using var stream = await BiliImageCache.ToStreamAsync(asset.Frames[index]);
+                    var pixels = await BiliImageCache.DecodeDisplayFrameAsync(asset.Frames[index], RequestedDecodeLimit, cancellation);
                     if (!CurrentAnimation(generation)) return;
-                    source = new BitmapImage { DecodePixelWidth = Math.Min(RequestedWidth, asset.Width) };
-                    await source.SetSourceAsync(stream);
+                    source = await UiPixelSource.CreateAsync(pixels, RequestedWidth, false, RequestedDecodeLimit, cancellation);
                     if (!CurrentAnimation(generation)) return;
-                    sources[index] = source;
+                    Bind(source.Source);
+                    var previous = _animationSource; _animationSource = source; source = null; previous?.Dispose();
                 }
-                Bind(source);
+                finally { source?.Dispose(); }
             }
             _frame = index; _nextFrame = DateTimeOffset.UtcNow.AddMilliseconds(asset.Delays[index]);
         }
@@ -689,8 +693,9 @@ internal sealed class BiliImageView : Grid, IDisposable
     {
         _playing = false; _animationGeneration++;
         _animationCancellation?.Cancel(); _animationCancellation?.Dispose(); _animationCancellation = null;
-        _animation = null; _animationSources = null; _frame = 0; _nextFrame = default;
         if (!_disposed && _first is not null) Bind(_first.Value.Source);
+        _animationSource?.Dispose(); _animationSource = null;
+        _animation = null; _frame = 0; _nextFrame = default;
     }
     internal void Deactivate()
     {

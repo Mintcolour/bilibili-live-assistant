@@ -17,7 +17,7 @@ internal sealed class UiImageSourceService : IDisposable
     private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released;
     private bool _disposed;
     private int _generation;
-    internal readonly record struct Key(string Url, int Width, int Limit, int Generation);
+    internal readonly record struct Key(string Url, int Width, int Limit, int Generation, BiliImageRole Role);
     internal sealed class Entry(UiPixelSource value) { public UiPixelSource Value = value; public int Leases; public long Used; }
     private sealed class Pending
     {
@@ -36,11 +36,11 @@ internal sealed class UiImageSourceService : IDisposable
     private bool HasConsumers => _pending.Count > 0 || _sources.Values.Any(e => e.Leases > 0);
     private void CheckThread() { if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("图片显示资源必须由 UI 线程管理"); }
 
-    internal async Task<Lease?> AcquireStaticSourceAsync(string url, int width, int limit, CancellationToken cancellation)
+    internal async Task<Lease?> AcquireStaticSourceAsync(string url, int width, int limit, CancellationToken cancellation, BiliImageRole role = BiliImageRole.Content)
     {
         CheckThread();
         if (BiliImageCache.NormalizeUrl(url) is not { } uri) return null;
-        var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit), _generation);
+        var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit), _generation, role);
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
@@ -87,7 +87,7 @@ internal sealed class UiImageSourceService : IDisposable
         {
             var token = pending.Cancel.Token;
             await _slots.WaitAsync(token); entered = true; pending.Started = true;
-            var asset = await _images.GetStaticForViewAsync(key.Url, token, key.Limit);
+            var asset = await _images.GetStaticForViewAsync(key.Url, token, key.Limit, key.Role);
             if (asset is null) { pending.Completion.TrySetResult(null); return; }
             value = await UiPixelSource.CreateAsync(asset.Frame, key.Width, asset.CanAnimate, asset.DecodeLimit, token);
             if (_disposed || key.Generation != _generation || token.IsCancellationRequested || pending.Waiters == 0)

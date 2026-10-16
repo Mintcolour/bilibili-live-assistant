@@ -64,6 +64,16 @@ internal static class OverlayMessageRenderer
         return BiliImageCache.SizeTier(Math.Ceiling(style.AvatarSize * region.ContentScale));
     }
 
+    internal static BiliImageRole ImageRole(LiveEvent value, string url)
+    {
+        if (value.Extra.GetValueOrDefault("room_bulletin") is LiveRoomBulletin bulletin)
+            foreach (var member in bulletin.Members.Take(10))
+                if (member.Appearance?.AvatarUrl == url) return BiliImageRole.Avatar;
+        return value.Appearance is { } appearance && appearance.AvatarUrl == url && appearance.FullEmote?.Url != url
+            && appearance.EntryEffect?.BackgroundUrl != url && !appearance.Emotes.Any(e => e.Url == url)
+            ? BiliImageRole.Avatar : BiliImageRole.Content;
+    }
+
     internal static async Task<LiveEvent> ResolveAvatarAsync(LiveEvent value, DashboardSettings style, BiliImageCache cache, CancellationToken cancellation)
     {
         if (!style.ShowsAvatar(value) || MessageCard.AvatarUid(value) <= 0 || BiliImageCache.NormalizeUrl(value.Appearance?.AvatarUrl) is not null) return value;
@@ -261,7 +271,7 @@ internal static class OverlayMessageRenderer
         {
             if (images.TryGetValue(url, out var found)) return found;
             images[url] = null;
-            if (cache.TryGetStaticFrame(url, ImageDecodeLimit(value, url, imageStyle, region)) is not { } frame) return null;
+            if (cache.TryGetStaticFrame(url, ImageDecodeLimit(value, url, imageStyle, region), ImageRole(value, url)) is not { } frame) return null;
             try { return images[url] = frame.CreateDrawingBitmap(); }
             catch (ArgumentException) { return null; }
         }

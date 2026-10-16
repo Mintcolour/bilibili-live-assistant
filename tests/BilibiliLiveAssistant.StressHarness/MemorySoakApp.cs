@@ -60,7 +60,8 @@ public partial class App : Application
             var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = true,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
                 Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, ShowAvatars = _config.Images is not ("none" or "emotes") } };
-            var images = new BiliImageCache(live ? null : new FixtureImages(), Path.Combine(_config.Output, "images"));
+            HttpMessageHandler? handler = live ? null : _config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages();
+            var images = new BiliImageCache(handler, Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
             _window = new(ViewModel) { Title = "内存模拟 · " + _config.Name };
             _window.Activate();
@@ -122,11 +123,14 @@ public partial class App : Application
             {
                 var start = Stopwatch.GetTimestamp();
                 using var cadence = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
-                long sent = 0; var lastProfile = -1;
+                long sent = 0; var lastProfile = -1; double expectedTotal = 0, lastElapsed = 0;
                 while (Stopwatch.GetElapsedTime(start).TotalSeconds < _config.Seconds && await cadence.WaitForNextTickAsync(_stop.Token))
                 {
                     var elapsed = Stopwatch.GetElapsedTime(start).TotalSeconds;
-                    var expected = (long)(elapsed * _config.Rate);
+                    var phaseSeconds = elapsed % 120;
+                    var rate = _config.Pattern == "intermittent" ? phaseSeconds < 30 ? 0 : phaseSeconds < 90 ? 3 : 50 : _config.Rate;
+                    expectedTotal += Math.Max(0, elapsed - lastElapsed) * rate; lastElapsed = elapsed;
+                    var expected = (long)expectedTotal;
                     // Bounded catch-up, to avoid unlimited synthetic backlog if rendering stalls.
                     var count = Math.Min(5000, expected - sent);
                     for (var i = 0; i < count; i++) Emit(++sent);
@@ -186,7 +190,8 @@ public partial class App : Application
             : sequence % 17 == 0 ? LiveEventType.Gift : sequence % 7 == 0 ? LiveEventType.Enter : LiveEventType.Danmaku;
         var emote = sequence % 3 == 0 && _config.Images is not ("none" or "avatars");
         var imageId = _config.Images == "shared" ? uid % 8 : uid;
-        var appearance = new LiveMessageAppearance { AvatarUrl = _config.Images == "none" ? "" : $"https://i0.hdslb.com/soak/avatar/{imageId}.png", MedalName = "测试团",
+        var avatarUrl = _config.FixturePort > 0 ? $"https://i0.hdslb.com/bfs/face/{imageId:x40}.jpg" : $"https://i0.hdslb.com/soak/avatar/{imageId}.png";
+        var appearance = new LiveMessageAppearance { AvatarUrl = _config.Images == "none" ? "" : avatarUrl, MedalName = "测试团",
             MedalLevel = (int)(uid % 30 + 1), GuardLevel = uid % 20 == 0 ? 3 : 0,
             Emotes = emote ? [new("[表情]", $"https://i0.hdslb.com/soak/emote/{sequence % 128}.png", 48, 48)] : [] };
         var body = type == LiveEventType.SuperChat ? string.Join("，", Enumerable.Repeat("这是需要完整展示的醒目留言，感谢主播", 8))
@@ -308,7 +313,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady");
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
@@ -365,4 +370,33 @@ internal sealed class FixtureImages : HttpMessageHandler
         }
         using var stream = new MemoryStream(); bitmap.Save(stream, ImageFormat.Png); return stream.ToArray();
     }
+}
+
+// Test-only URI mapping. The production whitelist, TLS and HTTP configuration
+// remain unchanged; body reads use a real loopback socket and chunked responses.
+internal sealed class LoopbackFixtureImages(int port, int count) : HttpMessageHandler
+{
+    private readonly HttpMessageInvoker _network = new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false, UseProxy = false });
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (port is <= 0 or > 65535 || count <= 0 || request.RequestUri?.Host != "i0.hdslb.com") throw new InvalidOperationException("模拟地址无效");
+        var path = request.RequestUri.AbsolutePath;
+        long identity;
+        if (path.StartsWith("/bfs/face/", StringComparison.Ordinal))
+        {
+            var name = path[10..].Split('.')[0];
+            identity = long.Parse(name[^Math.Min(12, name.Length)..], System.Globalization.NumberStyles.HexNumber);
+        }
+        else if (path.StartsWith("/soak/", StringComparison.Ordinal))
+        {
+            var name = System.IO.Path.GetFileNameWithoutExtension(path);
+            identity = long.TryParse(name, out var number) ? number : 0;
+        }
+        else throw new InvalidOperationException("模拟禁止外部请求");
+        var size = path.Contains('@') ? path[(path.IndexOf('@') + 1)..].Split('w')[0] : "";
+        var suffix = size is "64" or "128" or "256" ? "?size=" + size : "";
+        using var mapped = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/image/{identity % count}{suffix}");
+        return await _network.SendAsync(mapped, cancellationToken);
+    }
+    protected override void Dispose(bool disposing) { if (disposing) _network.Dispose(); base.Dispose(disposing); }
 }

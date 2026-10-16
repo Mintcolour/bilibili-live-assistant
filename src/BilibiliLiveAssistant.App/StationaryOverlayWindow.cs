@@ -204,8 +204,8 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 {
                     if (!Current(slot, view)) return;
                     var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, url, Style, RegionSettings);
-                    if (ViewModel.Images.TryGetStaticFrame(url, limit) is not null) continue;
-                    if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit) is null) continue;
+                    if (ViewModel.Images.TryGetStaticFrame(url, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is not null) continue;
+                    if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is null) continue;
                     if (!Current(slot, view)) return;
                     UpdateBitmap(view); RequestRender(view.Bounds);
                 }
@@ -216,7 +216,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 if (!Current(slot, view) || ReferenceEquals(enriched, view.Value)) return;
                 view.Value = enriched;
                 var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, enriched.Appearance!.AvatarUrl, Style, RegionSettings);
-                await ViewModel.Images.GetStaticForViewAsync(enriched.Appearance.AvatarUrl, token, limit);
+                await ViewModel.Images.GetStaticForViewAsync(enriched.Appearance.AvatarUrl, token, limit, BiliImageRole.Avatar);
                 if (!Current(slot, view)) return;
                 UpdateBitmap(view); RequestRender(view.Bounds);
             }

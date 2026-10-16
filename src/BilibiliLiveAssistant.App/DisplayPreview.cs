@@ -145,15 +145,17 @@ internal sealed class DisplayPreview : Grid, IDisposable
             : kind == OverlayRegionKind.Interaction ? $"进房 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
         var download = new CancellationTokenSource(); _downloads = download;
-        var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)).Distinct().Take(16).Where(url => _vm.Images.TryGetStaticFrame(url) is null).ToArray();
+        var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)
+            .Select(url => (Url: url, Role: OverlayMessageRenderer.ImageRole(message, url)))).Distinct().Take(16)
+            .Where(request => _vm.Images.TryGetStaticFrame(request.Url, role: request.Role) is null).ToArray();
         if (urls.Length > 0) _ = LoadAsync(urls, download.Token, generation);
     }
-    private async Task LoadAsync(string[] urls, CancellationToken token, int generation)
+    private async Task LoadAsync((string Url, BiliImageRole Role)[] urls, CancellationToken token, int generation)
     {
         try
         {
             var updated = false;
-            foreach (var url in urls) { if (await _vm.Images.GetStaticForViewAsync(url, token) is not null) updated = true; }
+            foreach (var request in urls) { if (await _vm.Images.GetStaticForViewAsync(request.Url, token, role: request.Role) is not null) updated = true; }
             if (updated && !_disposed && generation == _generation && _active && _visible()) Schedule();
         }
         catch (OperationCanceledException) { }

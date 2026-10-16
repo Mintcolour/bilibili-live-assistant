@@ -43,7 +43,8 @@ internal sealed class BiliImageCache : IDisposable
     }
     private readonly Dictionary<string, DateTimeOffset> _failures = new();
     private TaskCompletionSource<bool> _capacityChanged = NewCapacitySignal();
-    private readonly SemaphoreSlim _downloads = new(2, 2);
+    private readonly SemaphoreSlim _decodes = new(2, 2);
+    private readonly SharedImageBodies _bodies;
     private readonly SemaphoreSlim _diskGate = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
     private readonly HttpClient _http;
@@ -68,18 +69,21 @@ internal sealed class BiliImageCache : IDisposable
             diskHits = Interlocked.Read(ref _diskHits), networkRequests = Interlocked.Read(ref _networkRequests),
             networkBytes = Interlocked.Read(ref _networkBytes), diskBytes = Interlocked.Read(ref _diskBytes),
             rawBodyBytesPeak = Interlocked.Read(ref _rawBodyBytesPeak),
+            bodies = _bodies.Snapshot(),
+            admission = ImageDecodeAdmission.Snapshot(),
             exactLengthReads = Interlocked.Read(ref _exactLengthReads), unknownLengthReads = Interlocked.Read(ref _unknownLengthReads),
             diskScans = Interlocked.Read(ref _diskScans), diskEvictions = Interlocked.Read(ref _diskEvictions),
             staticPixelBytes = _memory.Values.Sum(v => v.Asset is BiliStaticImageAsset s ? s.Frame.Bytes : 0),
             animationEncodedBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.Frames.Sum(f => (long)f.Length) : 0),
             animationPixelBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.FirstFrame.Bytes : 0),
-            generation = _generation, pipeline = "pixel-static-v1" };
+            generation = _generation, pipeline = "pixel-static-v2-managed-input" };
     }
 
     public BiliImageCache(HttpMessageHandler? handler = null, string? directory = null)
     {
         _http = new(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
         _directory = directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "image-cache");
+        _bodies = new(ReadOrDownloadAsync, _shutdown.Token);
         Sources = new(this);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 BilibiliLiveAssistant/1.0");
         _http.DefaultRequestHeaders.Referrer = new Uri("https://live.bilibili.com/");
@@ -87,21 +91,23 @@ internal sealed class BiliImageCache : IDisposable
 
     private static TaskCompletionSource<bool> NewCapacitySignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal async Task<BiliStaticImageAsset?> GetStaticForViewAsync(string url, CancellationToken cancellation, int maxDimension = 256)
-        => await GetForViewAsync(url, false, cancellation, maxDimension).ConfigureAwait(false) as BiliStaticImageAsset;
+    internal async Task<BiliStaticImageAsset?> GetStaticForViewAsync(string url, CancellationToken cancellation, int maxDimension = 256, BiliImageRole role = BiliImageRole.Content)
+        => await GetForViewAsync(url, false, cancellation, maxDimension, role).ConfigureAwait(false) as BiliStaticImageAsset;
     internal async Task<BiliAnimationAsset?> GetAnimationForViewAsync(string url, CancellationToken cancellation, int maxDimension = 256)
         => await GetForViewAsync(url, true, cancellation, maxDimension).ConfigureAwait(false) as BiliAnimationAsset;
 
     // Visible views wait for admission instead of mistaking a full queue for a
     // failed image. Unloading cancels only that view's wait, never a shared load.
     internal static int SizeTier(double size) => size <= 64 ? 64 : size <= 128 ? 128 : 256;
-    private static string CacheKey(Uri uri, bool animate, int size) => uri.AbsoluteUri + (animate ? "|animated:" : "|static:") + size;
+    private static string CacheKey(BiliImageRequest request, bool animate, int size) => request.Original.AbsoluteUri
+        + (request.Role == BiliImageRole.Avatar ? "|avatar" : "") + (animate ? "|animated:" : "|static:") + size;
 
-    private async Task<BiliImageAsset?> GetForViewAsync(string url, bool animate, CancellationToken cancellation, int maxDimension)
+    private async Task<BiliImageAsset?> GetForViewAsync(string url, bool animate, CancellationToken cancellation, int maxDimension, BiliImageRole role = BiliImageRole.Content)
     {
-        if (NormalizeUrl(url) is not { } uri) return null;
-        maxDimension = SizeTier(maxDimension);
-        var key = CacheKey(uri, animate, maxDimension);
+        if (BiliImageRequest.Create(url, maxDimension, role) is not { } request) return null;
+        var uri = request.Address;
+        maxDimension = request.Limit;
+        var key = CacheKey(request, animate, maxDimension);
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
@@ -112,7 +118,7 @@ internal sealed class BiliImageCache : IDisposable
             lock (_gate)
             {
                 generation = _generation;
-                pending = GetOrStart(key, uri, animate, maxDimension, out lease);
+                pending = GetOrStart(key, request, animate, out lease);
                 if (lease is not null) lease.Consumers++;
                 capacityChanged = _capacityChanged.Task;
             }
@@ -143,20 +149,21 @@ internal sealed class BiliImageCache : IDisposable
 
     // Caller owns _gate. Null means temporary capacity pressure; an actual
     // failure/disposal returns a completed task so it cannot cause a retry loop.
-    private Task<BiliImageAsset?>? GetOrStart(string key, Uri uri, bool animate, int maxDimension, out DownloadLease? lease)
+    private Task<BiliImageAsset?>? GetOrStart(string key, BiliImageRequest request, bool animate, out DownloadLease? lease)
     {
+        var uri = request.Address; var maxDimension = request.Limit;
         lease = null;
         if (_disposed) return Task.FromResult<BiliImageAsset?>(null);
         // A larger cached/in-flight decode also satisfies a smaller consumer.
         for (var size = maxDimension; size <= 256; size *= 2)
         {
-            var candidate = CacheKey(uri, animate, size);
+            var candidate = CacheKey(request, animate, size);
             if (_memory.TryGetValue(candidate, out var entry))
             { _hits++; _memory[candidate] = (entry.Asset, ++_useSequence); return Task.FromResult<BiliImageAsset?>(entry.Asset); }
         }
         for (var size = maxDimension; size <= 256; size *= 2)
         {
-            var candidate = CacheKey(uri, animate, size);
+            var candidate = CacheKey(request, animate, size);
             if (!_inflight.TryGetValue(candidate, out var pending)) continue;
             if (_leases[candidate].Cancellation.IsCancellationRequested) return null;
             lease = _leases[candidate]; return pending;
@@ -167,19 +174,20 @@ internal sealed class BiliImageCache : IDisposable
         lease = new DownloadLease(_shutdown.Token); _leases.Add(key, lease);
         var cancellation = lease.Cancellation.Token;
         _loads++;
-        var task = Task.Run(() => LoadAsync(key, uri, animate, maxDimension, cancellation));
+        var task = Task.Run(() => LoadAsync(key, request, animate, cancellation));
         _inflight.Add(key, task);
         return task;
     }
 
-    internal BiliPixelFrame? TryGetStaticFrame(string url, int maxDimension = 256)
+    internal BiliPixelFrame? TryGetStaticFrame(string url, int maxDimension = 256, BiliImageRole role = BiliImageRole.Content)
     {
-        if (NormalizeUrl(url) is not { } uri) return null;
+        if (BiliImageRequest.Create(url, maxDimension, role) is not { } request) return null;
+        var uri = request.Address;
         lock (_gate)
         {
             for (var size = SizeTier(maxDimension); size <= 256; size *= 2)
             {
-                if (!TryFrame(CacheKey(uri, false, size), out var frame) && !TryFrame(CacheKey(uri, true, size), out frame)) continue;
+                if (!TryFrame(CacheKey(request, false, size), out var frame) && !TryFrame(CacheKey(request, true, size), out frame)) continue;
                 _frameHits++; return frame;
             }
             _frameMisses++;
@@ -207,6 +215,7 @@ internal sealed class BiliImageCache : IDisposable
             var signal = _capacityChanged; _capacityChanged = NewCapacitySignal(); signal.TrySetResult(true);
         }
         Avatars.Reset();
+        _bodies.Reset();
         Sources.ResetRoom();
     }
 
@@ -229,25 +238,32 @@ internal sealed class BiliImageCache : IDisposable
         return new UriBuilder(uri) { Scheme = "https", Port = -1, Fragment = "" }.Uri;
     }
 
-    private async Task<BiliImageAsset?> LoadAsync(string key, Uri uri, bool animate, int maxDimension, CancellationToken token)
+    private async Task<BiliImageAsset?> LoadAsync(string key, BiliImageRequest request, bool animate, CancellationToken token)
     {
+        var uri = request.Address; var maxDimension = request.Limit;
         var entered = false;
         var stage = "download";
         byte[]? diagnosticData = null;
         try
         {
-            await _downloads.WaitAsync(token).ConfigureAwait(false); entered = true;
+            await _decodes.WaitAsync(token).ConfigureAwait(false); entered = true;
             using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
             requestTimeout.CancelAfter(TimeSpan.FromSeconds(15));
-            var raw = await ReadOrDownloadAsync(uri, requestTimeout.Token).ConfigureAwait(false);
-            diagnosticData = raw;
             BiliImageAsset asset;
-            stage = "asset-decode";
-            try { asset = await DecodeAsync(raw, animate, maxDimension, token).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OutOfMemoryException && ex is not OperationCanceledException)
+            try { asset = await ReadAndDecodeAsync(uri).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OutOfMemoryException && ex is not OperationCanceledException && uri != request.Original)
+            { asset = await ReadAndDecodeAsync(request.Original).ConfigureAwait(false); }
+            async Task<BiliImageAsset> ReadAndDecodeAsync(Uri address)
             {
-                try { File.Delete(DiskPath(uri)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                throw;
+                stage = "download";
+                using var body = await _bodies.AcquireAsync(address, requestTimeout.Token).ConfigureAwait(false);
+                var raw = body.Bytes; diagnosticData = raw; stage = "asset-decode";
+                try { return await DecodeAsync(raw, animate, maxDimension, token).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OutOfMemoryException && ex is not OperationCanceledException)
+                {
+                    try { File.Delete(DiskPath(address)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    throw;
+                }
             }
             lock (_gate)
             {
@@ -277,7 +293,7 @@ internal sealed class BiliImageCache : IDisposable
         }
         finally
         {
-            if (entered) _downloads.Release();
+            if (entered) _decodes.Release();
             lock (_gate)
             {
                 _inflight.Remove(key);
@@ -448,11 +464,12 @@ internal sealed class BiliImageCache : IDisposable
             return new BiliStaticImageAsset(BiliPixelFrame.FromDrawingBitmap(bitmap), false, maxDimension);
         }
 #endif
-        using var input = await ToStreamAsync(raw);
+        using var input = ImageInputStream.Open(raw);
         var decoder = await BitmapDecoder.CreateAsync(input);
         if (decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 || (long)decoder.PixelWidth * decoder.PixelHeight > 8_388_608)
             throw new InvalidDataException("图片尺寸超过限制");
         ImageResourceCounters.DecodedSize((int)decoder.PixelWidth, (int)decoder.PixelHeight, maxDimension);
+        using var admission = await ImageDecodeAdmission.EnterAsync((long)decoder.PixelWidth * decoder.PixelHeight, raw.Length, token).ConfigureAwait(false);
         var scale = Math.Min(1d, maxDimension / (double)Math.Max(decoder.PixelWidth, decoder.PixelHeight));
         var width = Math.Max(1, (int)(decoder.PixelWidth * scale));
         var height = Math.Max(1, (int)(decoder.PixelHeight * scale));
@@ -495,6 +512,9 @@ internal sealed class BiliImageCache : IDisposable
         return new BiliAnimationAsset(frames, delays, width, height, decoder.FrameCount is > 1 and <= 40, maxDimension, first!);
     }
 
+    internal static async Task<BiliPixelFrame> DecodeDisplayFrameAsync(byte[] encoded, int limit, CancellationToken cancellation)
+        => ((BiliStaticImageAsset)await DecodeAsync(encoded, false, limit, cancellation).ConfigureAwait(false)).Frame;
+
     private static BiliImageAsset DecodeGif(byte[] raw, int width, int height, bool animate, int limit, CancellationToken token)
     {
         using var stream = new MemoryStream(raw);
@@ -526,20 +546,9 @@ internal sealed class BiliImageCache : IDisposable
         return new BiliAnimationAsset(frames, delays, width, height, available is > 1 and <= 40, limit, first!);
     }
 
-    internal static async Task<InMemoryRandomAccessStream> ToStreamAsync(byte[] bytes)
-    {
-        var stream = new InMemoryRandomAccessStream();
-        try
-        {
-            using var writer = new DataWriter(stream);
-            writer.WriteBytes(bytes); await writer.StoreAsync(); await writer.FlushAsync();
-            writer.DetachStream();
-            stream.Seek(0); return stream;
-        }
-        catch { stream.Dispose(); throw; }
-    }
     public void Dispose()
     {
+        _bodies.Dispose();
         Sources.Dispose();
         Avatars.Dispose();
         lock (_gate)

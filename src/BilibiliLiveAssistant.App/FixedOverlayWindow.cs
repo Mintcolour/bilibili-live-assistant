@@ -250,23 +250,24 @@ internal sealed class FixedOverlayWindow : OverlaySurface
     {
         if (sprite.ImagesLoading) return;
         sprite.ImagesLoading = true;
+        var imageGeneration = sprite.ImageGeneration;
         try
         {
             var cancellation = sprite.Cancellation.Token;
             var urls = OverlayMessageRenderer.ImageUrls(sprite.Event, _style).Distinct().Take(Kind == OverlayRegionKind.Status ? 32 : 16)
-                .Where(url => ViewModel.Images.TryGetStaticFrame(url, DecodeLimit(url)) is null).ToArray();
+                .Where(url => ViewModel.Images.TryGetStaticFrame(url, DecodeLimit(url), OverlayMessageRenderer.ImageRole(sprite.Event, url)) is null).ToArray();
             await Task.WhenAll(urls.Select(LoadOneAsync).Append(LoadAvatarAsync()));
             async Task LoadAvatarAsync()
             {
                 var enriched = await OverlayMessageRenderer.ResolveAvatarAsync(sprite.Event, _style, ViewModel.Images, cancellation);
-                if (_cleaned || !Visible || !_sprites.Contains(sprite) || ReferenceEquals(enriched, sprite.Event)) return;
+                if (cancellation.IsCancellationRequested || _cleaned || !Visible || !_sprites.Contains(sprite) || ReferenceEquals(enriched, sprite.Event)) return;
                 sprite.Event = enriched;
                 await LoadOneAsync(enriched.Appearance!.AvatarUrl);
             }
             async Task LoadOneAsync(string url)
             {
-                if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url)) is null
-                    || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
+                if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url), OverlayMessageRenderer.ImageRole(sprite.Event, url)) is null
+                    || cancellation.IsCancellationRequested || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
                 // A slow avatar must not hold back an emote that is already available.
                 var before = sprite.Bounds;
                 var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
@@ -279,7 +280,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(sprite.Event, url, _style, RegionSettings);
         }
         catch (OperationCanceledException) { }
-        finally { sprite.ImagesLoading = false; }
+        finally { if (imageGeneration == sprite.ImageGeneration) sprite.ImagesLoading = false; }
     }
 
     private void ScheduleWake()
@@ -359,6 +360,8 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             || previous.EmoteSize != RegionSettings.EmoteSize || previous.LargeEmoteHeight != RegionSettings.LargeEmoteHeight
             || previous.Color != RegionSettings.Color || previous.Bold != RegionSettings.Bold || previous.Italic != RegionSettings.Italic
             || previous.Outline != RegionSettings.Outline || !previous.HasSameEffects(RegionSettings) || _style != ViewModel.Settings.Dashboard || _mediaStyle != ViewModel.Settings.MediaPreview;
+        foreach (var sprite in _sprites)
+            if (_style.ShowsAvatar(sprite.Event) != ViewModel.Settings.Dashboard.ShowsAvatar(sprite.Event)) sprite.RestartImages();
         _style = ViewModel.Settings.Dashboard;
         _mediaStyle = ViewModel.Settings.MediaPreview;
         if (Kind != OverlayRegionKind.Interaction) PositionScrolling();
@@ -419,7 +422,9 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         public Bitmap Image;
         public bool ImagesLoading;
         public OverlayMediaAttachment? Media { get; set; }
-        public CancellationTokenSource Cancellation { get; } = new();
+        public CancellationTokenSource Cancellation { get; private set; } = new();
+        public int ImageGeneration { get; private set; }
+        public void RestartImages() { ImageGeneration++; Cancellation.Cancel(); Cancellation.Dispose(); Cancellation = new(); ImagesLoading = false; }
         public Sprite(LiveEvent value, int lane, double x, int y, Bitmap image, OverlayMediaAttachment? media = null) { Event = value; Lane = lane; X = x; Y = y; Image = image; Media = media; }
         public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);
         public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Media?.Dispose(); Image.Dispose(); }
