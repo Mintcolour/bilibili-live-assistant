@@ -46,21 +46,22 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _menu.Items.Add("调整样式…", null, (_, _) => ShowStyleEditor());
         _menu.Items.Add("阅读实时列表", null, (_, _) => StartReading());
         _menu.Items.Add("回到最新", null, (_, _) => { _anchor = null; RequestRender(); });
-        _menu.Items.Add("完成调整／阅读", null, (_, _) => { _reading = false; vm.EndOverlayInteraction(); RequestRender(); });
+        _menu.Items.Add("完成调整／阅读", null, async (_, _) => await FinishInteractionAsync());
         vm.CompactOverlay.Changed += RequestRender; vm.RoomHistoryReset += Reset; vm.PropertyChanged += SettingsChanged;
         ResizeEnd += async (_, _) => await SaveBoundsAsync();
         ApplyBounds(); MakeSamples();
     }
-    public void ShowPanel() { if (Visible) return; Show(); _vm.CompactOverlay.SetDesktopVisible(true); ApplyInteraction(); RequestRender(); }
+    public void ShowPanel() { if (Visible) return; Show(); _vm.CompactOverlay.SetDesktopVisible(!Editing); ApplyInteraction(); RequestRender(); }
     public void HidePanel() { if (!Visible) return; Hide(); _vm.CompactOverlay.SetDesktopVisible(false); _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; }
     public void StartReading()
-    { _reading = true; if (!_vm.OverlayInteractive) _vm.ToggleOverlayInteraction(); ApplyInteraction(); ReleaseRows(); RequestRender(); }
+    { _reading = true; if (!_vm.OverlayInteractive) _vm.ToggleOverlayInteraction(); _vm.CompactOverlay.SetDesktopVisible(Visible); ApplyInteraction(); ReleaseRows(); RequestRender(); }
     private void Reset() { _anchor = null; _statusRank = _statusOnline = _statusValue = null; _detail?.Close(); ReleaseRows(); RequestRender(); }
     private void SettingsChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName is not (nameof(LiveAssistantViewModel.Settings) or nameof(LiveAssistantViewModel.OverlayInteractive))) return;
         if (!_vm.OverlayInteractive) _reading = false;
         if (args.PropertyName == nameof(LiveAssistantViewModel.Settings)) ApplyBounds();
+        if (Visible) _vm.CompactOverlay.SetDesktopVisible(!Editing);
         ApplyInteraction(); MakeSamples(); _statusValue = null; ReleaseRows(); RequestRender();
     }
     private void ApplyBounds()
@@ -234,7 +235,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (e.Button == Forms.MouseButtons.Right) { _menu.Show(this, e.Location); return; }
         if (e.Y < 34)
         {
-            if (e.X >= ClientSize.Width - 48) { _reading = false; _vm.EndOverlayInteraction(); }
+            if (e.X >= ClientSize.Width - 48) _ = FinishInteractionAsync();
             else if (e.X >= ClientSize.Width - 93) { _anchor = null; RequestRender(); }
             else if (e.X >= ClientSize.Width - 140) ShowStyleEditor();
             return;
@@ -250,9 +251,18 @@ internal sealed class CompactOverlayWindow : Forms.Form
     }
     private void ShowStyleEditor()
     {
-        var wasReading = _reading; _reading = false; MakeSamples(); ReleaseRows(); RequestRender();
-        using var editor = new CompactQuickEditor(_vm, value => { _preview = value; ReleaseRows(); RequestRender(); });
-        editor.ShowDialog(this); _preview = null; _reading = wasReading; ReleaseRows(); RequestRender();
+        var wasReading = _reading; _reading = false; _vm.CompactOverlay.SetDesktopVisible(!Editing); MakeSamples(); ReleaseRows(); RequestRender();
+        try
+        {
+            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; ReleaseRows(); RequestRender(); });
+            editor.ShowDialog(this);
+        }
+        finally { _preview = null; _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }
+    }
+    private async Task FinishInteractionAsync()
+    {
+        try { _reading = false; await _vm.LockOverlayLayoutAsync(); _vm.EndOverlayInteraction(); ApplyInteraction(); _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); RequestRender(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("浮窗锁定失败，请重试。"); }
     }
     private void MakeSamples()
     {
