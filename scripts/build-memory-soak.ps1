@@ -52,6 +52,7 @@ try {
     }
 }
 finally { $zip.Dispose() }
-[ordered]@{ appSdkVersion=$AppSdkVersion; nativeModules=@($nativeModules); alternateSource=($SourceRoot.Length -gt 0) } |
+[ordered]@{ appSdkVersion=$AppSdkVersion; nativeModules=@($nativeModules); alternateSource=($SourceRoot.Length -gt 0);
+    appSha256=(Get-FileHash -LiteralPath (Join-Path $publishDirectory 'StressApp.dll') -Algorithm SHA256).Hash } |
     ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $publishDirectory 'soak-build.json') -Encoding utf8
 [ordered]@{ verified=$true; directory=$publishDirectory; appSdkVersion=$AppSdkVersion } | ConvertTo-Json

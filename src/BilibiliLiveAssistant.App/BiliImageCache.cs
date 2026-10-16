@@ -381,23 +381,41 @@ internal sealed class BiliImageCache : IDisposable
             Interlocked.Increment(ref _exactLengthReads);
             return result;
         }
-        // Unknown/chunked responses keep the bounded fallback. Pool only the
-        // small transfer buffer, never the asset bytes retained by consumers.
-        var buffer = ArrayPool<byte>.Shared.Rent(16384);
+        // A growing MemoryStream temporarily keeps multiple large LOH arrays
+        // before ToArray makes the final copy. Use bounded small segments instead;
+        // do not retain a process-wide pool of full-sized original image bodies.
+        const int segmentSize = 16384;
+        var segments = new List<(byte[] Data, int Count)>();
+        var total = 0; var staging = 0;
         try
         {
-            using var output = new MemoryStream();
-            int count;
-            while ((count = await source.ReadAsync(buffer.AsMemory(0, 16384), token).ConfigureAwait(false)) > 0)
+            while (total < DownloadLimit)
             {
-                if (output.Length + count > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
-                output.Write(buffer, 0, count);
+                var buffer = GC.AllocateUninitializedArray<byte>(Math.Min(segmentSize, DownloadLimit - total));
+                staging += buffer.Length; ImageResourceCounters.AddBodyStaging(buffer.Length);
+                var count = await source.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, token).ConfigureAwait(false);
+                if (count > 0) { segments.Add((buffer, count)); total += count; }
+                if (count < buffer.Length) break;
             }
-            var result = output.ToArray();
+            if (total == DownloadLimit)
+            {
+                var probe = ArrayPool<byte>.Shared.Rent(1);
+                try
+                {
+                    if (await source.ReadAsync(probe.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
+                        throw new InvalidDataException("图片超过大小限制");
+                }
+                finally { ArrayPool<byte>.Shared.Return(probe); }
+            }
+            token.ThrowIfCancellationRequested();
+            var result = GC.AllocateUninitializedArray<byte>(total);
+            var offset = 0;
+            foreach (var segment in segments)
+            { segment.Data.AsSpan(0, segment.Count).CopyTo(result.AsSpan(offset)); offset += segment.Count; }
             Interlocked.Increment(ref _unknownLengthReads);
             return result;
         }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
+        finally { segments.Clear(); ImageResourceCounters.AddBodyStaging(-staging); }
     }
 
     private void RecordRawBodySize(long size)

@@ -77,7 +77,7 @@ public partial class App : Application
             _sampling.Interval = TimeSpan.FromSeconds(5); _sampling.Tick += (_, _) => Sample(); _sampling.Start();
             _log.WriteLine(JsonSerializer.Serialize(new { kind = "header", config = _config, pid = Environment.ProcessId,
                 runtime = Environment.Version.ToString(), processors = Environment.ProcessorCount,
-                assembly = typeof(App).Assembly.GetName().Name, dpi = _window.Content.XamlRoot?.RasterizationScale,
+                assembly = typeof(App).Assembly.GetName().Name, dpi = _window.Content.XamlRoot?.RasterizationScale ?? GetDpiForWindow(MainWindowHandle) / 96d,
                 winUiVersion = _process.Modules.Cast<ProcessModule>().FirstOrDefault(m => m.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))?.FileVersionInfo.FileVersion,
                 build = File.Exists(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))
                     ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))) : (JsonElement?)null,
@@ -87,6 +87,7 @@ public partial class App : Application
             Sample();
             _phase = "startup_baseline";
             await Task.Delay(TimeSpan.FromSeconds(_config.BaselineSeconds));
+            if (_config.StartupOnly) { await FinishAsync(); return; }
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
@@ -252,7 +253,13 @@ public partial class App : Application
                 var list = (Microsoft.UI.Xaml.Controls.ListView)typeof(DashboardList).GetField("_list", flags)!.GetValue(target)!;
                 var items = (System.Collections.IList)typeof(DashboardList).GetField("_items", flags)!.GetValue(target)!;
                 var viewer = FindChildren<Microsoft.UI.Xaml.Controls.ScrollViewer>(list).First();
-                list.ScrollIntoView(items[title == "SC" ? 3 : 30], Microsoft.UI.Xaml.Controls.ScrollIntoViewAlignment.Leading);
+                // Low-rate runs may not have four SCs at the original 25s mark.
+                // Wait for real fixture messages instead of indexing absent rows.
+                var deadline = Stopwatch.GetTimestamp();
+                while (items.Count < (title == "SC" ? 3 : 31) && Stopwatch.GetElapsedTime(deadline).TotalSeconds < 100)
+                    await Task.Delay(500, _stop.Token);
+                if (items.Count < 2) throw new InvalidOperationException("阅读位置检查的消息样本不足");
+                list.ScrollIntoView(items[Math.Min(items.Count - 1, title == "SC" ? 3 : 30)], Microsoft.UI.Xaml.Controls.ScrollIntoViewAlignment.Leading);
                 await Task.Delay(700);
                 viewer.ChangeView(null, viewer.VerticalOffset + (title == "SC" ? 120 : 20), null, true);
                 await Task.Delay(300);
@@ -260,6 +267,7 @@ public partial class App : Application
                 {
                     var panel = (Microsoft.UI.Xaml.Controls.ItemsStackPanel)list.ItemsPanelRoot;
                     var index = panel.FirstVisibleIndex;
+                    if (index < 0 || index >= items.Count) throw new InvalidOperationException("阅读位置检查尚未取得可见行");
                     var slot = items[index]!;
                     var record = slot is DashboardRecord direct ? direct : (DashboardRecord)slot.GetType().GetField("Record")!.GetValue(slot)!;
                     var container = (FrameworkElement)list.ContainerFromIndex(index);
@@ -301,6 +309,7 @@ public partial class App : Application
         catch (Exception error) { File.WriteAllText(Path.Combine(_config.Output, "snapshot-error.txt"), error.ToString()); }
     }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
     // Layout from the installed Windows SDK psapi.h PROCESS_MEMORY_COUNTERS_EX2.
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessMemoryCounters
@@ -315,7 +324,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady");
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";

@@ -49,9 +49,11 @@ foreach ($baselinePath in $BaselineRuns) {
     if (!$baselineKeys.Add($resolved)) { throw '启动基准目录重复，不能算作三次独立启动' }
     $baselineRows = @(Get-Content -LiteralPath (Join-Path $resolved 'samples.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
     $baselineHeader = $baselineRows | Where-Object kind -eq header | Select-Object -First 1
-    if ($baselineHeader.winUiVersion -ne $header.winUiVersion -or $baselineHeader.dpi -ne $header.dpi -or
-        $baselineHeader.config.View -ne $header.config.View -or $baselineHeader.build.appSdkVersion -ne $header.build.appSdkVersion) {
-        throw '启动基准的 DPI、SDK 或窗口配置不一致'
+    if (!$baselineHeader.build.appSha256 -or $baselineHeader.build.appSha256 -ne $header.build.appSha256 -or
+        $baselineHeader.winUiVersion -ne $header.winUiVersion -or $baselineHeader.dpi -ne $header.dpi -or
+        $baselineHeader.config.View -ne $header.config.View -or $baselineHeader.build.appSdkVersion -ne $header.build.appSdkVersion -or
+        $baselineHeader.config.EntryAvatars -ne $header.config.EntryAvatars) {
+        throw '启动基准的程序哈希、DPI、SDK 或窗口配置不一致'
     }
     $value = StartupMedian $baselineRows
     if ($null -eq $value) { throw '启动基准缺少 30–60 秒采样' }
