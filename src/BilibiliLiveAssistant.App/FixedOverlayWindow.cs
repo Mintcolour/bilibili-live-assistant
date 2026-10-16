@@ -98,19 +98,19 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             sprite.ExpiresAt = After(now, InteractionDuration(value));
             PositionEntries(); RequestRender(); ScheduleWake(); return;
         }
-        if (Kind == OverlayRegionKind.Gift && RegionSettings.MergeSeconds > 0)
+        if (value.Type == LiveEventType.Gift && RegionSettings.MergeSeconds > 0)
         {
             // The deadline is anchored to the first receipt, never extended by later gifts.
             var match = _waiting.Find(p => p.MergeUntil > now && GiftAggregation.CanMerge(p.Event, value));
             if (match is not null) { match.Merge(value); ScheduleWake(); return; }
         }
-        if (_waiting.Count == QueueLimit)
+        if (_waiting.Count(p => p.Event.Type == value.Type) == QueueLimit)
         {
-            // SC keeps receipt order; reject excess arrivals instead of evicting earlier SC.
-            if (Kind == OverlayRegionKind.SuperChat) { ViewModel.RecordOverlayDropped(1); return; }
-            _waiting.RemoveAt(0); ViewModel.RecordOverlayDropped(1);
+            // Guards/SC protect admitted receipt order in independent queues.
+            if (value.Type != LiveEventType.Gift) { ViewModel.RecordOverlayDropped(1); return; }
+            _waiting.RemoveAt(_waiting.FindIndex(p => p.Event.Type == LiveEventType.Gift)); ViewModel.RecordOverlayDropped(1);
         }
-        var delay = Kind == OverlayRegionKind.Gift ? RegionSettings.MergeSeconds : 0;
+        var delay = value.Type == LiveEventType.Gift ? RegionSettings.MergeSeconds : 0;
         _waiting.Add(new Pending(value, now, After(now, Math.Max(delay, RegionSettings.UpdateIntervalMs / 1000d)), After(now, delay)));
         ScheduleWake();
     }
@@ -137,8 +137,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         }
         else
         {
-            var maxAge = Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, Math.Max(RegionSettings.MergeSeconds + 10, RegionSettings.DisplayIntervalSeconds + 2));
-            var expired = _waiting.RemoveAll(p => Age(p.CreatedAt, now) >= maxAge);
+            var expired = _waiting.RemoveAll(p => Age(p.CreatedAt, now) >= MaxWaitSeconds(p.Event));
             ViewModel.RecordOverlayDropped(expired);
             while (_sprites.Count < Lanes)
             {
@@ -149,8 +148,11 @@ internal sealed class FixedOverlayWindow : OverlaySurface
                 {
                     _scParts = null;
                     _currentSc = null;
-                    var index = Kind == OverlayRegionKind.Gift ? _waiting.FindLastIndex(p => p.ReadyAt <= now)
-                        : _waiting.FindIndex(p => p.ReadyAt <= now);
+                    // Guards keep receipt order and use the next available lane.
+                    // Gifts retain newer items on overflow, but admitted items
+                    // still play oldest-ready first rather than as a LIFO stack.
+                    var index = Kind == OverlayRegionKind.Gift ? _waiting.FindIndex(p => p.ReadyAt <= now && p.Event.Type == LiveEventType.Guard) : -1;
+                    if (index < 0) index = _waiting.FindIndex(p => p.ReadyAt <= now);
                     if (index < 0) break;
                     var pending = _waiting[index]; _waiting.RemoveAt(index);
                     next = pending.Combined();
@@ -305,11 +307,13 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         foreach (var pending in _waiting)
         {
             if (_sprites.Count < Lanes) due = Math.Min(due, Math.Max(pending.ReadyAt, _nextDisplayAt));
-            due = Math.Min(due, After(pending.CreatedAt, Kind == OverlayRegionKind.SuperChat ? 300 : Math.Max(15, Math.Max(RegionSettings.MergeSeconds + 10, RegionSettings.DisplayIntervalSeconds + 2))));
+            due = Math.Min(due, After(pending.CreatedAt, MaxWaitSeconds(pending.Event)));
         }
         if (due == long.MaxValue) return;
         _wake.Interval = (int)Math.Clamp(Math.Ceiling(Age(now, due) * 1000), 1, int.MaxValue); _wake.Start();
     }
+
+    private static int MaxWaitSeconds(LiveEvent value) => value.Type == LiveEventType.Gift ? 60 : 300;
 
     protected override void DrawContent(Graphics graphics, Rectangle clip)
     {

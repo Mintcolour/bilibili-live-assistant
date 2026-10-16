@@ -9,18 +9,20 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
 {
     internal object GetDiagnostics() => new { kind = Kind.ToString(), visible = Visible, appearance = DiagnosticAppearance, views = _views.Count,
         queued = _queue.Count, listItems = _list.Count, rankItems = _ranking.Count,
+        processCalls = _processCalls, rebuilds = _rebuilds, bitmapUpdates = _bitmapUpdates, presentations = _presentations,
         bitmapBytes = _views.Values.Sum(view => view.Image is { } image ? (long)image.Width * image.Height * 4 : 0) };
-    private sealed class TimedCard(LiveEvent value, DateTimeOffset displayed, DateTimeOffset expires)
+    private sealed class TimedCard(LiveEvent value, DateTimeOffset displayed, DateTimeOffset expires, long sequence)
     {
         public LiveEvent Value { get; } = value;
         public DateTimeOffset Displayed { get; } = displayed;
         public DateTimeOffset Expires { get; set; } = expires;
+        public long Sequence { get; } = sequence;
     }
     private sealed class CardView(LiveEvent value, Rectangle bounds, string caption) : IDisposable
     {
         public LiveEvent SourceValue { get; } = value;
         public LiveEvent Value { get; set; } = value;
-        public Rectangle Bounds { get; } = bounds;
+        public Rectangle Bounds { get; set; } = bounds;
         public string Caption { get; } = caption;
         public Bitmap? Image;
         public bool ImageRefreshQueued;
@@ -39,6 +41,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private bool _disposed, _dirty, _rebuilding;
     private DateTimeOffset? _intakeDue;
     private DateTimeOffset _nextDisplayAt;
+    private long _sequence, _processCalls, _rebuilds, _bitmapUpdates, _presentations;
     private Forms.Form? _detail;
     public OverlayRegionKind RegionKind => Kind;
     private bool Timed => RegionSettings.Mode == OverlayDisplayMode.Cards;
@@ -107,6 +110,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private void Process()
     {
         _wake.Stop(); if (_disposed || !Visible || Editing) return;
+        _processCalls++;
         var now = DateTimeOffset.UtcNow;
         var changed = _dirty && (_intakeDue is null || _intakeDue <= now);
         if (changed) { _dirty = false; _intakeDue = null; if (Kind == OverlayRegionKind.Status) RefreshRanking(); }
@@ -120,7 +124,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 if (_timed[i] is not null) continue;
                 var next = _queue.Take(now, Kind == OverlayRegionKind.SuperChat); if (next is null) break;
                 var seconds = next.Type == LiveEventType.Guard ? RegionSettings.GuardDurationSeconds : RegionSettings.DurationSeconds;
-                _timed[i] = new(next, now, now.AddSeconds(seconds)); changed = true;
+                _timed[i] = new(next, now, now.AddSeconds(seconds), ++_sequence); changed = true;
                 _nextDisplayAt = now.AddSeconds(RegionSettings.DisplayIntervalSeconds);
             }
         }
@@ -147,27 +151,36 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         if (_disposed || !Visible || _rebuilding) return; _rebuilding = true;
         try
         {
+            _rebuilds++;
             var capacity = Capacity;
             if (GridMode) _board.Resize(Math.Max(1, capacity));
             var data = Kind == OverlayRegionKind.Status ? _ranking : _list;
             _offset = Math.Clamp(_offset, 0, Math.Max(0, data.Count - Math.Max(1, capacity)));
             var keep = new HashSet<int>();
+            // Timed cards read top-to-bottom in display order. Their ownership
+            // stays with the original slot, so compaction keeps images, waits
+            // and expiry times instead of recreating every surviving card.
+            var timedOrder = Timed ? Enumerable.Range(0, capacity).Where(i => _timed[i] is not null)
+                .OrderBy(i => _timed[i]!.Sequence).ToArray() : null;
+            var changed = false;
             for (var i = 0; i < capacity; i++)
             {
-                var value = Timed ? _timed[i]?.Value : GridMode ? _board.Slots[i]?.Record.Event : data.Skip(_offset + i).FirstOrDefault();
+                var slot = Timed ? i < timedOrder!.Length ? timedOrder[i] : -1 : i;
+                var value = Timed ? slot < 0 ? null : _timed[slot]?.Value : GridMode ? _board.Slots[i]?.Record.Event : data.Skip(_offset + i).FirstOrDefault();
                 if (value is null) continue;
                 var caption = GridMode ? $"×{_board.Slots[i]!.Count}" : "";
                 var width = Math.Max(120, (ClientSize.Width - 16 - (Columns - 1) * 8) / Columns);
                 var bounds = new Rectangle(8 + i % Columns * (width + 8), ContentTop + i / Columns * (CellHeight + CellGap), width, CellHeight);
-                keep.Add(i);
-                if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.SourceValue, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
-                Release(i); var view = new CardView(value, bounds, caption); _views.Add(i, view);
-                AdmitMedia(view); UpdateBitmap(view); _ = LoadImagesAsync(i, view);
-                var slot = i;
+                keep.Add(slot);
+                if (_views.TryGetValue(slot, out var existing) && ReferenceEquals(existing.SourceValue, value) && existing.Bounds.Size == bounds.Size && existing.Caption == caption)
+                { changed |= existing.Bounds != bounds; existing.Bounds = bounds; continue; }
+                Release(slot); var view = new CardView(value, bounds, caption); _views.Add(slot, view); changed = true;
+                AdmitMedia(view); UpdateBitmap(view); _ = LoadImagesAsync(slot, view);
                 if (view.Media is { } media) _ = media.LoadAsync(() => { if (Current(slot, view)) QueueImageRefresh(slot, view); });
             }
-            foreach (var key in _views.Keys.Where(k => !keep.Contains(k)).ToArray()) Release(key);
-            RequestRender();
+            foreach (var key in _views.Keys.Where(k => !keep.Contains(k)).ToArray()) { Release(key); changed = true; }
+            // Merely queuing another gift/SC does not change displayed pixels.
+            if (changed) { _presentations++; RequestRender(); }
         }
         finally { _rebuilding = false; }
     }
@@ -180,6 +193,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void UpdateBitmap(CardView view)
     {
+        _bitmapUpdates++;
         var region = view.Value.Type is LiveEventType.Gift or LiveEventType.Guard ? RegionSettings with { Bold = true } : RegionSettings;
         var captionHeight = view.Caption.Length > 0 ? 22 : 0;
         using var body = OverlayMessageRenderer.Render(view.Value, region, Style, ViewModel.Images, view.Bounds.Width,
@@ -317,7 +331,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void ResetContent()
     {
-        _wake.Stop(); _detail?.Close(); _detail = null; ClearViews(); Array.Clear(_timed); _queue.Clear(); _list.Clear(); _ranking.Clear(); _board.Clear(); _online = _rank = null; _offset = 0; _intakeDue = null; _nextDisplayAt = default; _dirty = false; ClearHover(); RequestRender();
+        _wake.Stop(); _detail?.Close(); _detail = null; ClearViews(); Array.Clear(_timed); _queue.Clear(); _list.Clear(); _ranking.Clear(); _board.Clear(); _online = _rank = null; _offset = 0; _intakeDue = null; _nextDisplayAt = default; _sequence = 0; _dirty = false; ClearHover(); RequestRender();
     }
     protected override void Dispose(bool disposing)
     {
