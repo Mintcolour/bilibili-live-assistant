@@ -259,14 +259,24 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
     }, token);
     public Task<IReadOnlyList<HistoryRow>> QueryAsync(HistoryFilter filter, CancellationToken token) => ReadAsync<IReadOnlyList<HistoryRow>>(connection =>
     {
-        using var command = connection.CreateCommand(); var where = Scope(filter, command);
-        if (filter.Type is { } type) { where += " AND e.type=$type"; command.Parameters.AddWithValue("$type", (int)type); }
-        if (filter.SenderUid is { } uid) { where += " AND e.uid=$uid"; command.Parameters.AddWithValue("$uid", uid); }
-        if (filter.Nickname.Length > 0) { where += " AND instr(e.name,$name)>0"; command.Parameters.AddWithValue("$name", filter.Nickname); }
-        if (filter.Keyword.Length > 0) { where += " AND instr(e.content,$keyword)>0"; command.Parameters.AddWithValue("$keyword", filter.Keyword); }
+        using var command = connection.CreateCommand(); var where = MessageWhere(filter, command);
+        var sort = filter.Trade?.Normalize().Sort ?? MessageSort.Newest;
+        var oldest = sort == MessageSort.Oldest;
+        var metric = sort is MessageSort.AmountAscending or MessageSort.AmountDescending ? "e.amount" : sort == MessageSort.QuantityDescending ? "e.quantity" : null;
+        var ascending = sort == MessageSort.AmountAscending;
+        var timeOrder = oldest ? "ASC" : "DESC";
+        var order = metric is null ? $"e.received {timeOrder},e.id {timeOrder}" : $"({metric} IS NULL) ASC,{metric} {(ascending ? "ASC" : "DESC")},e.received DESC,e.id DESC";
         if (filter.BeforeId is { } id && filter.BeforeReceivedAt is { } before)
-        { where += " AND (e.received<$beforeAt OR e.received=$beforeAt AND e.id<$before)"; command.Parameters.AddWithValue("$before", id); command.Parameters.AddWithValue("$beforeAt", Millis(before)); }
-        command.CommandText = $"SELECT e.id,e.received,e.upstream,e.local_day,e.session_id,e.type,e.uid,e.name,e.content,e.color,e.appearance,e.fields FROM events e JOIN sessions s ON s.id=e.session_id WHERE {where} ORDER BY e.received DESC,e.id DESC LIMIT 100";
+        {
+            var op = oldest ? ">" : "<";
+            var tie = $"(e.received{op}$beforeAt OR e.received=$beforeAt AND e.id{op}$before)";
+            if (metric is null) where += " AND " + tie;
+            else if (filter.BeforeSortValue is { } value)
+            { where += $" AND ({metric} IS NULL OR {metric}{(ascending ? ">" : "<")}$sortValue OR {metric}=$sortValue AND {tie})"; command.Parameters.AddWithValue("$sortValue", value); }
+            else where += $" AND {metric} IS NULL AND {tie}";
+            command.Parameters.AddWithValue("$before", id); command.Parameters.AddWithValue("$beforeAt", Millis(before));
+        }
+        command.CommandText = $"SELECT e.id,e.received,e.upstream,e.local_day,e.session_id,e.type,e.uid,e.name,e.content,e.color,e.appearance,e.fields FROM events e JOIN sessions s ON s.id=e.session_id WHERE {where} ORDER BY {order} LIMIT 100";
         using var reader = command.ExecuteReader(); var rows = new List<HistoryRow>(100);
         while (reader.Read())
         {
@@ -277,6 +287,36 @@ public sealed partial class SqliteLocalHistory : ILocalHistory
         }
         return rows;
     }, token);
+    public Task<long> MatchingCountAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
+    {
+        using var command = connection.CreateCommand(); var where = MessageWhere(filter, command);
+        command.CommandText = $"SELECT COUNT(*) FROM events e JOIN sessions s ON s.id=e.session_id WHERE {where}";
+        return Convert.ToInt64(command.ExecuteScalar());
+    }, token);
+    private static string MessageWhere(HistoryFilter filter, SqliteCommand command)
+    {
+        var where = Scope(filter, command);
+        if (filter.Type is { } type)
+        {
+            where += type == LiveEventType.Gift && filter.IncludeGuardGifts ? " AND e.type IN (2,4)" : " AND e.type=$type";
+            if (type != LiveEventType.Gift || !filter.IncludeGuardGifts) command.Parameters.AddWithValue("$type", (int)type);
+        }
+        if (filter.SenderUid is { } uid) { where += " AND e.uid=$uid"; command.Parameters.AddWithValue("$uid", uid); }
+        if (filter.Nickname.Length > 0) { where += " AND instr(e.name,$name)>0"; command.Parameters.AddWithValue("$name", filter.Nickname); }
+        if (filter.Keyword.Length > 0) { where += " AND instr(e.content,$keyword)>0"; command.Parameters.AddWithValue("$keyword", filter.Keyword); }
+        var trade = (filter.Trade ?? new()).Normalize();
+        if (filter.Type is LiveEventType.Gift or LiveEventType.Guard)
+        {
+            where += trade.Category switch { GiftCategory.Paid => " AND e.type=2 AND e.paid=1", GiftCategory.Free => " AND e.type=2 AND e.paid=0", GiftCategory.Guard => " AND e.type=4", _ => "" };
+            if (trade.GiftName.Length > 0) { where += " AND json_extract(e.fields,'$.giftName')=$giftName COLLATE BINARY"; command.Parameters.AddWithValue("$giftName", trade.GiftName); }
+        }
+        if (filter.Type == LiveEventType.SuperChat)
+        {
+            if (trade.MinimumMilliYuan is { } min) { where += " AND e.amount >= $minAmount"; command.Parameters.AddWithValue("$minAmount", min); }
+            if (trade.MaximumMilliYuan is { } max) { where += " AND e.amount <= $maxAmount"; command.Parameters.AddWithValue("$maxAmount", max); }
+        }
+        return where;
+    }
     public Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token) => ReadAsync(connection =>
     {
         using var command = connection.CreateCommand(); var where = Scope(filter, command);

@@ -40,7 +40,13 @@ public static class GiftAggregation
         };
         var money = Text(first, "coin_type") == "gold" && coins > 0
             ? $" · ¥{(coins / 1000m).ToString("0.###", CultureInfo.InvariantCulture)}" : "";
+        var fields = first.HistoryFields;
+        var other = second.HistoryFields;
         return first with { Content = $"{label}×{count}{money}", Metadata = metadata,
+            HistoryFields = fields is null || other is null ? null : fields with {
+                Quantity = fields.Quantity is { } q && other.Quantity is { } oq ? Add(q, oq) : null,
+                TotalCoin = fields.TotalCoin is { } c && other.TotalCoin is { } oc ? Add(c, oc) : null,
+                AmountMilliYuan = fields.AmountMilliYuan is { } a && other.AmountMilliYuan is { } oa ? Add(a, oa) : null },
             Uid = first.Uid > 0 ? first.Uid : second.Uid, Appearance = first.Appearance ?? second.Appearance };
     }
 

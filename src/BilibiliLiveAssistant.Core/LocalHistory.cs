@@ -40,7 +40,8 @@ public sealed record HistoryBroadcast(string Id, int RoomId, DateTimeOffset? Sta
 }
 public sealed record HistoryFilter(HistoryAnchor Anchor, string FromDay, string ToDay, string? SessionId = null,
     LiveEventType? Type = null, long? SenderUid = null, string Nickname = "", string Keyword = "", long? BeforeId = null,
-    DateTimeOffset? BeforeReceivedAt = null, string? BroadcastId = null);
+    DateTimeOffset? BeforeReceivedAt = null, string? BroadcastId = null, TradeFilter? Trade = null,
+    long? BeforeSortValue = null, bool IncludeGuardGifts = false);
 public sealed record HistoryDetails(LiveRoomProfile? Profile, long Snapshots, DateTimeOffset? SnapshotAt,
     long? Popularity, long? Watched, IReadOnlyList<LiveRankMember>? Rank, long? RankTotal);
 public sealed record HistoryRow(long Id, DateTimeOffset ReceivedAt, DateTimeOffset? UpstreamAt, string LocalDay,
@@ -66,6 +67,7 @@ public interface ILocalHistory : IAsyncDisposable
     Task<IReadOnlyList<HistorySession>> SessionsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryBroadcast>> BroadcastsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryRow>> QueryAsync(HistoryFilter filter, CancellationToken token);
+    Task<long> MatchingCountAsync(HistoryFilter filter, CancellationToken token);
     Task<HistorySummary> SummaryAsync(HistoryFilter filter, CancellationToken token);
     Task<HistoryDetails> DetailsAsync(HistoryFilter filter, CancellationToken token);
     Task<IReadOnlyList<HistoryGap>> GapsAsync(HistoryFilter filter, CancellationToken token);

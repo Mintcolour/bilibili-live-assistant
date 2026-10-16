@@ -76,6 +76,7 @@ public sealed record AppSettings
     public MediaPreviewSettings MediaPreview { get; init; } = new();
     public DanmakuCardSettings Cards { get; init; } = new();
     public HistorySettings History { get; init; } = new();
+    public TradeViewSettings TradeViews { get; init; } = new();
     public int PollIntervalSeconds { get; init; } = 30;
 }
 
