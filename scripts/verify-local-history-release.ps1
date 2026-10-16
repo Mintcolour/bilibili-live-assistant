@@ -49,7 +49,7 @@ foreach ($package in @(@{ File = "$ReleaseName-win-x64.zip"; Folder = $release }
     try {
         foreach ($entry in $zip.Entries) {
             if (!$entry.Name) { continue }
-            if ($entry.Name -eq 'settings.json' -or $entry.Name -like 'pending-gaps-*' -or $entry.Name -eq 'history.writer.lock' -or $entry.Name -match '\.(db|db-wal|db-shm|dat|tmp|pdb)$') { throw "ZIP 包含私有或临时文件：$($entry.FullName)" }
+            if ($entry.Name -eq 'settings.json' -or $entry.Name -like 'pending-gaps-*' -or $entry.Name -eq 'history.writer.lock' -or $entry.Name -match '\.(db|db-wal|db-shm|dat|tmp|pdb|log|jsonl)$') { throw "ZIP 包含私有或临时文件：$($entry.FullName)" }
             $source = [IO.Path]::GetFullPath((Join-Path $package.Folder $entry.FullName))
             if (!$source.StartsWith($package.Folder + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'ZIP 条目越界' }
             $content = $entry.Open(); $hasher = [Security.Cryptography.SHA256]::Create()

@@ -57,7 +57,7 @@ function Write-Package([string]$folder, [string]$zipPath) {
     $archive = [IO.Compression.ZipArchive]::new($fileStream, [IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($file in Get-ChildItem -LiteralPath $folder -File -Recurse) {
-            if ($file.Name -eq 'settings.json' -or $file.Name -like 'pending-gaps-*' -or $file.Name -eq 'history.writer.lock' -or $file.Extension -in @('.pdb', '.tmp', '.dat', '.db', '.db-wal', '.db-shm')) { continue }
+            if ($file.Name -eq 'settings.json' -or $file.Name -like 'pending-gaps-*' -or $file.Name -eq 'history.writer.lock' -or $file.Extension -in @('.pdb', '.tmp', '.dat', '.db', '.db-wal', '.db-shm', '.log', '.jsonl')) { continue }
             $relative = [IO.Path]::GetRelativePath($folder, $file.FullName).Replace('\', '/')
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $relative, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
         }
