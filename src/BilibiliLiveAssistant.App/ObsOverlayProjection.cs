@@ -53,14 +53,15 @@ internal sealed class ObsOverlayProjection
             var frame = avatar.Length > 0 && style.ShowIdentity ? Image(appearance?.AvatarFrameUrl) : "";
             var body = value.Type == LiveEventType.SuperChat ? value.HistoryFields?.RawBody ?? value.Content : value.Content;
             var segments = RichMessageSegments.Split(body, appearance).Take(128).Select(segment => (object)new
-            { text = segment.Text, image = segment.Emote is { } e ? Image(e.Url, size: Math.Max(compact.EmoteSize, 128)) : "",
+            { text = segment.Text, image = segment.Emote is { } e ? Image(e.Url, size: BiliImageCache.SizeTier(
+                    (appearance?.FullEmote is not null ? region.LargeEmoteHeight : compact.EmoteSize) * Math.Max(1d, e.Width / (double)Math.Max(1, e.Height)))) : "",
                 width = segment.Emote?.Width ?? 0, height = segment.Emote?.Height ?? 0, large = appearance?.FullEmote is not null }).ToArray();
             var result = new ObsMessage(item.Id, LiveInteractions.IsFollow(value) ? "Follow" : LiveInteractions.IsLike(value) ? "Like" : value.Type.ToString(), value.Username, body, region.Color,
                 avatar, frame, style.ShowMedals && appearance is { MedalLevel: > 0, MedalName.Length: > 0 } ? $"{appearance.MedalName} {appearance.MedalLevel}" : "",
                 appearance?.MedalColor ?? "#527EBE", style.ShowIdentity ? appearance?.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" } : "",
                 style.ShowIdentity && appearance?.IsAdmin == true, segments, item.Expires?.ToUnixTimeMilliseconds(),
                 value.HistoryFields?.AmountMilliYuan is { } amount ? $"¥{amount / 1000m:0.###}" : "",
-                new { region.FontFamily, region.Bold, region.Italic, region.Outline, region.Shadow, region.ShadowOpacity, region.ShadowSize, region.ShadowOffset, region.ShadowColor });
+                new { region.FontFamily, region.Bold, region.Italic, region.Outline, region.Shadow, region.ShadowOpacity, region.ShadowSize, region.ShadowOffset, region.ShadowColor, region.LargeEmoteHeight });
             collected = null; _messages[item.Id] = (value, result, messageImages); return result;
         }
         var status = OverlayBulletinRenderer.AudienceMetrics(vm.LatestRank, vm.LatestOnline, true).Select(m => m.Value).ToArray();

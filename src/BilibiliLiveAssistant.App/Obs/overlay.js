@@ -30,6 +30,7 @@
     const node = document.createElement('article'); node.className = 'message'; node.dataset.type = m.type;
     node.style.color = color(m.color, '#f1f3f8');
     const fx = m.effects || {};
+    node.style.setProperty('--large-emote', (fx.largeEmoteHeight || 100) + 'px');
     node.style.fontFamily = fx.fontFamily || 'Microsoft YaHei UI';
     node.style.fontWeight = fx.bold ? '700' : '400'; node.style.fontStyle = fx.italic ? 'italic' : 'normal';
     const shadows = fx.outline ? ['-1px 0 0 #000','1px 0 0 #000','0 -1px 0 #000','0 1px 0 #000'] : [];
