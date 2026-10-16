@@ -558,7 +558,10 @@ internal sealed class DashboardList : Grid, IDisposable
         _visibleRecords.Clear(); _recordIndices.Clear();
         for (var i = 0; i < selected.Count; i++)
         { _visibleRecords[selected[i].Id] = selected[i]; _recordIndices[selected[i].Id] = i; }
-        foreach (var card in _cards.Where(x => !_visibleRecords.ContainsKey(x.RecordId)).ToArray()) ReleaseCard(card);
+        // Keep realized owners until their stable row slots have been rebound.
+        // A burst can replace every record in the bounded interaction history.
+        // Releasing these owners here empties the presenters, while unchanged
+        // RowSlot identities produce no ContainerContentChanging notification.
         if (selected.Count == 0 || styleChanged) ClearCardPool();
         _empty.Visibility = selected.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _empty.Text = _filtered ? "没有未读消息" : "暂无消息";
@@ -711,7 +714,7 @@ internal sealed class DashboardList : Grid, IDisposable
     internal object GetResourceDiagnostics()
     {
         var panel = _list.ItemsPanelRoot as ItemsStackPanel;
-        return new { items = _items.Count, cards = _cards.Count, pooled = _cardPool.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
+        return new { items = _items.Count, cards = _cards.Count, cardsWithText = _cards.Count(c => c.HasBoundText), pooled = _cardPool.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
             newContainers = _newContainers, reusedContainers = _reusedContainers, createdCards = _createdCards, reboundCards = _reboundCards, pooledCards = _pooledCards,
             syncCalls = _syncCalls, fullSyncs = _fullSyncs, columnVersion = _version, contentVersion = _contentVersion,
             ownedIndices = _containerCards.Keys.Select(x => _list.IndexFromContainer(x)).Order().ToArray(),

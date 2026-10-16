@@ -88,6 +88,7 @@ public partial class App : Application
             _phase = "startup_baseline";
             await Task.Delay(TimeSpan.FromSeconds(_config.BaselineSeconds));
             if (_config.StartupOnly) { await FinishAsync(); return; }
+            if (_config.InteractionProbe) await VerifyInteractionBurstAsync();
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
@@ -331,6 +332,30 @@ public partial class App : Application
         }
         catch (Exception error) { File.WriteAllText(Path.Combine(_config.Output, "snapshot-error.txt"), error.ToString()); }
     }
+    private async Task VerifyInteractionBurstAsync()
+    {
+        var checks = new List<object>();
+        foreach (var avatars in new[] { true, false })
+        {
+            await ViewModel.SaveAsync(ViewModel.Settings with { Dashboard = ViewModel.Settings.Dashboard with { ShowEntryAvatars = avatars } });
+            for (var batch = 0; batch < 4; batch++)
+            {
+                var entries = Enumerable.Range(0, 30).Select(i => new LiveEvent(LiveEventType.Enter,
+                    $"进房验证{batch * 30 + i}", "进入直播间", "#FFFFFF", batch * 30 + i + 1)).ToArray();
+                ViewModel.Dashboard.AddBatch(entries, ViewModel.Settings.Dashboard);
+                await Task.Delay(600);
+                var lists = FindChildren<Microsoft.UI.Xaml.Controls.ListView>(_window!.Content);
+                var cards = lists.SelectMany(l => FindChildren<MessageCard>(l)).Where(c => c.RecordId != Guid.Empty).ToArray();
+                var entriesVisible = cards.Count(c => c.HasBoundText);
+                checks.Add(new { avatars, batch, retained = ViewModel.Dashboard.Interactions.Count, realized = cards.Length, withText = entriesVisible,
+                    passed = cards.Length > 0 && entriesVisible == cards.Length });
+            }
+            await CaptureOverviewAsync(avatars ? "interaction-avatars.png" : "interaction-no-avatars.png", 0);
+        }
+        File.WriteAllText(Path.Combine(_config.Output, "interaction-check.json"), JsonSerializer.Serialize(checks));
+        ViewModel.Dashboard.Clear();
+        await ViewModel.SaveAsync(ViewModel.Settings with { Dashboard = ViewModel.Settings.Dashboard with { ShowEntryAvatars = _config.EntryAvatars } });
+    }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
     // Layout from the installed Windows SDK psapi.h PROCESS_MEMORY_COUNTERS_EX2.
@@ -347,7 +372,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";

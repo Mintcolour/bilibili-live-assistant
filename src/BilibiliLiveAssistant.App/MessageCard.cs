@@ -39,6 +39,15 @@ internal sealed class MessageCard : Grid, IDisposable
     internal DashboardSettings MessageStyle { get; }
     internal bool Read { get; private set; }
     internal bool Thanked { get; private set; }
+    internal bool HasBoundText => ContainsText(this);
+    private static bool ContainsText(DependencyObject node)
+    {
+        if (node is TextBlock text && !string.IsNullOrWhiteSpace(text.Text)) return true;
+        if (node is RichTextBlock rich && rich.Blocks.OfType<Paragraph>().Any(p => p.Inlines.OfType<Run>().Any(r => !string.IsNullOrWhiteSpace(r.Text)))) return true;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+            if (ContainsText(VisualTreeHelper.GetChild(node, i))) return true;
+        return false;
+    }
     internal MediaPreviewSettings MediaStyle { get; }
     public MessageCard(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, DashboardSettings? previewStyle = null)
     {
