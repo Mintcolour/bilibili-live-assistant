@@ -20,6 +20,10 @@ public sealed class TrayService : IDisposable
         interact.Click += (_, _) => window.ToggleOverlayInteraction();
         _menu.Opening += (_, _) => { interact.Checked = window.OverlayInteractive; interact.Text = window.OverlayInteractive ? "完成调整，恢复穿透" : "调整浮窗位置、大小与类型"; };
         _menu.Items.Add(interact);
+        var compact = new Forms.ToolStripMenuItem("紧凑面板");
+        compact.Click += async (_, _) => await window.ToggleCompactModeAsync();
+        _menu.Opening += (_, _) => compact.Checked = window.CompactMode;
+        _menu.Items.Add(compact);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         var quit = _menu.Items.Add("退出软件");
         quit.Click += async (_, _) =>

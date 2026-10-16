@@ -27,7 +27,7 @@ public sealed class CompactTimeline
 
     public void AddBatch(IReadOnlyList<LiveEvent> batch, DateTimeOffset now, AppSettings settings)
     {
-        Advance(now, settings);
+        ExpireQueues(now);
         foreach (var value in batch)
         {
             if (value.Extra.GetValueOrDefault("sample") is true || value.Type is LiveEventType.Online or LiveEventType.Rank) continue;
@@ -57,12 +57,17 @@ public sealed class CompactTimeline
         queue.Add(new(message, ready));
     }
     private void Omit() { Omitted++; Dropped?.Invoke(1); }
-    public bool Advance(DateTimeOffset now, AppSettings settings)
+    private bool ExpireQueues(DateTimeOffset now)
     {
         var changed = false;
         foreach (var queue in new[] { _gifts, _guards, _sc, _follows })
             while (queue.Count > 0 && queue[0].Message.Received.AddSeconds(ReferenceEquals(queue, _gifts) || ReferenceEquals(queue, _follows) ? 60 : 300) <= now)
             { queue.RemoveAt(0); Omit(); changed = true; }
+        return changed;
+    }
+    public bool Advance(DateTimeOffset now, AppSettings settings)
+    {
+        var changed = ExpireQueues(now);
         CompactMessage? Next(CompactMessage? current, List<Pending>[] queues, double fallback, ref DateTimeOffset nextAt, double interval, bool trade)
         {
             if (current?.Expires > now) return current;

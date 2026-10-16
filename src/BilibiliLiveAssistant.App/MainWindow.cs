@@ -181,6 +181,12 @@ public sealed class MainWindow : Window
     }
     public bool OverlayInteractive => _vm.OverlayInteractive;
     public void ToggleOverlayInteraction() { OpenOverlay(); _vm.ToggleOverlayInteraction(); }
+    public bool CompactMode => _vm.Settings.Compact.DesktopEnabled;
+    public async Task ToggleCompactModeAsync()
+    {
+        try { await _vm.UpdateCompactAsync(s => s with { DesktopEnabled = !s.DesktopEnabled }); OpenOverlay(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("浮窗模式保存失败，请重试。"); }
+    }
 
     public void HideToTray()
     {

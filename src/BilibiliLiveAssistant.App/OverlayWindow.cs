@@ -14,6 +14,7 @@ public sealed class OverlayWindow : OverlaySurface
     private readonly LiveEventBuffer _pendingItems = new(64);
     private readonly FixedOverlayWindow[] _fixedRegions;
     private readonly StationaryOverlayWindow[] _stationary;
+    private readonly CompactOverlayWindow _compact;
     public bool OverlayVisible => _overlayVisible;
     internal object GetDiagnostics() => new
     {
@@ -33,6 +34,7 @@ public sealed class OverlayWindow : OverlaySurface
     public OverlayWindow(LiveAssistantViewModel vm) : base(vm, OverlayRegionKind.Danmaku)
     {
         _vm = vm;
+        _compact = new(vm);
         _messageStyle = vm.Settings.Dashboard;
         _mediaStyle = vm.Settings.MediaPreview;
         _fixedRegions = new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status }
@@ -60,6 +62,7 @@ public sealed class OverlayWindow : OverlaySurface
     {
         _nextDisplayAt = default;
         _overlayVisible = false;
+        _compact.HidePanel();
         _frames.Stop(OnFrame);
         _intakeTimer.Stop();
         ClearItems();
@@ -74,6 +77,14 @@ public sealed class OverlayWindow : OverlaySurface
     private void SyncRegionVisibility()
     {
         if (!_overlayVisible) return;
+        if (_vm.Settings.Compact.DesktopEnabled)
+        {
+            ResetContent(); Hide();
+            foreach (var region in _fixedRegions) region.HideRegion();
+            foreach (var region in _stationary) region.HideRegion();
+            _compact.ShowPanel(); return;
+        }
+        _compact.HidePanel();
         if ((!Editing && !OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku)) || OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
         else if (!Visible) ShowSurface();
         foreach (var region in _fixedRegions)
@@ -105,7 +116,7 @@ public sealed class OverlayWindow : OverlaySurface
 
     private void OnEventBatch(IReadOnlyList<LiveEvent> batch)
     {
-        if (!_overlayVisible || IsDisposed || Editing) return;
+        if (!_overlayVisible || IsDisposed || Editing || _vm.Settings.Compact.DesktopEnabled) return;
         static OverlayRegionKind EventKind(LiveEvent e) => e.Type switch
         { LiveEventType.Danmaku => OverlayRegionKind.Danmaku, LiveEventType.Gift or LiveEventType.Guard => OverlayRegionKind.Gift,
             LiveEventType.SuperChat => OverlayRegionKind.SuperChat, LiveEventType.Enter => OverlayRegionKind.Interaction, _ => OverlayRegionKind.Status };
@@ -357,6 +368,7 @@ public sealed class OverlayWindow : OverlaySurface
             ClearItems();
             foreach (var region in _fixedRegions) region.Dispose();
             foreach (var region in _stationary) region.Dispose();
+            _compact.Dispose();
             _frames.Dispose();
         }
         base.Dispose(disposing);
