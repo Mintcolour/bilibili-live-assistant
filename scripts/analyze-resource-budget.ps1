@@ -132,6 +132,7 @@ $eligible = $header.config.View -eq 'both' -and $header.config.Images -eq 'uniqu
     !$header.config.DrawingDecode -and $header.config.AttachImages -ne $false -and $header.config.CreateSources -ne $false -and !$header.build.alternateSource
 $complete = $completed -and $fullTraffic -and $visible -and $retention -and $threeBaselines -and $meter -and $meter.coversTraffic -and $eligible
 $tail = @($traffic | Where-Object { $_.seconds -ge ($traffic[-1].seconds - 1800) })
+$tailSeconds = if ($tail.Count -gt 1) { $tail[-1].seconds - $tail[0].seconds } else { 0 }
 $allocationRate = if ($traffic.Count -gt 1) { ($traffic[-1].allocatedBytes - $traffic[0].allocatedBytes) / $trafficSeconds / 1MB } else { $null }
 [ordered]@{
     schema=1; name=$header.config.Name; configuration=$header.config; build=$header.build; dpi=$header.dpi; winUiVersion=$header.winUiVersion;
@@ -148,7 +149,9 @@ $allocationRate = if ($traffic.Count -gt 1) { ($traffic[-1].allocatedBytes - $tr
     allocationMiBPerSecond=$allocationRate;
     winUiBindingReadyLatency=[ordered]@{ all=(BindingLatency 'all'); waited=(BindingLatency 'waited');
         note='Successful visible-row bindings, cumulative at last traffic sample. 1 ms buckets, >2000 ms overflow. Not GPU presentation, overlay appearance, failures or cancelled waits.' };
-    lastHalfHourSlopeMiBPerMinute=[ordered]@{ privateWorkingSet=(Slope $tail 'privateWorkingSetBytes'); privateCommit=(Slope $tail 'privateBytes'); managed=(Slope $tail 'managedBytes') };
+    lastHalfHourSlopeMiBPerMinute=[ordered]@{ observedWindowSeconds=$tailSeconds; fullHalfHour=($tailSeconds -ge 1790);
+        privateWorkingSet=(Slope $tail 'privateWorkingSetBytes'); privateCommit=(Slope $tail 'privateBytes'); managed=(Slope $tail 'managedBytes');
+        note='Short runs use only the available traffic window; a partial-window slope is not a half-hour stability result.' };
     received=$last.ui.received; archived=$last.ui.history.writtenEvents; archiveDropped=$last.ui.history.dropped; archiveWriteFailures=$last.ui.history.writeFailures;
     images=$last.ui.images; resources=$last.ui.imageResources; uiImages=$last.ui.uiImages; assertions=$assertions;
     note='Use matching display/remote-desktop conditions for CPU comparisons. Loopback fixtures exercise a finite set of image bodies; URL rotation is not unique image content.'
