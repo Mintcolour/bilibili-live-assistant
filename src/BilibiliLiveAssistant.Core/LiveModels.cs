@@ -65,6 +65,8 @@ public sealed record DisplaySettings
 
 public sealed record AppSettings
 {
+    public CompactOverlaySettings Compact { get; init; } = new();
+    public OverlayPriceDurations PriceDurations { get; init; } = new();
     public int SchemaVersion { get; init; } = 1;
     public int RoomId { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]

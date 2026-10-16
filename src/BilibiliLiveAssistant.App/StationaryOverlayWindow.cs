@@ -123,7 +123,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 if (now < _nextDisplayAt) break;
                 if (_timed[i] is not null) continue;
                 var next = _queue.Take(now, Kind == OverlayRegionKind.SuperChat); if (next is null) break;
-                var seconds = next.Type == LiveEventType.Guard ? RegionSettings.GuardDurationSeconds : RegionSettings.DurationSeconds;
+                var seconds = ViewModel.Settings.PriceDurations.Seconds(next);
                 _timed[i] = new(next, now, now.AddSeconds(seconds), ++_sequence); changed = true;
                 _nextDisplayAt = now.AddSeconds(RegionSettings.DisplayIntervalSeconds);
             }
