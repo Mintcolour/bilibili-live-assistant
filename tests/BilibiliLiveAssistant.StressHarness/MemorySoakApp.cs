@@ -88,6 +88,7 @@ public partial class App : Application
             _phase = "startup_baseline";
             await Task.Delay(TimeSpan.FromSeconds(_config.BaselineSeconds));
             if (_config.StartupOnly) { await FinishAsync(); return; }
+            if (_config.PlaybackProbe) { await VerifyPlaybackAsync(); await FinishAsync(); return; }
             if (_config.TradeProbe) { await VerifyTradesAsync(); await FinishAsync(); return; }
             if (_config.InteractionProbe) await VerifyInteractionBurstAsync();
             await ViewModel.StartAsync(settings.RoomId);
@@ -461,7 +462,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";

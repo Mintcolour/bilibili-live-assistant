@@ -28,6 +28,7 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <Compile Include="MemorySoakApp.cs" />
+    <Compile Include="PlaybackProbe.cs" />
     <Compile Include="$(SourceRoot)/*.cs" Exclude="$(SourceRoot)/App.xaml.cs" />
     <Content Include="../../assets/icons/app.ico" Link="Assets/app.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

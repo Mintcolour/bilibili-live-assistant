@@ -40,6 +40,10 @@ if ($LASTEXITCODE -ne 0) { throw '压力程序发布失败' }
 
 `-ScrollProbe` 会在持续流量下滚动 SC 和普通弹幕，检查首个可见记录及行内像素偏移能否保持，并写入 `scroll-check.json`。该诊断会改变可见内容，不作为最终性能验收。
 
+`-PlaybackProbe -BaselineSeconds 0 -View dashboard -Images none` 用于排查浮窗播报顺序，运行后直接退出，不启动监视或连接直播间。编号事件检查定时卡片到期补位、SC／上舰／礼物的先后、独立队列上限、旧位图与到期时间复用；结果写入 `playback-check.json`。反射只存在于隔离程序中，用于控制到期时间和读取私有队列，不为正式产品增加测试入口。
+
+同一诊断还用透明文字、阴影、负数及分数坐标，逐字节对照旧复杂裁剪和新矩形裁剪的输出；绘制耗时以交替批次保存到 `raster-comparison.json`。这个小型固定场景不能代替直播吞吐或长期 CPU／内存验收。失败时保存的图片仅含本地合成文字。
+
 ## 分析结果
 
 ```powershell

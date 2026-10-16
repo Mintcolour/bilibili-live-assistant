@@ -21,7 +21,8 @@ param(
     [switch]$LifecycleProbe,
     [switch]$AnimateEmotes,
     [switch]$InteractionProbe,
-    [switch]$TradeProbe
+    [switch]$TradeProbe,
+    [switch]$PlaybackProbe
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -34,7 +35,7 @@ if (!(Test-Path -LiteralPath (Join-Path $sourceDirectory 'StressApp.exe'))) { th
 New-Item -ItemType Directory -Path $runDirectory,$binaryDirectory -Force | Out-Null
 Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $binaryDirectory -Recurse
 [ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent; ScrollProbe=$ScrollProbe.IsPresent; LiveRoom=$LiveRoom; BaselineSeconds=$BaselineSeconds; EntryAvatars=!$NoEntryAvatars.IsPresent; FixturePort=$FixturePort; FixtureCount=$FixtureCount; Pattern=$Pattern; StartupOnly=$StartupOnly.IsPresent; LifecycleProbe=$LifecycleProbe.IsPresent; AnimateEmotes=$AnimateEmotes.IsPresent } |
-    ForEach-Object { $_.InteractionProbe = $InteractionProbe.IsPresent; $_.TradeProbe = $TradeProbe.IsPresent; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
+    ForEach-Object { $_.InteractionProbe = $InteractionProbe.IsPresent; $_.TradeProbe = $TradeProbe.IsPresent; $_.PlaybackProbe = $PlaybackProbe.IsPresent; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
 $binary = Join-Path $binaryDirectory 'StressApp.exe'
 # Explorer avoids inheriting the Codex/terminal package identity. Never launch
 # the real assistant, BrowserHost or any browser account listener for this run.
