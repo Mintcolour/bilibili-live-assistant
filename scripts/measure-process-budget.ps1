@@ -39,7 +39,8 @@ $peak = 0L
 $violations = 0
 $samples = 0
 try {
-    $writer.WriteLine((@{kind='header'; pid=$ProcessId; utc=[DateTimeOffset]::UtcNow; intervalMs=$IntervalMilliseconds; budgetBytes=($BudgetMiB * 1MB); processors=[Environment]::ProcessorCount; note='External process sampling; no GC or working-set trimming; finite sampling cannot prove no inter-sample peak.'} | ConvertTo-Json -Compress))
+    $writer.WriteLine((@{kind='header'; pid=$ProcessId; utc=[DateTimeOffset]::UtcNow; processStartedUtc=$target.StartTime.ToUniversalTime(); intervalMs=$IntervalMilliseconds; budgetBytes=($BudgetMiB * 1MB); processors=[Environment]::ProcessorCount; note='External process sampling; no GC or working-set trimming; finite sampling cannot prove no inter-sample peak.'} | ConvertTo-Json -Compress))
+    $writer.Flush()
     while ($watch.Elapsed.TotalSeconds -lt $Seconds -and !$target.HasExited) {
         $memory = [BudgetProcessMemory]::Read($target.Handle)
         $elapsed = $watch.Elapsed.TotalSeconds

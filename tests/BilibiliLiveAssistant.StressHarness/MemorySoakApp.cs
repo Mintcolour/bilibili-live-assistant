@@ -20,6 +20,7 @@ public partial class App : Application
     internal static bool AttachImageSources { get; private set; } = true;
     internal static bool CreateImageSources { get; private set; } = true;
     internal static bool UseDrawingDecode { get; private set; }
+    internal static string DiagnosticDirectory { get; private set; } = null!;
     private MainWindow? _window;
     internal static nint MainWindowHandle => Current is App app && app._window is { } window ? WinRT.Interop.WindowNative.GetWindowHandle(window) : 0;
     private readonly SoakConfig _config;
@@ -40,6 +41,7 @@ public partial class App : Application
     {
         InitializeComponent();
         _config = JsonSerializer.Deserialize<SoakConfig>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-config.json")))!;
+        DiagnosticDirectory = _config.Output;
         _client = new(_config.LiveRoom > 0);
         AttachImageSources = _config.AttachImages;
         CreateImageSources = _config.CreateSources;

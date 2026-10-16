@@ -568,7 +568,11 @@ internal static class BiliImageDiagnostics
 {
     private const long FileLimit = 32 * 1024;
     private static readonly object Gate = new();
+#if MEMORY_SOAK
+    private static string DirectoryPath => App.DiagnosticDirectory;
+#else
     private static readonly string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant");
+#endif
     internal static void Record(string url, string stage, Exception error, byte[]? data = null)
     {
         try

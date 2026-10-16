@@ -11,8 +11,12 @@ internal sealed record PerformanceLogState(bool Running = false, long Samples = 
 /// <summary>Opt-in, numeric-only sampling. No per-event I/O, forced GC, or concurrent sampler.</summary>
 internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> snapshot) : IAsyncDisposable
 {
-    internal static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "BilibiliLiveAssistant", "diagnostics");
+    internal static string DirectoryPath =>
+#if MEMORY_SOAK
+        Path.Combine(App.DiagnosticDirectory, "diagnostics");
+#else
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant", "diagnostics");
+#endif
     private const int FileLimit = 2 * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private CancellationTokenSource? _stop;
