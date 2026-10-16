@@ -152,7 +152,7 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
             await writer.FlushAsync(token).ConfigureAwait(false);
             length += Encoding.UTF8.GetByteCount(line) + 1;
         }
-        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 4, session, utc = DateTimeOffset.UtcNow,
+        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 5, session, utc = DateTimeOffset.UtcNow,
             version = typeof(App).Assembly.GetName().Version?.ToString(),
             build = typeof(App).Assembly.GetCustomAttributes(false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion,
             logicalProcessors = Environment.ProcessorCount, sampleSeconds = 5, processScope = "app-only",

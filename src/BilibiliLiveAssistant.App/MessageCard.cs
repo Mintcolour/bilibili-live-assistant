@@ -579,6 +579,8 @@ internal sealed class BiliImageView : Grid, IDisposable
     internal void Rebind(string url, string fallback, long uid)
     {
         if (_disposed) return;
+        Interlocked.Increment(ref ImageResourceCounters.RebindAttempts);
+        Interlocked.Increment(ref ImageResourceCounters.RebindChanges);
         Deactivate(); _clock.Remove(this); ReleaseImages(); _url = url; _displayUrl = url; _avatarUid = _avatar ? uid : 0;
         var initials = new System.Globalization.StringInfo(fallback.Trim());
         _fallback!.Text = _avatar ? initials.LengthInTextElements > 0 ? initials.SubstringByTextElements(0, Math.Min(2, initials.LengthInTextElements)) : "?" : fallback;
@@ -622,10 +624,11 @@ internal sealed class BiliImageView : Grid, IDisposable
     }
     private void Bind(ImageSource source)
     {
+        Interlocked.Increment(ref ImageResourceCounters.BindingAttempts);
 #if MEMORY_SOAK
         if (!App.AttachImageSources) return;
 #endif
-        if (_image is not null) _image.Source = source;
+        if (_image is not null) { _image.Source = source; Interlocked.Increment(ref ImageResourceCounters.BindingChanges); }
         if (_avatar) Interlocked.Increment(ref ImageResourceCounters.AvatarBindings);
         if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
     }

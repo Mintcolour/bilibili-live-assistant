@@ -426,6 +426,7 @@ internal sealed class BiliImageCache : IDisposable
 
     private static async Task<BiliImageAsset> DecodeAsync(byte[] raw, bool animate, int maxDimension, CancellationToken token)
     {
+        using var inputBytes = ImageResourceCounters.BeginDecode(raw.LongLength);
         using var timing = ImageResourceCounters.Measure(0);
 #if MEMORY_SOAK
         if (App.UseDrawingDecode && !animate && (raw.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71 })
@@ -451,6 +452,7 @@ internal sealed class BiliImageCache : IDisposable
         var decoder = await BitmapDecoder.CreateAsync(input);
         if (decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 || (long)decoder.PixelWidth * decoder.PixelHeight > 8_388_608)
             throw new InvalidDataException("图片尺寸超过限制");
+        ImageResourceCounters.DecodedSize((int)decoder.PixelWidth, (int)decoder.PixelHeight, maxDimension);
         var scale = Math.Min(1d, maxDimension / (double)Math.Max(decoder.PixelWidth, decoder.PixelHeight));
         var width = Math.Max(1, (int)(decoder.PixelWidth * scale));
         var height = Math.Max(1, (int)(decoder.PixelHeight * scale));

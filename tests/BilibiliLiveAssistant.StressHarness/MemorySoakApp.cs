@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using BilibiliLiveAssistant.Core;
+using BilibiliLiveAssistant.Infrastructure;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
@@ -22,7 +23,7 @@ public partial class App : Application
     private MainWindow? _window;
     internal static nint MainWindowHandle => Current is App app && app._window is { } window ? WinRT.Interop.WindowNative.GetWindowHandle(window) : 0;
     private readonly SoakConfig _config;
-    private readonly SoakClient _client = new();
+    private readonly SoakClient _client;
     private readonly Stopwatch _elapsed = new();
     private readonly CancellationTokenSource _stop = new();
     private DispatcherQueueTimer? _sampling;
@@ -39,6 +40,7 @@ public partial class App : Application
     {
         InitializeComponent();
         _config = JsonSerializer.Deserialize<SoakConfig>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-config.json")))!;
+        _client = new(_config.LiveRoom > 0);
         AttachImageSources = _config.AttachImages;
         CreateImageSources = _config.CreateSources;
         UseDrawingDecode = _config.DrawingDecode;
@@ -54,11 +56,12 @@ public partial class App : Application
         try
         {
             _log = new StreamWriter(Path.Combine(_config.Output, "samples.jsonl"), false) { AutoFlush = true };
-            var settings = new AppSettings { RoomId = 900000001, AnonymousReading = true,
+            var live = _config.LiveRoom > 0;
+            var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = true,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
-                Dashboard = new() { RankPanelCollapsed = true, ShowAvatars = _config.Images is not ("none" or "emotes") } };
-            var images = new BiliImageCache(new FixtureImages(), Path.Combine(_config.Output, "images"));
-            ViewModel = new(settings, new SoakStore(), _client, new SoakInfo(), images);
+                Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, ShowAvatars = _config.Images is not ("none" or "emotes") } };
+            var images = new BiliImageCache(live ? null : new FixtureImages(), Path.Combine(_config.Output, "images"));
+            ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
             _window = new(ViewModel) { Title = "内存模拟 · " + _config.Name };
             _window.Activate();
             if (_config.View is not ("dashboard" or "pipeline")) _window.OpenOverlay();
@@ -75,14 +78,24 @@ public partial class App : Application
                 winUiVersion = _process.Modules.Cast<ProcessModule>().FirstOrDefault(m => m.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))?.FileVersionInfo.FileVersion,
                 build = File.Exists(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))
                     ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))) : (JsonElement?)null,
-                timestamp = DateTimeOffset.UtcNow, simulatedImages = true, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
-                note = "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
+                timestamp = DateTimeOffset.UtcNow, simulatedImages = !live, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
+                note = live ? "Anonymous live transport; isolated archive and image cache; no user settings, cookies or BrowserHost."
+                    : "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
             Sample();
+            _phase = "startup_baseline";
+            await Task.Delay(TimeSpan.FromSeconds(_config.BaselineSeconds));
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
             if (_config.Snapshot) _snapshot = CaptureOverviewAsync();
             if (_config.ScrollProbe) _scrollProbe = VerifyScrollAsync();
+            if (live)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(_config.Seconds), _stop.Token);
+                await ViewModel.StopAsync();
+                await FinishAsync();
+                return;
+            }
             if (_config.View == "pipeline")
             {
                 // Diagnostic only: exercise exactly the production cache/decode
@@ -295,7 +308,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
@@ -304,13 +317,22 @@ internal sealed class SoakStore : ISettingsStore
 }
 internal sealed class SoakClient : ILiveRoomClient
 {
+    private readonly BiliLiveClient? _live;
+    private bool _running;
+    public SoakClient(bool live)
+    {
+        if (!live) return;
+        _live = new();
+        _live.EventReceived += (_, e) => EventReceived?.Invoke(this, e);
+        _live.StatusChanged += (_, e) => StatusChanged?.Invoke(this, e);
+    }
     public event EventHandler<LiveEvent>? EventReceived;
     public event EventHandler<string>? StatusChanged;
-    public bool IsRunning { get; private set; }
+    public bool IsRunning => _live?.IsRunning ?? _running;
     public Task StartAsync(int roomId, CookieOptions cookies, CancellationToken cancellationToken = default)
-    { IsRunning = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
-    public Task StopAsync() { IsRunning = false; StatusChanged?.Invoke(this, "已断开连接"); return Task.CompletedTask; }
-    public void Emit(LiveEvent value) { if (IsRunning) EventReceived?.Invoke(this, value); }
+    { if (_live is not null) return _live.StartAsync(roomId, new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
+    public Task StopAsync() { if (_live is not null) return _live.StopAsync(); _running = false; StatusChanged?.Invoke(this, "已断开连接"); return Task.CompletedTask; }
+    public void Emit(LiveEvent value) { if (_live is null && IsRunning) EventReceived?.Invoke(this, value); }
 }
 internal sealed class SoakInfo : ILiveInfoService
 {
