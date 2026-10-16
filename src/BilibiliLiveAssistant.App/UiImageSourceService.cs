@@ -14,7 +14,7 @@ internal sealed class UiImageSourceService : IDisposable
     private readonly SemaphoreSlim _slots = new(2, 2);
     private readonly DispatcherQueueTimer _idleTimer;
     private TaskCompletionSource _capacity = NewSignal();
-    private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released;
+    private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released, _handoffJoins;
     private bool _disposed;
     private int _generation;
     private long _idleByteLimit = 8 * 1024 * 1024;
@@ -27,7 +27,7 @@ internal sealed class UiImageSourceService : IDisposable
         public readonly CancellationTokenSource Cancel = new();
         public readonly TaskCompletionSource<Entry?> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Waiters;
-        public bool Started, Finished;
+        public bool Started, Finished, CancelQueued;
     }
     internal UiImageSourceService(BiliImageCache images)
     {
@@ -62,7 +62,11 @@ internal sealed class UiImageSourceService : IDisposable
                 pending.Waiters++;
                 _ = CreateAsync(key, pending);
             }
-            else pending.Waiters++;
+            else
+            {
+                pending.Waiters++;
+                if (pending.CancelQueued) _handoffJoins++;
+            }
             try
             {
                 var entry = await pending.Completion.Task.WaitAsync(cancellation);
@@ -77,13 +81,30 @@ internal sealed class UiImageSourceService : IDisposable
                 if (--pending.Waiters == 0)
                 {
                     if (pending.Finished) { _pending.Remove(key); pending.Cancel.Dispose(); SignalCapacity(); TrimIdle(); }
-                    else { _cancelled++; pending.Cancel.Cancel(); }
+                    else ScheduleCancellation(key, pending);
                 }
                 ScheduleIdle();
             }
         }
     }
     private Lease Borrow(Key key, Entry entry) { entry.Leases++; entry.Used = ++_sequence; _idleTimer.Stop(); return new(this, key, entry); }
+    private void ScheduleCancellation(Key key, Pending pending)
+    {
+        if (pending.CancelQueued) return;
+        pending.CancelQueued = true;
+        // Stable row slots hand an image to the next visible row in the same UI
+        // batch. Give that row one dispatcher turn to join the existing factory,
+        // rather than aborting and restarting a slow body for every slot shift.
+        // At most one callback per pending key (32); no timer or idle polling.
+        if (_dispatcher.TryEnqueue(() =>
+        {
+            pending.CancelQueued = false;
+            if (_disposed || pending.Finished || !ReferenceEquals(_pending.GetValueOrDefault(key), pending) || pending.Waiters > 0) return;
+            _cancelled++; pending.Cancel.Cancel();
+        })) return;
+        pending.CancelQueued = false;
+        _cancelled++; pending.Cancel.Cancel();
+    }
     private async Task CreateAsync(Key key, Pending pending)
     {
         var entered = false; UiPixelSource? value = null;
@@ -192,6 +213,7 @@ internal sealed class UiImageSourceService : IDisposable
             pending = _pending.Count, queued = _pending.Values.Count(p => !p.Started && !p.Finished),
             creating = _pending.Values.Count(p => p.Started && !p.Finished), waiters = _pending.Values.Sum(p => p.Waiters),
             hits = _hits, cancelled = _cancelled, aborted = _aborted, stale = _stale, created = _created, released = _released,
+            handoffJoins = _handoffJoins,
         };
     }
     public void Dispose()
