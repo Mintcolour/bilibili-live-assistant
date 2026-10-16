@@ -51,7 +51,26 @@ internal static class DashboardUi
 
     public static void Describe(DependencyObject element, string label)
     {
-        if (ToolTipService.GetToolTip(element) as string != label) ToolTipService.SetToolTip(element, label);
+        // A realized/recycled row changes its description frequently. Preserve
+        // one tooltip control instead of replacing its implicit tooltip object.
+        if (ToolTipService.GetToolTip(element) is ToolTip tooltip)
+        {
+            if (tooltip.Content as string != label) tooltip.Content = label;
+        }
+        else ToolTipService.SetToolTip(element, new ToolTip { Content = label });
         if (AutomationProperties.GetName(element) != label) AutomationProperties.SetName(element, label);
+    }
+
+    // Disconnected rich rows may still own attached tooltip registrations and
+    // their templated trees. Detach them as part of the row's explicit lifetime.
+    public static void ReleaseDescriptions(DependencyObject element)
+    {
+        if (ToolTipService.GetToolTip(element) is ToolTip tooltip)
+        {
+            tooltip.IsOpen = false; tooltip.Content = null; tooltip.Template = null;
+        }
+        ToolTipService.SetToolTip(element, null);
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+            ReleaseDescriptions(VisualTreeHelper.GetChild(element, i));
     }
 }

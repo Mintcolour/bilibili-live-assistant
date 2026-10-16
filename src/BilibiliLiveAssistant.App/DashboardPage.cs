@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using BilibiliLiveAssistant.Core;
@@ -412,9 +411,12 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly ListView _list = new() { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = null };
     private readonly RecordCollection _items = new();
     private readonly HashSet<MessageCard> _cards = new();
+    private readonly Stack<MessageCard> _cardPool = new(16);
     private readonly Dictionary<Microsoft.UI.Xaml.Controls.Primitives.SelectorItem, MessageCard> _containerCards = new();
     private long _recycledWithoutRoot;
+    private long _newContainers, _reusedContainers, _createdCards, _reboundCards, _pooledCards;
     private readonly Dictionary<Guid, DashboardRecord> _visibleRecords = new();
+    private readonly Dictionary<Guid, int> _recordIndices = new();
     private readonly ListImageVisibility _visibility;
     private bool _active = true;
     private readonly TextBlock _heading = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
@@ -433,6 +435,7 @@ internal sealed class DashboardList : Grid, IDisposable
     private int _thankedCount = -1;
     private bool _filtered;
     private ScrollViewer? _scrollViewer;
+    private (Guid Id, double Pixels)? _readingRestore;
     public event Action? MarkAllRequested;
     public event Action? FilterChanged;
     public DashboardList(string title, string glyph, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, UIElement? extraAction = null)
@@ -441,7 +444,8 @@ internal sealed class DashboardList : Grid, IDisposable
         // Retain all message data, but materialize controls for the viewport only.
         _list.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ItemsStackPanel CacheLength='0'/></ItemsPanelTemplate>");
         _title = title; _vm = vm; _animations = animations; _visible = visible; _important = important;
-        _visibility = new(_list, () => _active && _visible(), UpdateVisibleImages);
+        _visibility = new(_list, () => _active && _visible(), UpdateVisibleImages,
+            item => item is DashboardRecord record && _recordIndices.TryGetValue(record.Id, out var index) ? index : -1);
         RowDefinitions.Add(new() { Height = GridLength.Auto });
         RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         RowSpacing = 3;
@@ -473,17 +477,38 @@ internal sealed class DashboardList : Grid, IDisposable
         UpdateActions(0, 0);
         Children.Add(header);
         _list.ItemsSource = _items;
-        _list.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ContentControl HorizontalContentAlignment='Stretch' IsTabStop='False'/></DataTemplate>");
+        _list.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ContentPresenter HorizontalAlignment='Stretch'/></DataTemplate>");
+        // These rows have no selection state; the message owns its visuals and
+        // actions. Avoid another full list-item chrome/template around each row.
+        _list.ItemContainerStyle = (Style)XamlReader.Load("""
+            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="ListViewItem">
+              <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+              <Setter Property="VerticalContentAlignment" Value="Top"/>
+              <Setter Property="Padding" Value="0"/>
+              <Setter Property="MinHeight" Value="0"/>
+              <Setter Property="UseSystemFocusVisuals" Value="True"/>
+              <Setter Property="Template"><Setter.Value>
+                <ControlTemplate TargetType="ListViewItem">
+                  <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                    HorizontalAlignment="Stretch" VerticalAlignment="Top"/>
+                </ControlTemplate>
+              </Setter.Value></Setter>
+            </Style>
+            """);
         _list.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
         _list.ContainerContentChanging += RenderContainer;
+        _list.ChoosingItemContainer += ChoosingContainer;
         _list.Loaded += OnListLoaded;
+        _list.PointerWheelChanged += CancelReadingRestore;
+        _list.PointerPressed += CancelReadingRestore;
+        _list.KeyDown += CancelReadingRestoreOnKey;
         _list.DoubleTapped += (_, e) =>
         {
             if (!_important) return;
             var node = e.OriginalSource as DependencyObject;
             while (node is not null && node is not ListViewItem) node = VisualTreeHelper.GetParent(node);
             var container = node as ListViewItem;
-            if (container?.Content is DashboardRecord record) vm.Dashboard.Mark(record, false);
+            if (container?.Content is RowSlot { Record: { } record }) vm.Dashboard.Mark(record, false);
         };
         Grid.SetRow(_list, 1); Children.Add(_list);
         Grid.SetRow(_empty, 1); Children.Add(_empty);
@@ -505,19 +530,42 @@ internal sealed class DashboardList : Grid, IDisposable
         DashboardUi.Describe(_heading, _important ? $"{_title} · {source.Count} 条 · 未读 {unread}" : $"{_title} · {source.Count} 条");
         DashboardUi.Describe(_unreadTotal, $"未读 {unread} 条");
         var selected = _unread.IsChecked == true ? source.Where(x => !x.IsRead).ToArray() : source.ToArray();
+        Guid readingAnchor = Guid.Empty;
+        var oldIndex = -1; var readingPixels = 0d;
+        if (_readingRestore is { } pending && _recordIndices.TryGetValue(pending.Id, out var pendingIndex))
+        { readingAnchor = pending.Id; oldIndex = pendingIndex; readingPixels = pending.Pixels; }
+        else if (_scrollViewer?.VerticalOffset >= 8 && _list.ItemsPanelRoot is ItemsStackPanel { FirstVisibleIndex: >= 0 } oldPanel
+            && oldPanel.FirstVisibleIndex < _items.Count)
+        {
+            oldIndex = oldPanel.FirstVisibleIndex; readingAnchor = _items[oldIndex].Record.Id;
+            var top = _containerCards.Keys.FirstOrDefault(container => _list.IndexFromContainer(container) == oldIndex);
+            if (top is not null)
+                readingPixels = Math.Clamp(_scrollViewer.VerticalOffset - top.ActualOffset.Y, 0, Math.Max(0, top.ActualHeight - 1));
+        }
         var retainedIds = selected.Select(x => x.Id).ToHashSet();
         foreach (var card in _cards.Where(x => !retainedIds.Contains(x.RecordId)).ToArray()) ReleaseCard(card);
+        if (selected.Length == 0 || styleChanged) ClearCardPool();
         _empty.Visibility = selected.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         _empty.Text = _filtered ? "没有未读消息" : "暂无消息";
-        // Update only changed rows; metadata/status changes do not recreate gift and SC cards.
-        if (_list.ItemsPanelRoot is ItemsStackPanel panel)
-            panel.ItemsUpdatingScrollMode = _scrollViewer is null || _scrollViewer.VerticalOffset < 8 ? ItemsUpdatingScrollMode.KeepScrollOffset : ItemsUpdatingScrollMode.KeepItemsInView;
+        // Stable row identities keep the native item/template tree in place.
+        // Only the managed record behind a slot changes as new messages arrive.
         _items.Synchronize(selected);
-        _visibleRecords.Clear();
-        foreach (var record in selected) _visibleRecords[record.Id] = record;
-        foreach (var record in selected)
-            if (_list.ContainerFromItem(record) is ListViewItem container && container.ContentTemplateRoot is ContentControl host)
-                BindCard(container, host, record);
+        _visibleRecords.Clear(); _recordIndices.Clear();
+        for (var i = 0; i < selected.Length; i++)
+        { _visibleRecords[selected[i].Id] = selected[i]; _recordIndices[selected[i].Id] = i; }
+        if (readingAnchor != Guid.Empty && _recordIndices.TryGetValue(readingAnchor, out var anchorIndex) && anchorIndex != oldIndex)
+        {
+            _readingRestore = (readingAnchor, readingPixels);
+            _list.ScrollIntoView(_items[anchorIndex], ScrollIntoViewAlignment.Leading);
+        }
+        // Refresh only realized rows. Passing every retained record through
+        // ContainerFromItem made thousands of COM identity queries per second.
+        foreach (var container in _containerCards.Keys.ToArray())
+        {
+            var index = _list.IndexFromContainer(container);
+            if (index >= 0 && index < _items.Count && container.ContentTemplateRoot is ContentPresenter host)
+                BindCard(container, host, _items[index].Record);
+        }
         UpdateActions(source.Count, unread);
         _visibility.Request();
     }
@@ -528,7 +576,7 @@ internal sealed class DashboardList : Grid, IDisposable
         if (e.InRecycleQueue)
         {
             if (_containerCards.Remove(e.ItemContainer, out var retired)) ReleaseCard(retired);
-            if (e.ItemContainer.ContentTemplateRoot is ContentControl recycledHost) recycledHost.Content = null;
+            if (e.ItemContainer.ContentTemplateRoot is ContentPresenter recycledHost) recycledHost.Content = null;
             else _recycledWithoutRoot++;
             e.Handled = true;
             _visibility.Request();
@@ -538,13 +586,13 @@ internal sealed class DashboardList : Grid, IDisposable
         e.ItemContainer.VerticalContentAlignment = VerticalAlignment.Top;
         e.ItemContainer.Padding = new Thickness(0);
         e.ItemContainer.MinHeight = 0;
-        if (e.ItemContainer.ContentTemplateRoot is not ContentControl host)
+        if (e.ItemContainer.ContentTemplateRoot is not ContentPresenter host)
         {
             if (!e.InRecycleQueue && e.Phase == 0) e.RegisterUpdateCallback(RenderContainer);
             return;
         }
-        if (!e.InRecycleQueue && e.Item is DashboardRecord record)
-            BindCard(e.ItemContainer, host, record);
+        if (!e.InRecycleQueue && e.Item is RowSlot slot)
+            BindCard(e.ItemContainer, host, slot.Record);
         else
         {
             if (host.Content is MessageCard old) ReleaseCard(old);
@@ -553,6 +601,8 @@ internal sealed class DashboardList : Grid, IDisposable
         e.Handled = true;
         _visibility.Request();
     }
+    private void ChoosingContainer(ListViewBase sender, ChoosingItemContainerEventArgs e)
+    { if (e.ItemContainer is null) _newContainers++; else _reusedContainers++; }
     private void OnListLoaded(object sender, RoutedEventArgs e)
     {
         EnsureScrollViewer();
@@ -569,6 +619,7 @@ internal sealed class DashboardList : Grid, IDisposable
     }
     private void GoToLatest()
     {
+        _readingRestore = null;
         if (_items.Count == 0) return;
         EnsureScrollViewer();
         // ScrollIntoView also works if the template's ScrollViewer wasn't ready
@@ -596,6 +647,8 @@ internal sealed class DashboardList : Grid, IDisposable
         UpdateLatestAction();
         _animations.Wake();
     }
+    private void CancelReadingRestore(object sender, PointerRoutedEventArgs e) => _readingRestore = null;
+    private void CancelReadingRestoreOnKey(object sender, KeyRoutedEventArgs e) => _readingRestore = null;
     private static ScrollViewer? FindScrollViewer(DependencyObject root)
     {
         if (root is ScrollViewer scroll) return scroll;
@@ -603,7 +656,7 @@ internal sealed class DashboardList : Grid, IDisposable
             if (FindScrollViewer(VisualTreeHelper.GetChild(root, i)) is { } child) return child;
         return null;
     }
-    private void BindCard(Microsoft.UI.Xaml.Controls.Primitives.SelectorItem container, ContentControl host, DashboardRecord record)
+    private void BindCard(Microsoft.UI.Xaml.Controls.Primitives.SelectorItem container, ContentPresenter host, DashboardRecord record)
     {
         if (_containerCards.TryGetValue(container, out var previous) && !ReferenceEquals(previous, host.Content)) ReleaseCard(previous);
         if (host.Content is MessageCard old)
@@ -613,35 +666,73 @@ internal sealed class DashboardList : Grid, IDisposable
                 old.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
                 return;
             }
+            if (old.TryRebind(record, _vm, _animations, () => _visibility.IsVisible(record), _important))
+            {
+                _reboundCards++;
+                old.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
+                return;
+            }
             ReleaseCard(old);
         }
-        var card = new MessageCard(record, _vm, _animations, () => _visibility.IsVisible(record), _important);
+        MessageCard? card = null;
+        while (MessageCard.IsReusable(record, _vm.Settings.Dashboard, _important) && _cardPool.TryPop(out var pooled))
+        {
+            if (pooled.TryRebind(record, _vm, _animations, () => _visibility.IsVisible(record), _important)) { card = pooled; _pooledCards++; break; }
+            pooled.Dispose();
+        }
+        if (card is null) { card = new MessageCard(record, _vm, _animations, () => _visibility.IsVisible(record), _important); _createdCards++; }
         _cards.Add(card); _containerCards[container] = card; host.Content = card;
         card.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
     }
     private void ReleaseCard(MessageCard card)
     {
-        card.Dispose(); _cards.Remove(card);
+        _cards.Remove(card);
         foreach (var owner in _containerCards.Where(x => ReferenceEquals(x.Value, card)).Select(x => x.Key).ToArray())
+        {
+            if (owner.ContentTemplateRoot is ContentPresenter host && ReferenceEquals(host.Content, card)) host.Content = null;
             _containerCards.Remove(owner);
+        }
+        if (_active && _cardPool.Count < 16 && card.RetireForReuse()) _cardPool.Push(card);
+        else card.Dispose();
     }
+    private void ClearCardPool() { while (_cardPool.TryPop(out var card)) card.Dispose(); }
     internal object GetResourceDiagnostics()
     {
         var panel = _list.ItemsPanelRoot as ItemsStackPanel;
-        return new { items = _items.Count, cards = _cards.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
+        return new { items = _items.Count, cards = _cards.Count, pooled = _cardPool.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
+            newContainers = _newContainers, reusedContainers = _reusedContainers, createdCards = _createdCards, reboundCards = _reboundCards, pooledCards = _pooledCards,
             ownedIndices = _containerCards.Keys.Select(x => _list.IndexFromContainer(x)).Order().ToArray(),
             firstVisible = panel?.FirstVisibleIndex, lastVisible = panel?.LastVisibleIndex,
             firstCached = panel?.FirstCacheIndex, lastCached = panel?.LastCacheIndex };
     }
     private void UpdateVisibleImages()
     {
+        if (_readingRestore is { } restore && _scrollViewer is not null)
+        {
+            if (!_recordIndices.TryGetValue(restore.Id, out var index)) _readingRestore = null;
+            else
+            {
+                // ScrollIntoView can realize the requested container before the
+                // panel commits its new range. Its old layout offset must not
+                // be used to undo that scroll in the same layout callback.
+                var panel = _list.ItemsPanelRoot as ItemsStackPanel;
+                var atBottom = _scrollViewer.VerticalOffset >= _scrollViewer.ScrollableHeight - 1;
+                if (panel is not null && panel.FirstVisibleIndex != index && !atBottom)
+                    _list.ScrollIntoView(_items[index], ScrollIntoViewAlignment.Leading);
+                else if (_containerCards.Keys.FirstOrDefault(container => _list.IndexFromContainer(container) == index) is { } top)
+                {
+                    _readingRestore = null;
+                    _scrollViewer.ChangeView(null, top.ActualOffset.Y + restore.Pixels, null, true);
+                }
+            }
+        }
         // WinUI can retain an item container in its recycling pool without a
         // ContentChanging callback until that container is reused. Do not let
         // our ownership set keep its old rich visual tree alive in the meantime.
         foreach (var pair in _containerCards.ToArray())
         {
             if (_list.IndexFromContainer(pair.Key) >= 0) continue;
-            if (pair.Key.ContentTemplateRoot is ContentControl host && ReferenceEquals(host.Content, pair.Value)) host.Content = null;
+            if (pair.Key.ContentTemplateRoot is ContentPresenter host && ReferenceEquals(host.Content, pair.Value)) host.Content = null;
             ReleaseCard(pair.Value);
         }
         foreach (var card in _cards)
@@ -649,36 +740,34 @@ internal sealed class DashboardList : Grid, IDisposable
             else card.Deactivate();
         _animations.Wake();
     }
-    public void Suspend() { _active = false; foreach (var card in _cards) card.Deactivate(); }
+    public void Suspend() { _active = false; _readingRestore = null; ClearCardPool(); foreach (var card in _cards) card.Deactivate(); }
     public void Resume() { _active = true; _visibility.Request(); }
     public void Dispose()
     {
-        _visibility.Dispose(); _visibleRecords.Clear();
+        _visibility.Dispose(); _visibleRecords.Clear(); _recordIndices.Clear();
         _list.ContainerContentChanging -= RenderContainer;
+        _list.ChoosingItemContainer -= ChoosingContainer;
         _list.Loaded -= OnListLoaded;
+        _list.PointerWheelChanged -= CancelReadingRestore;
+        _list.PointerPressed -= CancelReadingRestore;
+        _list.KeyDown -= CancelReadingRestoreOnKey;
         if (_scrollViewer is not null) _scrollViewer.ViewChanged -= OnScrolled;
         // Include detached/recycled containers, not just those currently returned
         // by ContainerFromItem. Ownership is explicit until release.
         foreach (var card in _cards) card.Dispose();
         _cards.Clear(); _containerCards.Clear();
+        ClearCardPool();
         _list.ItemsSource = null;
         _items.Clear();
     }
-    private sealed class RecordCollection : ObservableCollection<DashboardRecord>
+    private sealed class RowSlot(DashboardRecord record) { public DashboardRecord Record = record; }
+    private sealed class RecordCollection : ObservableCollection<RowSlot>
     {
         public void Synchronize(DashboardRecord[] values)
         {
-            var keep = values.Select(x => x.Id).ToHashSet();
-            var existing = this.Select(x => x.Id).ToHashSet();
-            if (values.Count(x => !existing.Contains(x.Id)) > 64)
-            {
-                Items.Clear(); foreach (var value in values) Items.Add(value);
-                OnPropertyChanged(new(nameof(Count))); OnPropertyChanged(new("Item[]"));
-                OnCollectionChanged(new(NotifyCollectionChangedAction.Reset)); return;
-            }
-            for (var i = Count - 1; i >= 0; i--) if (!keep.Contains(this[i].Id)) RemoveAt(i);
-            for (var i = 0; i < values.Length; i++)
-                if (i >= Count || this[i].Id != values[i].Id) Insert(i, values[i]);
+            for (var i = 0; i < Math.Min(Count, values.Length); i++) this[i].Record = values[i];
+            while (Count > values.Length) RemoveAt(Count - 1);
+            while (Count < values.Length) Add(new(values[Count]));
         }
     }
 }

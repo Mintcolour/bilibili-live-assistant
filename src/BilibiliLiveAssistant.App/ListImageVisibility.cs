@@ -11,18 +11,19 @@ internal sealed class ListImageVisibility : IDisposable
     private readonly ListView _list;
     private readonly Func<bool> _active;
     private readonly Action _update;
+    private readonly Func<object, int>? _indexOf;
     private ScrollViewer? _scroll;
     private XamlRoot? _root;
     private bool _pending, _disposed, _retriedLayout;
-    internal ListImageVisibility(ListView list, Func<bool> active, Action update)
+    internal ListImageVisibility(ListView list, Func<bool> active, Action update, Func<object, int>? indexOf = null)
     {
-        _list = list; _active = active; _update = update;
+        _list = list; _active = active; _update = update; _indexOf = indexOf;
         list.Loaded += Loaded; list.SizeChanged += SizeChanged;
     }
     internal bool IsVisible(object item)
     {
         if (_disposed || !_active() || _list.Visibility != Visibility.Visible || _list.ItemsPanelRoot is not ItemsStackPanel panel) return false;
-        var index = _list.Items.IndexOf(item);
+        var index = _indexOf is null ? _list.Items.IndexOf(item) : _indexOf(item);
         return index >= 0 && panel.FirstVisibleIndex >= 0 && index >= panel.FirstVisibleIndex && index <= panel.LastVisibleIndex;
     }
     internal void Request()

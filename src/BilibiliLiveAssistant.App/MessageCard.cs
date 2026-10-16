@@ -9,25 +9,43 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace BilibiliLiveAssistant.App;
 
-internal sealed class MessageCard : ContentControl, IDisposable
+internal sealed class MessageCard : Grid, IDisposable
 {
+    // Rows already have a ListView content host. This wrapper only needs one
+    // child; a second ControlTemplate adds bindings and a presenter per message.
+    private UIElement? Content
+    {
+        get => Children.Count > 0 ? Children[0] : null;
+        set { Children.Clear(); if (value is not null) Children.Add(value); }
+    }
     private readonly List<BiliImageView> _images = new();
-    private readonly Func<bool> _visible;
+    private Func<bool> _visible;
+    private readonly Func<bool> _ownedVisible;
+    private Paragraph? _reusableParagraph;
+    private Border? _reusableBorder;
+    private ReusableMessageText? _reusableText;
+    private ReusableMessageBody? _reusableBody;
+    private bool _entryReuse, _scReuse;
+    private MessageActions? _actions;
+    private readonly bool _important;
     private MediaPreviewGroup? _media;
     private bool _disposed;
-    internal Guid RecordId { get; }
-    internal long RecordRevision { get; }
+    internal Guid RecordId { get; private set; }
+    internal long RecordRevision { get; private set; }
     internal DashboardSettings MessageStyle { get; }
-    internal bool Read { get; }
-    internal bool Thanked { get; }
+    internal bool Read { get; private set; }
+    internal bool Thanked { get; private set; }
     internal MediaPreviewSettings MediaStyle { get; }
     public MessageCard(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important, DashboardSettings? previewStyle = null)
     {
-        _visible = visible;
+        _visible = visible; _important = important;
+        // Image consumers follow the card's current binding when a plain row is
+        // recycled; they must not close over its original DashboardRecord.
+        visible = _ownedVisible = () => _visible();
         var message = record.Event;
         var style = previewStyle ?? vm.Settings.Dashboard;
         RecordId = record.Id; RecordRevision = record.Revision; MessageStyle = style; MediaStyle = vm.Settings.MediaPreview; Read = record.IsRead; Thanked = record.IsThanked;
-        HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        HorizontalAlignment = HorizontalAlignment.Stretch;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
         if (message.Type == LiveEventType.Enter && !string.IsNullOrEmpty(message.Username))
@@ -55,7 +73,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
             avatar.VerticalAlignment = VerticalAlignment.Top; _images.Add(avatar); layout.Children.Add(avatar);
         }
         var content = new StackPanel { Spacing = 5 };
-        var header = new RichTextBlock { FontFamily = new(style.FontFamily), FontSize = style.UsernameFontSize, Foreground = Brush(style.UsernameColor), Opacity = style.TextOpacity };
+        var header = new RichTextBlock { FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.UsernameFontSize, Foreground = Brush(style.UsernameColor), Opacity = style.TextOpacity };
         var headerLine = new Paragraph { Margin = new(0) };
         headerLine.Inlines.Add(new Run { Text = message.Username, FontWeight = new(600) });
         if (!message.Extra.ContainsKey("rank_position"))
@@ -130,44 +148,55 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
         var text = new RichTextBlock
         {
-            FontFamily = new(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(follow ? "#FFD275" : effect?.TextColor ?? "#A7B1C2"),
+            FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(follow ? "#FFD275" : effect?.TextColor ?? "#A7B1C2"),
             TextWrapping = TextWrapping.Wrap, Opacity = style.TextOpacity, VerticalAlignment = VerticalAlignment.Center,
             LineHeight = style.FontSize * 1.25 + Math.Min(style.LineSpacing, 4),
         };
         var paragraph = new Paragraph { Margin = new(0) };
-        if (follow) AddBadge(paragraph, LiveInteractions.FollowLabel(message), "#AD3E6C", style.BadgeSize);
-        if (style.ShowIdentity && appearance is not null)
+        var reusableEntry = IsReusableEntry(message);
+        if (reusableEntry)
         {
-            var guard = appearance.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" };
-            if (guard.Length > 0) AddBadge(paragraph, guard, LiveEntryStyles.Accent(appearance), style.BadgeSize);
-            else if (effect is not null && appearance.WealthLevel > 0)
-            {
-                var levelText = $"◇ {appearance.WealthLevel}";
-                if (effect.BadgeUrl.Length > 0)
-                {
-                    var levelIcon = new BiliImageView(vm.Images, effect.BadgeUrl, levelText, 46, style.BadgeSize + 9, false, animations, visible);
-                    _images.Add(levelIcon); paragraph.Inlines.Add(new InlineUIContainer { Child = levelIcon });
-                    paragraph.Inlines.Add(new Run { Text = " " });
-                }
-                else AddBadge(paragraph, levelText, LiveEntryStyles.Accent(appearance), style.BadgeSize);
-            }
-            if (appearance.IsAdmin) AddBadge(paragraph, "房管", "#438A69", style.BadgeSize);
+            _entryReuse = true; _reusableParagraph = paragraph;
+            _reusableText = new(paragraph, style,
+                (emote, fallback) => CreateEmote(emote, fallback, false, style, vm, animations, _ownedVisible), entry: true);
+            _reusableText.Update(message);
         }
-        if (style.ShowMedals && appearance is { MedalName.Length: > 0, MedalLevel: > 0 })
-            AddBadge(paragraph, $"{appearance.MedalName} {appearance.MedalLevel}", appearance.MedalColor, style.BadgeSize);
-        paragraph.Inlines.Add(new Run { Text = message.Username + "  ", FontSize = style.UsernameFontSize,
-            FontWeight = new(600), Foreground = Brush(follow ? "#FFE4EF" : LiveEntryStyles.UsernameColor(appearance, style.UsernameColor)) });
-        paragraph.Inlines.Add(new Run { Text = message.Content + "  ", FontWeight = new(follow ? (ushort)600 : (ushort)400) });
-        if (style.ShowIdentity && appearance is not null)
+        if (!reusableEntry)
         {
-            if (appearance.InteractionIconUrl.Length > 0)
+            if (follow) AddBadge(paragraph, LiveInteractions.FollowLabel(message), "#AD3E6C", style.BadgeSize);
+            if (style.ShowIdentity && appearance is not null)
             {
-                var relation = new BiliImageView(vm.Images, appearance.InteractionIconUrl, appearance.InteractionLabel,
-                    72, style.BadgeSize + 9, false, animations, visible);
-                DashboardUi.Describe(relation, appearance.InteractionHint.Length > 0 ? appearance.InteractionHint : appearance.InteractionLabel);
-                _images.Add(relation); paragraph.Inlines.Add(new InlineUIContainer { Child = relation });
+                var guard = appearance.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" };
+                if (guard.Length > 0) AddBadge(paragraph, guard, LiveEntryStyles.Accent(appearance), style.BadgeSize);
+                else if (effect is not null && appearance.WealthLevel > 0)
+                {
+                    var levelText = $"◇ {appearance.WealthLevel}";
+                    if (effect.BadgeUrl.Length > 0)
+                    {
+                        var levelIcon = new BiliImageView(vm.Images, effect.BadgeUrl, levelText, 46, style.BadgeSize + 9, false, animations, visible);
+                        _images.Add(levelIcon); paragraph.Inlines.Add(new InlineUIContainer { Child = levelIcon });
+                        paragraph.Inlines.Add(new Run { Text = " " });
+                    }
+                    else AddBadge(paragraph, levelText, LiveEntryStyles.Accent(appearance), style.BadgeSize);
+                }
+                if (appearance.IsAdmin) AddBadge(paragraph, "房管", "#438A69", style.BadgeSize);
             }
-            else if (appearance.InteractionLabel.Length > 0) AddBadge(paragraph, appearance.InteractionLabel, "#515C6B", style.BadgeSize);
+            if (style.ShowMedals && appearance is { MedalName.Length: > 0, MedalLevel: > 0 })
+                AddBadge(paragraph, $"{appearance.MedalName} {appearance.MedalLevel}", appearance.MedalColor, style.BadgeSize);
+            paragraph.Inlines.Add(new Run { Text = message.Username + "  ", FontSize = style.UsernameFontSize,
+                FontWeight = new(600), Foreground = Brush(follow ? "#FFE4EF" : LiveEntryStyles.UsernameColor(appearance, style.UsernameColor)) });
+            paragraph.Inlines.Add(new Run { Text = message.Content + "  ", FontWeight = new(follow ? (ushort)600 : (ushort)400) });
+            if (style.ShowIdentity && appearance is not null)
+            {
+                if (appearance.InteractionIconUrl.Length > 0)
+                {
+                    var relation = new BiliImageView(vm.Images, appearance.InteractionIconUrl, appearance.InteractionLabel,
+                        72, style.BadgeSize + 9, false, animations, visible);
+                    DashboardUi.Describe(relation, appearance.InteractionHint.Length > 0 ? appearance.InteractionHint : appearance.InteractionLabel);
+                    _images.Add(relation); paragraph.Inlines.Add(new InlineUIContainer { Child = relation });
+                }
+                else if (appearance.InteractionLabel.Length > 0) AddBadge(paragraph, appearance.InteractionLabel, "#515C6B", style.BadgeSize);
+            }
         }
         text.Blocks.Add(paragraph);
         var banner = new Border { Padding = new(6, 3, 8, 3), CornerRadius = new(16, 0, 0, 16), Child = text };
@@ -216,6 +245,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
             Background = follow ? Brush("#AD3E6C", 0.16) : null };
         DashboardUi.Describe(border, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}" +
             (appearance?.InteractionHint is { Length: > 0 } hint ? $" · {hint}" : ""));
+        if (reusableEntry) _reusableBorder = border;
         return border;
     }
 
@@ -247,21 +277,31 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
         var text = new RichTextBlock
         {
-            FontFamily = new(style.FontFamily), FontSize = sc ? style.UsernameFontSize : style.FontSize,
+            FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = sc ? style.UsernameFontSize : style.FontSize,
             Foreground = Brush(style.TextColor), Opacity = style.TextOpacity, TextWrapping = TextWrapping.Wrap,
             LineHeight = style.FontSize * 1.25 + Math.Min(style.LineSpacing, 4), LineStackingStrategy = LineStackingStrategy.MaxHeight,
             VerticalAlignment = fullEmote && !sc ? VerticalAlignment.Top : VerticalAlignment.Center,
         };
         var paragraph = new Paragraph { Margin = new(0) };
-        AddIdentity(paragraph, message.Appearance, style);
-        paragraph.Inlines.Add(new Run { Text = message.Username + "  ", FontSize = style.UsernameFontSize,
-            FontWeight = new(600), Foreground = Brush(style.UsernameColor) });
-        if (sc)
+        if (IsReusable(record, style, important))
         {
-            var price = SuperChatPrice(message);
-            if (price.Length > 0) AddBadge(paragraph, price, "#8C6A2B", style.BadgeSize);
+            _reusableParagraph = paragraph; _reusableBorder = border; _scReuse = sc;
+            _reusableText = new(paragraph, style,
+                (emote, fallback) => CreateEmote(emote, fallback, false, style, vm, animations, _ownedVisible), headerOnly: sc);
+            _reusableText.Update(message);
         }
-        else if (!fullEmote) AppendInlineBody(paragraph, message.Content, message.Appearance, style, vm, animations, visible);
+        else
+        {
+            AddIdentity(paragraph, message.Appearance, style);
+            paragraph.Inlines.Add(new Run { Text = message.Username + "  ", FontSize = style.UsernameFontSize,
+                FontWeight = new(600), Foreground = Brush(style.UsernameColor) });
+            if (sc)
+            {
+                var price = SuperChatPrice(message);
+                if (price.Length > 0) AddBadge(paragraph, price, "#8C6A2B", style.BadgeSize);
+            }
+            else if (!fullEmote) AppendInlineBody(paragraph, message.Content, message.Appearance, style, vm, animations, visible);
+        }
         text.Blocks.Add(paragraph);
         FrameworkElement messageContent = text;
         if (fullEmote && !sc)
@@ -269,17 +309,49 @@ internal sealed class MessageCard : ContentControl, IDisposable
         Grid.SetColumn(messageContent, 1); layout.Children.Add(messageContent);
         if (important)
         {
-            var actions = BuildActions(record, vm);
+            var actions = _actions = new MessageActions(record, vm);
             Grid.SetColumn(actions, 2); layout.Children.Add(actions);
         }
         if (sc)
         {
-            var content = message.Content;
-            if (content.StartsWith('¥') && content.IndexOf(' ') is var space && space > 0 && SuperChatPrice(message).Length > 0) content = content[(space + 1)..];
-            border.Child = new StackPanel { Spacing = 7, Children = { layout, BuildBody(content, message.Appearance, style, vm, animations, visible) } };
+            border.Child = new StackPanel { Spacing = 7, Children = { layout, BuildBody(SuperChatBody(message), message.Appearance, style, vm, animations, visible, reusable: _scReuse) } };
         }
         else border.Child = layout;
         return border;
+    }
+
+    private static bool IsReusableEntry(LiveEvent message) => message.Type == LiveEventType.Enter && message.Username.Length > 0
+        && !LiveInteractions.IsFollow(message) && message.Appearance?.EntryEffect is null
+        && string.IsNullOrEmpty(message.Appearance?.AvatarFrameUrl) && string.IsNullOrEmpty(message.Appearance?.InteractionIconUrl)
+        && string.IsNullOrEmpty(message.Appearance?.InteractionLabel) && string.IsNullOrEmpty(message.Appearance?.InteractionHint);
+    internal static bool IsReusable(DashboardRecord record, DashboardSettings style, bool important) =>
+        IsReusableEntry(record.Event) || (style.CompactMessages
+        && record.Event.Type is (LiveEventType.Danmaku or LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat)
+        && record.Event.MediaReferences.Count == 0 && record.Event.Appearance?.FullEmote is null);
+    internal bool RetireForReuse()
+    {
+        if (_disposed || _reusableParagraph is null || _images.Count > 8) return false;
+        Deactivate(); _visible = static () => false; _actions?.ClearBinding();
+        _reusableText!.ClearText(); RecordId = Guid.Empty;
+        _reusableBody?.ClearText();
+        foreach (var image in _images) image.Rebind("", "", 0);
+        return true;
+    }
+    internal bool TryRebind(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important)
+    {
+        if (_disposed || _reusableParagraph is null || _important != important || !IsReusable(record, vm.Settings.Dashboard, important)
+            || _entryReuse != IsReusableEntry(record.Event)
+            || _scReuse != (record.Event.Type == LiveEventType.SuperChat)
+            || !MessageStyle.HasSameMessageStyle(vm.Settings.Dashboard) || MediaStyle != vm.Settings.MediaPreview) return false;
+        Deactivate(); _visible = visible;
+        RecordId = record.Id; RecordRevision = record.Revision; Read = record.IsRead; Thanked = record.IsThanked;
+        _actions?.Bind(record);
+        var message = record.Event; var style = vm.Settings.Dashboard;
+        foreach (var image in _images) if (image.IsAvatar) image.Rebind(message.Appearance?.AvatarUrl ?? "", message.Username, AvatarUid(message));
+        _reusableText!.Update(message);
+        if (_scReuse) _reusableBody!.Update(SuperChatBody(message), message.Appearance);
+        DashboardUi.Describe(_reusableBorder!, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}");
+        return true;
     }
 
     private static void AddIdentity(Paragraph paragraph, LiveMessageAppearance? appearance, DashboardSettings style)
@@ -293,7 +365,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
     }
 
     private FrameworkElement BuildBody(string content, LiveMessageAppearance? appearance, DashboardSettings style,
-        LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible)
+        LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool reusable = false)
     {
         if (appearance?.FullEmote is { } full)
         {
@@ -309,12 +381,17 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
         var body = new RichTextBlock
         {
-            FontFamily = new(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(style.TextColor),
+            FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(style.TextColor),
             Opacity = style.TextOpacity, TextWrapping = TextWrapping.Wrap, LineHeight = style.FontSize * 1.35 + style.LineSpacing,
             LineStackingStrategy = LineStackingStrategy.MaxHeight,
         };
         var paragraph = new Paragraph { Margin = new(0) };
-        AppendInlineBody(paragraph, content, appearance, style, vm, animations, visible);
+        if (reusable)
+        {
+            _reusableBody = new(paragraph, style, (emote, fallback) => CreateEmote(emote, fallback, false, style, vm, animations, _ownedVisible));
+            _reusableBody.Update(content, appearance);
+        }
+        else AppendInlineBody(paragraph, content, appearance, style, vm, animations, visible);
         body.Blocks.Add(paragraph);
         return body;
     }
@@ -343,25 +420,13 @@ internal sealed class MessageCard : ContentControl, IDisposable
         }
     }
 
-    private static StackPanel BuildActions(DashboardRecord record, LiveAssistantViewModel vm)
+    private static string SuperChatBody(LiveEvent message)
     {
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Top };
-        if (!record.IsRead)
-        {
-            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 4, Height = 4, Fill = Brush("#FFD878"), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 3, 0) };
-            DashboardUi.Describe(dot, "未读"); actions.Children.Add(dot);
-        }
-        var read = DashboardUi.Button("\uE73E", record.IsRead ? "已读" : "标为已读", 28);
-        read.IsEnabled = !record.IsRead;
-        read.Click += (_, _) => vm.Dashboard.Mark(record, false); actions.Children.Add(read);
-        var thanks = DashboardUi.Button(record.IsThanked ? "\uE735" : "\uE734", record.IsThanked ? "已感谢" : "标为已感谢", 28);
-        thanks.IsEnabled = !record.IsThanked;
-        thanks.Click += (_, _) => vm.Dashboard.Mark(record, true); actions.Children.Add(thanks);
-        DashboardUi.Describe(actions, record.IsThanked ? "已感谢 · 已读" : record.IsRead ? "已读" : "未读");
-        return actions;
+        var content = message.Content;
+        if (content.StartsWith('¥') && content.IndexOf(' ') is var space && space > 0 && SuperChatPrice(message).Length > 0) return content[(space + 1)..];
+        return content;
     }
-
-    private static string SuperChatPrice(LiveEvent message)
+    internal static string SuperChatPrice(LiveEvent message)
     {
         if (message.Extra.TryGetValue("price", out var price) && price is not null) return $"¥{price}";
         var space = message.Content.IndexOf(' ');
@@ -380,8 +445,7 @@ internal sealed class MessageCard : ContentControl, IDisposable
     internal static long AvatarUid(LiveEvent value) => value.Extra.GetValueOrDefault("sample") is true ? 0 : value.Uid;
     internal static SolidColorBrush Brush(string hex, double opacity = 1)
     {
-        if (!OverlayRegionSettings.IsColor(hex)) hex = "#FFFFFF";
-        return new(ColorHelper.FromArgb((byte)Math.Clamp(opacity * 255, 0, 255), Convert.ToByte(hex.Substring(1, 2), 16), Convert.ToByte(hex.Substring(3, 2), 16), Convert.ToByte(hex.Substring(5, 2), 16)));
+        return MessageVisualResources.Brush(hex, opacity);
     }
     // Realization is explicit: inline children must not gate their image load on
     // their own Loaded/IsLoaded state. The card/list owns the resource lifetime.
@@ -389,7 +453,9 @@ internal sealed class MessageCard : ContentControl, IDisposable
     {
         if (_disposed) return;
         if (!_visible()) { Deactivate(); return; }
-        foreach (var image in _images) image.Activate(XamlRoot?.RasterizationScale ?? rasterizationScale);
+        foreach (var image in _images)
+            if (image.Visibility == Visibility.Visible) image.Activate(XamlRoot?.RasterizationScale ?? rasterizationScale);
+            else image.Deactivate();
         _media?.SetActive(true);
     }
     internal void Deactivate() { foreach (var image in _images) image.Deactivate(); _media?.SetActive(false); }
@@ -405,11 +471,44 @@ internal sealed class MessageCard : ContentControl, IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
+        DashboardUi.ReleaseDescriptions(this);
+        ReleaseContentTree(this);
+        _visible = static () => false;
+        _reusableParagraph?.Inlines.Clear(); _reusableParagraph = null; _reusableBorder = null; _reusableText = null; _reusableBody = null;
         foreach (var image in _images) image.Dispose(); _images.Clear();
         _media?.Dispose(); _media = null;
+        _actions?.Dispose(); _actions = null;
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;
         Content = null;
+    }
+    private static void ReleaseContentTree(DependencyObject node)
+    {
+        // RichTextBlock's document owns inline UI separately from the visual
+        // parent. Clear both links before a discarded row loses its wrapper.
+        if (node is RichTextBlock text)
+        {
+            foreach (var block in text.Blocks)
+                if (block is Paragraph paragraph) ReleaseInlines(paragraph.Inlines);
+            text.Blocks.Clear();
+        }
+        for (var i = VisualTreeHelper.GetChildrenCount(node) - 1; i >= 0; i--)
+            ReleaseContentTree(VisualTreeHelper.GetChild(node, i));
+        if (node is Panel panel) panel.Children.Clear();
+        else if (node is Border border) border.Child = null;
+        else if (node is ContentControl control) { control.Content = null; control.Template = null; }
+        else if (node is Image image) image.Source = null;
+    }
+    private static void ReleaseInlines(InlineCollection inlines)
+    {
+        foreach (var inline in inlines)
+            if (inline is InlineUIContainer container)
+            {
+                if (container.Child is { } child) ReleaseContentTree(child);
+                container.Child = null;
+            }
+            else if (inline is Span span) ReleaseInlines(span.Inlines);
+        inlines.Clear();
     }
     internal bool IsDisposed => _disposed;
 }
@@ -417,15 +516,15 @@ internal sealed class MessageCard : ContentControl, IDisposable
 internal sealed class BiliImageView : Grid, IDisposable
 {
     private readonly BiliImageCache _cache;
-    private readonly string _url;
-    private readonly long _avatarUid;
+    private string _url;
+    private long _avatarUid;
     private string _displayUrl;
     private readonly bool _animate;
     private readonly MessageAnimationClock _clock;
-    private readonly Func<bool> _visible;
-    private readonly Image? _image;
-    private readonly PersonPicture? _person;
-    private readonly TextBlock? _fallback;
+    private Func<bool> _visible;
+    private Image? _image;
+    private readonly bool _avatar;
+    private TextBlock? _fallback;
     private UiImageSourceService.Lease? _first;
     private BiliAnimationAsset? _animation;
     private BitmapImage?[]? _animationSources;
@@ -445,9 +544,20 @@ internal sealed class BiliImageView : Grid, IDisposable
     {
         Interlocked.Increment(ref ImageResourceCounters.Views);
         _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible;
-        _avatarUid = avatar ? avatarUid : 0; _displayUrl = url;
+        _avatarUid = avatar ? avatarUid : 0; _displayUrl = url; _avatar = avatar;
         Width = width; Height = height;
-        if (avatar) { _person = new PersonPicture { DisplayName = fallback, Width = width, Height = height }; Children.Add(_person); }
+        if (avatar)
+        {
+            // A message avatar needs a circle, initials and a picture, rather
+            // than the badge/presence/state templates of PersonPicture.
+            var initials = new System.Globalization.StringInfo(fallback.Trim());
+            _fallback = new TextBlock { Text = initials.LengthInTextElements > 0 ? initials.SubstringByTextElements(0, Math.Min(2, initials.LengthInTextElements)) : "?",
+                FontSize = Math.Max(10, width * 0.38), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                Foreground = MessageCard.Brush("#FFFFFF") };
+            _image = new Image { Stretch = Stretch.UniformToFill };
+            var picture = new Grid(); picture.Children.Add(_fallback); picture.Children.Add(_image);
+            Children.Add(new Border { CornerRadius = new(width / 2), Background = MessageCard.Brush("#4B4B4B"), Child = picture });
+        }
         else
         {
             _fallback = new TextBlock { Text = fallback, FontSize = 12, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
@@ -465,6 +575,15 @@ internal sealed class BiliImageView : Grid, IDisposable
         if (sizeChanged) { _clock.Remove(this); ReleaseImages(); }
         RestoreVisuals();
     }
+    internal bool IsAvatar => _avatar;
+    internal void Rebind(string url, string fallback, long uid)
+    {
+        if (_disposed) return;
+        Deactivate(); _clock.Remove(this); ReleaseImages(); _url = url; _displayUrl = url; _avatarUid = _avatar ? uid : 0;
+        var initials = new System.Globalization.StringInfo(fallback.Trim());
+        _fallback!.Text = _avatar ? initials.LengthInTextElements > 0 ? initials.SubstringByTextElements(0, Math.Min(2, initials.LengthInTextElements)) : "?" : fallback;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(this, fallback);
+    }
     internal async void RestoreVisuals()
     {
         if (_disposed || !_active || _loading) return;
@@ -474,7 +593,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         UiImageSourceService.Lease? acquired = null;
         try
         {
-            if (_person is not null)
+            if (_avatar)
             {
                 _displayUrl = await _cache.Avatars.ResolveAsync(_avatarUid, _url, cancellation);
                 if (_disposed || !_active || !_visible() || generation != _generation) return;
@@ -507,7 +626,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         if (!App.AttachImageSources) return;
 #endif
         if (_image is not null) _image.Source = source;
-        if (_person is not null) { _person.ProfilePicture = source; Interlocked.Increment(ref ImageResourceCounters.AvatarBindings); }
+        if (_avatar) Interlocked.Increment(ref ImageResourceCounters.AvatarBindings);
         if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
     }
     internal bool InViewport()
@@ -581,14 +700,16 @@ internal sealed class BiliImageView : Grid, IDisposable
         _generation++;
         _loadCancellation?.Cancel(); _loadCancellation?.Dispose(); _loadCancellation = null;
         if (_image is not null) _image.Source = null;
-        if (_person is not null) _person.ProfilePicture = null;
         if (_fallback is not null) _fallback.Visibility = Visibility.Visible;
         _first?.Dispose(); _first = null;
     }
     public void Dispose()
     {
         if (_disposed) return; Deactivate(); _disposed = true;
-        _clock.Remove(this); ReleaseImages(); Interlocked.Decrement(ref ImageResourceCounters.Views);
+        _clock.Remove(this); ReleaseImages();
+        _visible = static () => false; _url = _displayUrl = ""; _avatarUid = 0;
+        Children.Clear(); _image = null; _fallback = null;
+        Interlocked.Decrement(ref ImageResourceCounters.Views);
     }
 }
 
