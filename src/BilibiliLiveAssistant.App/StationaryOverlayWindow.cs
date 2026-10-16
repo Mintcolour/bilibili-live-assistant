@@ -254,7 +254,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private void Release(int slot) { if (_views.Remove(slot, out var view)) view.Dispose(); }
     private void ClearViews() { foreach (var key in _views.Keys.ToArray()) Release(key); }
-    protected override void DrawContent(Graphics graphics, Rectangle clip)
+    protected override void DrawContent(Graphics graphics, Rectangle clip, Rectangle sourceClip)
     {
         foreach (var view in _views.Values) if (view.Image is not null && view.Bounds.IntersectsWith(clip)) graphics.DrawImageUnscaled(view.Image, view.Bounds.Location);
     }

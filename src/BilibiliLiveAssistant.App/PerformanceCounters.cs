@@ -6,7 +6,7 @@ namespace BilibiliLiveAssistant.App;
 internal static class PerformanceCounters
 {
     internal static volatile bool Enabled;
-    private static readonly long[] Counts = new long[8], Ticks = new long[8], MaxTicks = new long[8];
+    private static readonly long[] Counts = new long[10], Ticks = new long[10], MaxTicks = new long[10];
     internal static long CanvasBytes;
     internal static int Canvases;
     private static long _intervals, _lateFrames, _maxFrameTicks;
@@ -37,8 +37,8 @@ internal static class PerformanceCounters
     }
     internal static object Drain()
     {
-        var names = new[] { "eventBatch", "frameCallbacks", "messageBitmap", "danmakuPaint", "giftPaint", "scPaint", "interactionPaint", "rankPaint" };
-        var result = new object[8];
+        var names = new[] { "eventBatch", "frameCallbacks", "messageBitmap", "danmakuPaint", "giftPaint", "scPaint", "interactionPaint", "rankPaint", "overlayRaster", "overlayPresent" };
+        var result = new object[names.Length];
         for (var i = 0; i < result.Length; i++)
             result[i] = new { name = names[i], count = Counts[i], totalMs = Ticks[i] * 1000d / Stopwatch.Frequency,
                 maxMs = MaxTicks[i] * 1000d / Stopwatch.Frequency };

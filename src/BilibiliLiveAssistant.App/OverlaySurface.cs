@@ -248,28 +248,32 @@ public abstract class OverlaySurface : Forms.Form
             var state = graphics.Save();
             try
             {
-                if (dirtyCount <= 1) graphics.SetClip(dirty);
-                else
-                {
-                    using var dirtyRegion = new Region(); dirtyRegion.MakeEmpty();
-                    for (var i = 0; i < dirtyCount; i++) dirtyRegion.Union(_frameDirtyRects[i]);
-                    graphics.SetClip(dirtyRegion, CombineMode.Replace);
-                }
                 graphics.InterpolationMode = InterpolationMode.Bilinear;
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
                 graphics.CompositingQuality = CompositingQuality.HighSpeed;
-                graphics.CompositingMode = CompositingMode.SourceCopy;
                 using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
-                    graphics.FillRectangle(background, dirty);
-                graphics.CompositingMode = CompositingMode.SourceOver;
-                if (Editing) DrawEditorSample(graphics);
-                else DrawContent(graphics, dirty);
-                DrawEditorChrome(graphics);
+                using (PerformanceCounters.Measure(8))
+                {
+                    // Keep separated tracks rectangular and cull other tracks
+                    // before drawing. Source sampling remains frame-wide.
+                    for (var i = 0; i < Math.Max(1, dirtyCount); i++)
+                    {
+                        var area = dirtyCount <= 1 ? dirty : Rectangle.Intersect(ClientRectangle, _frameDirtyRects[i]);
+                        if (area.IsEmpty) continue;
+                        graphics.SetClip(area, CombineMode.Replace);
+                        graphics.CompositingMode = CompositingMode.SourceCopy;
+                        graphics.FillRectangle(background, area);
+                        graphics.CompositingMode = CompositingMode.SourceOver;
+                        if (Editing) DrawEditorSample(graphics);
+                        else DrawContent(graphics, area, dirty);
+                        DrawEditorChrome(graphics);
+                    }
+                }
             }
             finally { graphics.Restore(state); }
             // Keep controls readable at low content opacity. Only samples receive
             // content alpha while editing; live mode uses the existing presenter.
-            _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, dirty);
+            using (PerformanceCounters.Measure(9)) _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, dirty);
             // Present the final clear before releasing the native backing store.
             // Empty, still-visible windows need no persistent full-size canvas.
             if (!Editing && !HasLiveContent) { _canvas.Dispose(); _canvas = null; }
@@ -319,7 +323,9 @@ public abstract class OverlaySurface : Forms.Form
         }
     }
 
-    protected abstract void DrawContent(Graphics graphics, Rectangle clip);
+    // Cull against the current track, but keep a frame-wide source crop so
+    // splitting destination clips cannot alter GDI+'s fractional sampling.
+    protected abstract void DrawContent(Graphics graphics, Rectangle clip, Rectangle sourceClip);
     protected abstract bool HasLiveContent { get; }
 
     private void DrawEditorSample(Graphics graphics)
