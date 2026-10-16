@@ -70,6 +70,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     internal MediaDetailsService Media { get; } = new();
     internal BiliImageCache Images { get; }
     internal UiImageSourceService UiImages => Images.Sources;
+    private readonly ProcessResourceBudget _resourceBudget;
     public event Action<IReadOnlyList<LiveEvent>>? EventBatchReceived;
     public event Action? RoomHistoryReset;
     internal LiveEvent? LatestOnline { get; private set; }
@@ -102,6 +103,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     internal LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info, BiliImageCache? images)
     {
         Images = images ?? new();
+        _resourceBudget = new(Images.Sources);
         HistorySettings historySettings;
         try { historySettings = (settings.History ?? new()).Normalize(); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
@@ -140,6 +142,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             images = Images.GetDiagnostics(), avatars = Images.Avatars.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), uiImages = UiImages.GetDiagnostics(), media = Media.GetDiagnostics(),
             history = (History as SqliteLocalHistory)?.GetDiagnostics(),
             canvasBytes = PerformanceCounters.CanvasBytes, canvases = PerformanceCounters.Canvases,
+            resourceBudget = _resourceBudget.Snapshot(),
             window = WindowDiagnostics?.Invoke(),
         };
     }
@@ -530,6 +533,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     private void FlushEvents(DispatcherQueueTimer sender, object args)
     {
+        _resourceBudget.Observe();
         using var timing = PerformanceCounters.Measure(0);
         var batch = _pendingEvents.Drain();
         if (batch.Length > 0)
@@ -627,6 +631,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _client.StatusChanged -= OnStatus;
         _pendingEvents.Clear();
         await StopAsync();
+        _resourceBudget.Dispose();
         Images.Dispose();
         Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
         History.StatusChanged -= OnHistoryStatus;

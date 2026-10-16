@@ -10,6 +10,8 @@ internal sealed class UiPixelSource : IDisposable
 {
     // Includes settings previews as well as shared URL-backed display sources.
     private static readonly SemaphoreSlim UploadSlots = new(2, 2);
+    private static readonly SemaphoreSlim PressureSlot = new(1, 1);
+    internal static bool SerializeForPressure { get; set; } // UI-thread only
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     public SoftwareBitmapSource Source { get; }
     public long BitmapBytes { get; }
@@ -30,6 +32,7 @@ internal sealed class UiPixelSource : IDisposable
     internal static async Task<UiPixelSource> CreateAsync(BiliPixelFrame pixels, int width, bool animated, int limit, CancellationToken cancellation)
     {
         var entered = false;
+        var pressureEntered = false;
         Interlocked.Increment(ref ImageResourceCounters.PendingUploads);
         try
         {
@@ -39,6 +42,7 @@ internal sealed class UiPixelSource : IDisposable
         Interlocked.Increment(ref ImageResourceCounters.ActiveUploads);
         try
         {
+            if (SerializeForPressure) { await PressureSlot.WaitAsync(cancellation); pressureEntered = true; }
             BiliPixelFrame scaled;
             using (ImageResourceCounters.Measure(1))
                 scaled = await Task.Run(() => { cancellation.ThrowIfCancellationRequested(); return pixels.AtWidth(width); }, cancellation);
@@ -68,6 +72,7 @@ internal sealed class UiPixelSource : IDisposable
         finally
         {
             Interlocked.Decrement(ref ImageResourceCounters.ActiveUploads);
+            if (pressureEntered) PressureSlot.Release();
             if (entered) UploadSlots.Release();
         }
     }

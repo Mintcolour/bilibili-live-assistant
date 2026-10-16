@@ -17,6 +17,9 @@ internal sealed class UiImageSourceService : IDisposable
     private long _sequence, _cancelled, _aborted, _stale, _hits, _created, _released;
     private bool _disposed;
     private int _generation;
+    private long _idleByteLimit = 8 * 1024 * 1024;
+    private int _idleItemLimit = 256;
+    internal Action? ResourceActivity { get; set; }
     internal readonly record struct Key(string Url, int Width, int Limit, int Generation, BiliImageRole Role);
     internal sealed class Entry(UiPixelSource value) { public UiPixelSource Value = value; public int Leases; public long Used; }
     private sealed class Pending
@@ -39,6 +42,7 @@ internal sealed class UiImageSourceService : IDisposable
     internal async Task<Lease?> AcquireStaticSourceAsync(string url, int width, int limit, CancellationToken cancellation, BiliImageRole role = BiliImageRole.Content)
     {
         CheckThread();
+        ResourceActivity?.Invoke();
         if (BiliImageCache.NormalizeUrl(url) is not { } uri) return null;
         var key = new Key(uri.AbsoluteUri, Math.Clamp(width, 1, 256), BiliImageCache.SizeTier(limit), _generation, role);
         while (true)
@@ -109,6 +113,7 @@ internal sealed class UiImageSourceService : IDisposable
             pending.Finished = true;
             if (pending.Waiters == 0) { _pending.Remove(key); pending.Cancel.Dispose(); }
             SignalCapacity(); TrimIdle(); ScheduleIdle();
+            ResourceActivity?.Invoke();
         }
     }
     private void SignalCapacity() { var signal = _capacity; _capacity = NewSignal(); signal.TrySetResult(); }
@@ -120,6 +125,7 @@ internal sealed class UiImageSourceService : IDisposable
         if (_disposed || key.Generation != _generation) Remove(key, entry);
         else TrimIdle();
         ScheduleIdle();
+        ResourceActivity?.Invoke();
     }
     private void TrimIdle()
     {
@@ -135,10 +141,16 @@ internal sealed class UiImageSourceService : IDisposable
         long bytes = 0; var count = 0;
         foreach (var pair in _idleSort)
         {
-            if (pair.Key.Generation == _generation && ++count <= 256 && bytes + pair.Value.Value.Bytes <= 8 * 1024 * 1024) bytes += pair.Value.Value.Bytes;
+            if (pair.Key.Generation == _generation && ++count <= _idleItemLimit && bytes + pair.Value.Value.Bytes <= _idleByteLimit) bytes += pair.Value.Value.Bytes;
             else Remove(pair.Key, pair.Value);
         }
         _idleSort.Clear();
+    }
+    internal void SetIdleBudget(long bytes, int count)
+    {
+        CheckThread();
+        if (_disposed || (_idleByteLimit == bytes && _idleItemLimit == count)) return;
+        _idleByteLimit = bytes; _idleItemLimit = count; TrimIdle();
     }
     private void ScheduleIdle()
     { if (!_disposed && !HasConsumers && _sources.Count > 0 && !_idleTimer.IsRunning) _idleTimer.Start(); }
@@ -176,6 +188,7 @@ internal sealed class UiImageSourceService : IDisposable
             retiredLeases = _sources.Where(p => p.Key.Generation != _generation).Sum(p => p.Value.Leases),
             idleSources = idle, activeSources = active, reservedSources = reserved,
             idleBytes, activeBytes, reservedBytes,
+            idleBudgetBytes = _idleByteLimit, idleBudgetItems = _idleItemLimit,
             pending = _pending.Count, queued = _pending.Values.Count(p => !p.Started && !p.Finished),
             creating = _pending.Values.Count(p => p.Started && !p.Finished), waiters = _pending.Values.Sum(p => p.Waiters),
             hits = _hits, cancelled = _cancelled, aborted = _aborted, stale = _stale, created = _created, released = _released,
