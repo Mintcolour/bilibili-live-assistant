@@ -238,10 +238,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         if (media is not null) _ = media.LoadAsync(() =>
         {
             if (_cleaned || !Visible || !_sprites.Contains(sprite)) return;
-            var before = sprite.Bounds;
-            using var updated = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images, maxHeight: RowHeight);
-            var replacement = media.Compose(updated, RegionSettings);
-            sprite.Image.Dispose(); sprite.Image = replacement; RequestRender(Rectangle.Union(before, sprite.Bounds));
+            QueueImageRefresh(sprite);
         });
         RequestRender(sprite.Bounds); return sprite;
     }
@@ -268,19 +265,33 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             {
                 if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url), OverlayMessageRenderer.ImageRole(sprite.Event, url)) is null
                     || cancellation.IsCancellationRequested || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
-                // A slow avatar must not hold back an emote that is already available.
-                var before = sprite.Bounds;
-                var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
-                    width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
-                var image = body;
-                if (sprite.Media is { } media) { using (body) image = media.Compose(body, RegionSettings); }
-                sprite.Image.Dispose(); sprite.Image = image;
-                RequestRender(Rectangle.Union(before, sprite.Bounds));
+                QueueImageRefresh(sprite);
             }
             int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(sprite.Event, url, _style, RegionSettings);
         }
         catch (OperationCanceledException) { }
         finally { if (imageGeneration == sprite.ImageGeneration) sprite.ImagesLoading = false; }
+    }
+
+    private void QueueImageRefresh(Sprite sprite)
+    {
+        PerformanceCounters.ImageInvalidation(sprite.ImageRefreshQueued);
+        if (sprite.ImageRefreshQueued || !IsHandleCreated) return;
+        sprite.ImageRefreshQueued = true;
+        var generation = sprite.ImageGeneration;
+        BeginInvoke((Action)(() =>
+        {
+            if (generation != sprite.ImageGeneration) return;
+            sprite.ImageRefreshQueued = false;
+            if (_cleaned || !Visible || !_sprites.Contains(sprite)) return;
+            var before = sprite.Bounds;
+            var body = OverlayMessageRenderer.Render(sprite.Event, RegionSettings, _style, ViewModel.Images,
+                width: Kind == OverlayRegionKind.Interaction ? ClientSize.Width - 16 : 0, maxHeight: RowHeight);
+            var image = body;
+            if (sprite.Media is { } media) { using (body) image = media.Compose(body, RegionSettings); }
+            sprite.Image.Dispose(); sprite.Image = image;
+            RequestRender(Rectangle.Union(before, sprite.Bounds));
+        }));
     }
 
     private void ScheduleWake()
@@ -421,10 +432,11 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         public long CreatedAt, ExpiresAt;
         public Bitmap Image;
         public bool ImagesLoading;
+        public bool ImageRefreshQueued;
         public OverlayMediaAttachment? Media { get; set; }
         public CancellationTokenSource Cancellation { get; private set; } = new();
         public int ImageGeneration { get; private set; }
-        public void RestartImages() { ImageGeneration++; Cancellation.Cancel(); Cancellation.Dispose(); Cancellation = new(); ImagesLoading = false; }
+        public void RestartImages() { ImageGeneration++; Cancellation.Cancel(); Cancellation.Dispose(); Cancellation = new(); ImagesLoading = ImageRefreshQueued = false; }
         public Sprite(LiveEvent value, int lane, double x, int y, Bitmap image, OverlayMediaAttachment? media = null) { Event = value; Lane = lane; X = x; Y = y; Image = image; Media = media; }
         public Rectangle Bounds => new((int)Math.Floor(X) - 1, Y - 1, Image.Width + 3, Image.Height + 2);
         public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Media?.Dispose(); Image.Dispose(); }

@@ -40,7 +40,8 @@ internal sealed class ReusableMessageText
         _guard.Set(guard switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" },
             _entry ? LiveEntryStyles.Accent(appearance) : guard == 3 ? "#4388BC" : "#945ABF");
         _admin.Set(_style.ShowIdentity && appearance?.IsAdmin == true ? "房管" : "", "#438A69");
-        _name.Text = message.Username + "  ";
+        var name = message.Username + "  ";
+        if (_name.Text != name) _name.Text = name;
         if (_entry)
         {
             _name.Foreground = MessageCard.Brush(LiveEntryStyles.UsernameColor(appearance, _style.UsernameColor));
@@ -61,6 +62,7 @@ internal sealed class ReusableMessageText
         private readonly Border _border;
         private readonly TextBlock _text;
         private readonly Run _space = new();
+        private string? _label, _color;
         internal Badge(Paragraph paragraph, int size)
         {
             _text = new() { FontSize = size, Foreground = MessageCard.Brush("#FFFFFF") };
@@ -69,9 +71,12 @@ internal sealed class ReusableMessageText
         }
         internal void Set(string text, string color)
         {
-            _text.Text = text; _space.Text = text.Length > 0 ? " " : "";
+            if (_label == text && _color == color) return;
+            if (_label != text) _text.Text = text;
+            _space.Text = text.Length > 0 ? " " : "";
             _border.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (text.Length > 0) _border.Background = MessageCard.Brush(color, 0.9);
+            _label = text; _color = color;
         }
     }
 }
@@ -88,34 +93,38 @@ internal sealed class ReusableMessageBody
     internal void Update(string content, LiveMessageAppearance? appearance)
     {
         var text = content.Length > 4096 ? content[..4096] + "…" : content;
-        var segments = RichMessageSegments.Split(text, appearance).ToArray();
-        while (_slots.Count < segments.Length)
+        var index = 0;
+        foreach (var segment in RichMessageSegments.Split(text, appearance))
         {
-            var run = new Run(); _paragraph.Inlines.Add(run); _slots.Add(new(run));
-        }
-        for (var i = 0; i < _slots.Count; i++)
-        {
-            var slot = _slots[i];
-            if (i < segments.Length && segments[i].Emote is { } emote)
+            if (_slots.Count == index) { var run = new Run(); _paragraph.Inlines.Add(run); _slots.Add(new(run)); }
+            var slot = _slots[index++];
+            if (segment.Emote is { } emote)
             {
                 slot.Text.Text = "";
                 if (slot.Image is null)
                 {
-                    slot.Image = _create(emote, segments[i].Text);
+                    slot.Image = _create(emote, segment.Text);
                     _paragraph.Inlines.Insert(_paragraph.Inlines.IndexOf(slot.Text) + 1, new InlineUIContainer { Child = slot.Image });
                 }
                 var height = (double)_style.EmoteSize;
                 var width = height * Math.Max(1d, emote.Width) / Math.Max(1, emote.Height);
                 if (width > 100) { height *= 100 / width; width = 100; }
-                slot.Image.Width = width; slot.Image.Height = height;
+                if (slot.Image.Width != width) slot.Image.Width = width;
+                if (slot.Image.Height != height) slot.Image.Height = height;
                 slot.Image.Visibility = Visibility.Visible;
-                slot.Image.Rebind(emote.Url, segments[i].Text, 0);
+                slot.Image.Rebind(emote.Url, segment.Text, 0);
             }
             else
             {
-                slot.Text.Text = i < segments.Length ? segments[i].Text : "";
+                if (slot.Text.Text != segment.Text) slot.Text.Text = segment.Text;
                 if (slot.Image is { } image) { image.Deactivate(); image.Visibility = Visibility.Collapsed; }
             }
+        }
+        for (; index < _slots.Count; index++)
+        {
+            var slot = _slots[index];
+            if (slot.Text.Text.Length > 0) slot.Text.Text = "";
+            if (slot.Image is { } image) { image.Deactivate(); image.Visibility = Visibility.Collapsed; }
         }
     }
     internal void ClearText()

@@ -42,13 +42,13 @@ public sealed record DashboardSettings
 
     // Layout, history limits and refresh cadence do not change a message's
     // visuals. Preserve decoded images when only those settings are saved.
-    public bool HasSameMessageStyle(DashboardSettings other) =>
+    public bool HasSameMessageStyle(DashboardSettings other, bool includeEntry = true) =>
         FontFamily == other.FontFamily && FontSize == other.FontSize && UsernameFontSize == other.UsernameFontSize &&
         TextColor == other.TextColor && UsernameColor == other.UsernameColor && BackgroundColor == other.BackgroundColor &&
         TextOpacity == other.TextOpacity && BackgroundOpacity == other.BackgroundOpacity &&
         LineSpacing == other.LineSpacing && MessageSpacing == other.MessageSpacing && Padding == other.Padding && CornerRadius == other.CornerRadius &&
         AvatarSize == other.AvatarSize && BadgeSize == other.BadgeSize && EmoteSize == other.EmoteSize && LargeEmoteHeight == other.LargeEmoteHeight &&
-        ShowAvatars == other.ShowAvatars && ShowEntryAvatars == other.ShowEntryAvatars && ShowMedals == other.ShowMedals && ShowIdentity == other.ShowIdentity &&
+        ShowAvatars == other.ShowAvatars && (!includeEntry || ShowEntryAvatars == other.ShowEntryAvatars) && ShowMedals == other.ShowMedals && ShowIdentity == other.ShowIdentity &&
         AnimateEmotes == other.AnimateEmotes && CompactMessages == other.CompactMessages;
 
     // Older entry events have no interaction kind. Explicit follows, shares and

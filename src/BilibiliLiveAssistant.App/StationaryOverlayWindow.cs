@@ -23,6 +23,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         public Rectangle Bounds { get; } = bounds;
         public string Caption { get; } = caption;
         public Bitmap? Image;
+        public bool ImageRefreshQueued;
         public OverlayMediaAttachment? Media;
         public CancellationTokenSource Cancellation { get; } = new();
         public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Media?.Dispose(); Image?.Dispose(); }
@@ -162,7 +163,8 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 if (_views.TryGetValue(i, out var existing) && ReferenceEquals(existing.SourceValue, value) && existing.Bounds == bounds && existing.Caption == caption) continue;
                 Release(i); var view = new CardView(value, bounds, caption); _views.Add(i, view);
                 AdmitMedia(view); UpdateBitmap(view); _ = LoadImagesAsync(i, view);
-                if (view.Media is { } media) _ = media.LoadAsync(() => { if (Current(i, view)) { UpdateBitmap(view); RequestRender(view.Bounds); } });
+                var slot = i;
+                if (view.Media is { } media) _ = media.LoadAsync(() => { if (Current(slot, view)) QueueImageRefresh(slot, view); });
             }
             foreach (var key in _views.Keys.Where(k => !keep.Contains(k)).ToArray()) Release(key);
             RequestRender();
@@ -192,6 +194,18 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         view.Image?.Dispose(); view.Image = replacement;
     }
     private bool Current(int slot, CardView view) => !_disposed && Visible && _views.GetValueOrDefault(slot) == view;
+    private void QueueImageRefresh(int slot, CardView view)
+    {
+        PerformanceCounters.ImageInvalidation(view.ImageRefreshQueued);
+        if (view.ImageRefreshQueued || !IsHandleCreated) return;
+        view.ImageRefreshQueued = true;
+        BeginInvoke((Action)(() =>
+        {
+            view.ImageRefreshQueued = false;
+            if (!Current(slot, view)) return;
+            UpdateBitmap(view); RequestRender(view.Bounds);
+        }));
+    }
     private async Task LoadImagesAsync(int slot, CardView view)
     {
         try
@@ -207,7 +221,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                     if (ViewModel.Images.TryGetStaticFrame(url, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is not null) continue;
                     if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is null) continue;
                     if (!Current(slot, view)) return;
-                    UpdateBitmap(view); RequestRender(view.Bounds);
+                    QueueImageRefresh(slot, view);
                 }
             }
             async Task LoadAvatarAsync()
@@ -218,7 +232,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, enriched.Appearance!.AvatarUrl, Style, RegionSettings);
                 await ViewModel.Images.GetStaticForViewAsync(enriched.Appearance.AvatarUrl, token, limit, BiliImageRole.Avatar);
                 if (!Current(slot, view)) return;
-                UpdateBitmap(view); RequestRender(view.Bounds);
+                QueueImageRefresh(slot, view);
             }
         }
         catch (OperationCanceledException) { }

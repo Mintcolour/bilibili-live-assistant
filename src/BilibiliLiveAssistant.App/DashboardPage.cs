@@ -417,6 +417,7 @@ internal sealed class DashboardList : Grid, IDisposable
     private long _newContainers, _reusedContainers, _createdCards, _reboundCards, _pooledCards;
     private readonly Dictionary<Guid, DashboardRecord> _visibleRecords = new();
     private readonly Dictionary<Guid, int> _recordIndices = new();
+    private readonly List<DashboardRecord> _filteredRecords = new();
     private readonly ListImageVisibility _visibility;
     private bool _active = true;
     private readonly TextBlock _heading = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
@@ -427,10 +428,7 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly Button _latest = DashboardUi.Button("\uE74A", "回到最新", 28);
     private readonly Button _readAll = DashboardUi.Button("\uE73E", "全部标为已读", 28);
     private long _version = -1;
-    private Guid _firstId;
-    private Guid _lastId;
-    private int _sourceCount = -1;
-    private long _sourceRevision = -1;
+    private long _contentVersion = -1, _syncCalls, _fullSyncs;
     private int _unreadCount = -1;
     private int _thankedCount = -1;
     private bool _filtered;
@@ -515,21 +513,36 @@ internal sealed class DashboardList : Grid, IDisposable
     }
     public void Sync(List<DashboardRecord> source, bool styleChanged)
     {
-        if (_version == _vm.Dashboard.Version && !styleChanged) return;
-        _version = _vm.Dashboard.Version;
-        var unread = source.Count(x => !x.IsRead);
-        var thanked = source.Count(x => x.IsThanked);
-        var first = source.Count == 0 ? Guid.Empty : source[0].Id;
-        var last = source.Count == 0 ? Guid.Empty : source[^1].Id;
-        var revision = source.Sum(x => x.Revision);
-        if (!styleChanged && _firstId == first && _lastId == last && _sourceCount == source.Count && _sourceRevision == revision && _unreadCount == unread && _thankedCount == thanked && _filtered == (_unread.IsChecked == true)) return;
-        _sourceRevision = revision;
-        _firstId = first; _lastId = last; _sourceCount = source.Count; _unreadCount = unread; _thankedCount = thanked; _filtered = _unread.IsChecked == true;
+        _syncCalls++;
+        var state = _vm.Dashboard.GetColumnState(source);
+        if (_version == state.Version && !styleChanged) return;
+        var unread = state.Unread; var thanked = state.Thanked;
+        var contentChanged = _contentVersion != state.ContentVersion || styleChanged || _filtered != (_unread.IsChecked == true);
+        _version = state.Version; _contentVersion = state.ContentVersion;
+        _unreadCount = unread; _thankedCount = thanked; _filtered = _unread.IsChecked == true;
         _total.Text = source.Count.ToString();
         _unreadTotal.Text = unread > 0 ? $"● {unread}" : "";
         DashboardUi.Describe(_heading, _important ? $"{_title} · {source.Count} 条 · 未读 {unread}" : $"{_title} · {source.Count} 条");
         DashboardUi.Describe(_unreadTotal, $"未读 {unread} 条");
-        var selected = _unread.IsChecked == true ? source.Where(x => !x.IsRead).ToArray() : source.ToArray();
+        if (!contentChanged && !_filtered)
+        {
+            foreach (var container in _containerCards.Keys.ToArray())
+            {
+                var index = _list.IndexFromContainer(container);
+                if (index >= 0 && index < _items.Count && container.ContentTemplateRoot is ContentPresenter host)
+                    BindCard(container, host, _items[index].Record);
+            }
+            UpdateActions(source.Count, unread);
+            return;
+        }
+        _fullSyncs++;
+        _filteredRecords.Clear();
+        IReadOnlyList<DashboardRecord> selected = source;
+        if (_filtered)
+        {
+            foreach (var record in source) if (!record.IsRead) _filteredRecords.Add(record);
+            selected = _filteredRecords;
+        }
         Guid readingAnchor = Guid.Empty;
         var oldIndex = -1; var readingPixels = 0d;
         if (_readingRestore is { } pending && _recordIndices.TryGetValue(pending.Id, out var pendingIndex))
@@ -542,17 +555,16 @@ internal sealed class DashboardList : Grid, IDisposable
             if (top is not null)
                 readingPixels = Math.Clamp(_scrollViewer.VerticalOffset - top.ActualOffset.Y, 0, Math.Max(0, top.ActualHeight - 1));
         }
-        var retainedIds = selected.Select(x => x.Id).ToHashSet();
-        foreach (var card in _cards.Where(x => !retainedIds.Contains(x.RecordId)).ToArray()) ReleaseCard(card);
-        if (selected.Length == 0 || styleChanged) ClearCardPool();
-        _empty.Visibility = selected.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _visibleRecords.Clear(); _recordIndices.Clear();
+        for (var i = 0; i < selected.Count; i++)
+        { _visibleRecords[selected[i].Id] = selected[i]; _recordIndices[selected[i].Id] = i; }
+        foreach (var card in _cards.Where(x => !_visibleRecords.ContainsKey(x.RecordId)).ToArray()) ReleaseCard(card);
+        if (selected.Count == 0 || styleChanged) ClearCardPool();
+        _empty.Visibility = selected.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _empty.Text = _filtered ? "没有未读消息" : "暂无消息";
         // Stable row identities keep the native item/template tree in place.
         // Only the managed record behind a slot changes as new messages arrive.
         _items.Synchronize(selected);
-        _visibleRecords.Clear(); _recordIndices.Clear();
-        for (var i = 0; i < selected.Length; i++)
-        { _visibleRecords[selected[i].Id] = selected[i]; _recordIndices[selected[i].Id] = i; }
         if (readingAnchor != Guid.Empty && _recordIndices.TryGetValue(readingAnchor, out var anchorIndex) && anchorIndex != oldIndex)
         {
             _readingRestore = (readingAnchor, readingPixels);
@@ -661,7 +673,7 @@ internal sealed class DashboardList : Grid, IDisposable
         if (_containerCards.TryGetValue(container, out var previous) && !ReferenceEquals(previous, host.Content)) ReleaseCard(previous);
         if (host.Content is MessageCard old)
         {
-            if (!old.IsDisposed && old.RecordId == record.Id && old.RecordRevision == record.Revision && old.MediaStyle == _vm.Settings.MediaPreview && old.MessageStyle.HasSameMessageStyle(_vm.Settings.Dashboard) && old.Read == record.IsRead && old.Thanked == record.IsThanked)
+            if (!old.IsDisposed && old.RecordId == record.Id && old.RecordRevision == record.Revision && old.MediaStyle == _vm.Settings.MediaPreview && old.MatchesStyle(_vm.Settings.Dashboard) && old.UpdateReadState(record))
             {
                 old.Activate(_list.XamlRoot?.RasterizationScale ?? 1);
                 return;
@@ -701,6 +713,7 @@ internal sealed class DashboardList : Grid, IDisposable
         var panel = _list.ItemsPanelRoot as ItemsStackPanel;
         return new { items = _items.Count, cards = _cards.Count, pooled = _cardPool.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
             newContainers = _newContainers, reusedContainers = _reusedContainers, createdCards = _createdCards, reboundCards = _reboundCards, pooledCards = _pooledCards,
+            syncCalls = _syncCalls, fullSyncs = _fullSyncs, columnVersion = _version, contentVersion = _contentVersion,
             ownedIndices = _containerCards.Keys.Select(x => _list.IndexFromContainer(x)).Order().ToArray(),
             firstVisible = panel?.FirstVisibleIndex, lastVisible = panel?.LastVisibleIndex,
             firstCached = panel?.FirstCacheIndex, lastCached = panel?.LastCacheIndex };
@@ -745,6 +758,7 @@ internal sealed class DashboardList : Grid, IDisposable
     public void Dispose()
     {
         _visibility.Dispose(); _visibleRecords.Clear(); _recordIndices.Clear();
+        _filteredRecords.Clear();
         _list.ContainerContentChanging -= RenderContainer;
         _list.ChoosingItemContainer -= ChoosingContainer;
         _list.Loaded -= OnListLoaded;
@@ -763,11 +777,11 @@ internal sealed class DashboardList : Grid, IDisposable
     private sealed class RowSlot(DashboardRecord record) { public DashboardRecord Record = record; }
     private sealed class RecordCollection : ObservableCollection<RowSlot>
     {
-        public void Synchronize(DashboardRecord[] values)
+        public void Synchronize(IReadOnlyList<DashboardRecord> values)
         {
-            for (var i = 0; i < Math.Min(Count, values.Length); i++) this[i].Record = values[i];
-            while (Count > values.Length) RemoveAt(Count - 1);
-            while (Count < values.Length) Add(new(values[Count]));
+            for (var i = 0; i < Math.Min(Count, values.Count); i++) this[i].Record = values[i];
+            while (Count > values.Count) RemoveAt(Count - 1);
+            while (Count < values.Count) Add(new(values[Count]));
         }
     }
 }

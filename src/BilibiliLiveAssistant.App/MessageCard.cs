@@ -27,6 +27,10 @@ internal sealed class MessageCard : Grid, IDisposable
     private ReusableMessageBody? _reusableBody;
     private bool _entryReuse, _scReuse;
     private MessageActions? _actions;
+    private TextBlock? _legacyStatus;
+    private Button? _legacyRead, _legacyThanks;
+    private readonly bool _follow;
+    private readonly bool _entryPolicy;
     private readonly bool _important;
     private MediaPreviewGroup? _media;
     private bool _disposed;
@@ -43,6 +47,8 @@ internal sealed class MessageCard : Grid, IDisposable
         // recycled; they must not close over its original DashboardRecord.
         visible = _ownedVisible = () => _visible();
         var message = record.Event;
+        _follow = LiveInteractions.IsFollow(message);
+        _entryPolicy = LiveInteractions.IsEntry(message);
         var style = previewStyle ?? vm.Settings.Dashboard;
         RecordId = record.Id; RecordRevision = record.Revision; MessageStyle = style; MediaStyle = vm.Settings.MediaPreview; Read = record.IsRead; Thanked = record.IsThanked;
         HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -97,15 +103,18 @@ internal sealed class MessageCard : Grid, IDisposable
         if (important)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            actions.Children.Add(new TextBlock { Text = record.IsThanked ? "✓ 已感谢" : record.IsRead ? "已读" : "● 未读", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(record.IsRead ? "#91A0B5" : "#FFD878") });
+            _legacyStatus = new TextBlock { Text = record.IsThanked ? "✓ 已感谢" : record.IsRead ? "已读" : "● 未读", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush(record.IsRead ? "#91A0B5" : "#FFD878") };
+            actions.Children.Add(_legacyStatus);
             if (!record.IsRead)
             {
                 var read = new Button { Content = "已读", FontSize = 12, Padding = new(6, 2, 6, 2) };
+                _legacyRead = read;
                 read.Click += (_, _) => vm.Dashboard.Mark(record, false); actions.Children.Add(read);
             }
             if (!record.IsThanked)
             {
                 var thanks = new Button { Content = "已感谢", FontSize = 12, Padding = new(6, 2, 6, 2) };
+                _legacyThanks = thanks;
                 thanks.Click += (_, _) => vm.Dashboard.Mark(record, true); actions.Children.Add(thanks);
             }
             content.Children.Add(actions);
@@ -320,7 +329,7 @@ internal sealed class MessageCard : Grid, IDisposable
         return border;
     }
 
-    private static bool IsReusableEntry(LiveEvent message) => message.Type == LiveEventType.Enter && message.Username.Length > 0
+    private static bool IsReusableEntry(LiveEvent message) => LiveInteractions.IsEntry(message) && message.Username.Length > 0
         && !LiveInteractions.IsFollow(message) && message.Appearance?.EntryEffect is null
         && string.IsNullOrEmpty(message.Appearance?.AvatarFrameUrl) && string.IsNullOrEmpty(message.Appearance?.InteractionIconUrl)
         && string.IsNullOrEmpty(message.Appearance?.InteractionLabel) && string.IsNullOrEmpty(message.Appearance?.InteractionHint);
@@ -342,8 +351,8 @@ internal sealed class MessageCard : Grid, IDisposable
         if (_disposed || _reusableParagraph is null || _important != important || !IsReusable(record, vm.Settings.Dashboard, important)
             || _entryReuse != IsReusableEntry(record.Event)
             || _scReuse != (record.Event.Type == LiveEventType.SuperChat)
-            || !MessageStyle.HasSameMessageStyle(vm.Settings.Dashboard) || MediaStyle != vm.Settings.MediaPreview) return false;
-        Deactivate(); _visible = visible;
+            || !MatchesStyle(vm.Settings.Dashboard) || MediaStyle != vm.Settings.MediaPreview) return false;
+        _visible = visible;
         RecordId = record.Id; RecordRevision = record.Revision; Read = record.IsRead; Thanked = record.IsThanked;
         _actions?.Bind(record);
         var message = record.Event; var style = vm.Settings.Dashboard;
@@ -353,6 +362,22 @@ internal sealed class MessageCard : Grid, IDisposable
         DashboardUi.Describe(_reusableBorder!, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}");
         return true;
     }
+
+    internal bool UpdateReadState(DashboardRecord record)
+    {
+        if (Read == record.IsRead && Thanked == record.IsThanked) return true;
+        if (_follow) return false;
+        Read = record.IsRead; Thanked = record.IsThanked; _actions?.Bind(record);
+        if (_legacyStatus is not null)
+        {
+            _legacyStatus.Text = Thanked ? "✓ 已感谢" : Read ? "已读" : "● 未读";
+            _legacyStatus.Foreground = Brush(Read ? "#91A0B5" : "#FFD878");
+            if (_legacyRead is not null) _legacyRead.Visibility = Read ? Visibility.Collapsed : Visibility.Visible;
+            if (_legacyThanks is not null) _legacyThanks.Visibility = Thanked ? Visibility.Collapsed : Visibility.Visible;
+        }
+        return true;
+    }
+    internal bool MatchesStyle(DashboardSettings other) => MessageStyle.HasSameMessageStyle(other, _entryPolicy);
 
     private static void AddIdentity(Paragraph paragraph, LiveMessageAppearance? appearance, DashboardSettings style)
     {
@@ -478,6 +503,7 @@ internal sealed class MessageCard : Grid, IDisposable
         foreach (var image in _images) image.Dispose(); _images.Clear();
         _media?.Dispose(); _media = null;
         _actions?.Dispose(); _actions = null;
+        _legacyStatus = null; _legacyRead = _legacyThanks = null;
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;
         Content = null;
@@ -523,6 +549,8 @@ internal sealed class BiliImageView : Grid, IDisposable
     private readonly MessageAnimationClock _clock;
     private Func<bool> _visible;
     private Image? _image;
+    private ImageSource? _boundSource;
+    private string _automationName;
     private readonly bool _avatar;
     private TextBlock? _fallback;
     private UiImageSourceService.Lease? _first;
@@ -543,7 +571,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         MessageAnimationClock clock, Func<bool> visible, bool avatar = false, bool fill = false, long avatarUid = 0)
     {
         Interlocked.Increment(ref ImageResourceCounters.Views);
-        _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible;
+        _cache = cache; _url = url; _animate = animate && !avatar; _clock = clock; _visible = visible; _automationName = fallback;
         _avatarUid = avatar ? avatarUid : 0; _displayUrl = url; _avatar = avatar;
         Width = width; Height = height;
         if (avatar)
@@ -580,11 +608,13 @@ internal sealed class BiliImageView : Grid, IDisposable
     {
         if (_disposed) return;
         Interlocked.Increment(ref ImageResourceCounters.RebindAttempts);
+        var initials = new System.Globalization.StringInfo(fallback.Trim());
+        var label = _avatar ? initials.LengthInTextElements > 0 ? initials.SubstringByTextElements(0, Math.Min(2, initials.LengthInTextElements)) : "?" : fallback;
+        if (_fallback!.Text != label) _fallback.Text = label;
+        if (_automationName != fallback) { _automationName = fallback; Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(this, fallback); }
+        if (_url == url && _avatarUid == (_avatar ? uid : 0)) return;
         Interlocked.Increment(ref ImageResourceCounters.RebindChanges);
         Deactivate(); _clock.Remove(this); ReleaseImages(); _url = url; _displayUrl = url; _avatarUid = _avatar ? uid : 0;
-        var initials = new System.Globalization.StringInfo(fallback.Trim());
-        _fallback!.Text = _avatar ? initials.LengthInTextElements > 0 ? initials.SubstringByTextElements(0, Math.Min(2, initials.LengthInTextElements)) : "?" : fallback;
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(this, fallback);
     }
     internal async void RestoreVisuals()
     {
@@ -628,7 +658,7 @@ internal sealed class BiliImageView : Grid, IDisposable
 #if MEMORY_SOAK
         if (!App.AttachImageSources) return;
 #endif
-        if (_image is not null) { _image.Source = source; Interlocked.Increment(ref ImageResourceCounters.BindingChanges); }
+        if (_image is not null && !ReferenceEquals(_boundSource, source)) { _image.Source = source; _boundSource = source; Interlocked.Increment(ref ImageResourceCounters.BindingChanges); }
         if (_avatar) Interlocked.Increment(ref ImageResourceCounters.AvatarBindings);
         if (_fallback is not null) _fallback.Visibility = Visibility.Collapsed;
     }
@@ -708,6 +738,7 @@ internal sealed class BiliImageView : Grid, IDisposable
         _generation++;
         _loadCancellation?.Cancel(); _loadCancellation?.Dispose(); _loadCancellation = null;
         if (_image is not null) _image.Source = null;
+        _boundSource = null;
         if (_fallback is not null) _fallback.Visibility = Visibility.Visible;
         _first?.Dispose(); _first = null;
     }

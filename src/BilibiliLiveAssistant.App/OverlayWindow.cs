@@ -89,7 +89,8 @@ public sealed class OverlayWindow : OverlaySurface
         if (e.PropertyName == nameof(LiveAssistantViewModel.OverlayInteractive)) { SyncRegionVisibility(); return; }
         if (e.PropertyName == nameof(LiveAssistantViewModel.Settings))
         {
-            if (_messageStyle != _vm.Settings.Dashboard) { _messageStyle = _vm.Settings.Dashboard; ClearItems(); }
+            if (!_messageStyle.HasSameMessageStyle(_vm.Settings.Dashboard, includeEntry: false)) ClearItems();
+            _messageStyle = _vm.Settings.Dashboard;
             if (_mediaStyle != _vm.Settings.MediaPreview) { _mediaStyle = _vm.Settings.MediaPreview; ClearItems(); }
             SyncRegionVisibility();
             ConfigureFrameRate();
@@ -205,7 +206,7 @@ public sealed class OverlayWindow : OverlaySurface
                 if (media is not null) _ = media.LoadAsync(() =>
                 {
                     if (_cleaned || !Visible || !_items.Contains(item)) return;
-                    var before = item.Bounds; item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight); RequestRender(Rectangle.Union(before, item.Bounds));
+                    QueueImageRefresh(item);
                 });
                 break;
             }
@@ -274,11 +275,24 @@ public sealed class OverlayWindow : OverlaySurface
         {
             if (await _vm.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url), OverlayMessageRenderer.ImageRole(item.Event, url)) is null
                 || _cleaned || !Visible || !_items.Contains(item)) return;
+            QueueImageRefresh(item);
+        }
+        int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(item.Event, url, _vm.Settings.Dashboard, RegionSettings);
+    }
+
+    private void QueueImageRefresh(OverlayItem item)
+    {
+        PerformanceCounters.ImageInvalidation(item.ImageRefreshQueued);
+        if (item.ImageRefreshQueued || !IsHandleCreated) return;
+        item.ImageRefreshQueued = true;
+        BeginInvoke((Action)(() =>
+        {
+            item.ImageRefreshQueued = false;
+            if (_cleaned || !Visible || !_items.Contains(item)) return;
             var before = item.Bounds;
             item.RefreshImage(RegionSettings, _vm.Settings.Dashboard, _vm.Images, TrackHeight);
             RequestRender(Rectangle.Union(before, item.Bounds));
-        }
-        int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(item.Event, url, _vm.Settings.Dashboard, RegionSettings);
+        }));
     }
 
     protected override void OnRegionSettingsChanged(OverlayRegionSettings previous)
@@ -355,6 +369,7 @@ public sealed class OverlayWindow : OverlaySurface
         public OverlayMediaAttachment? Media { get; private set; }
         public int TrackSpan { get; private set; }
         public LiveEvent Event { get; set; }
+        public bool ImageRefreshQueued;
         public CancellationTokenSource Cancellation { get; } = new();
         public void RefreshImage(OverlayRegionSettings settings, DashboardSettings style, BiliImageCache cache, int height)
         {
