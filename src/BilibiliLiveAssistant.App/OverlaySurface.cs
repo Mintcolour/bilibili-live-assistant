@@ -254,8 +254,8 @@ public abstract class OverlaySurface : Forms.Form
                 using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
                 using (PerformanceCounters.Measure(8))
                 {
-                    // Keep separated tracks rectangular and cull other tracks
-                    // before drawing. Source sampling remains frame-wide.
+                    // Keep separated tracks rectangular and crop source pixels
+                    // to the current track before asking GDI+ to resample them.
                     for (var i = 0; i < Math.Max(1, dirtyCount); i++)
                     {
                         var area = dirtyCount <= 1 ? dirty : Rectangle.Intersect(ClientRectangle, _frameDirtyRects[i]);
@@ -265,7 +265,7 @@ public abstract class OverlaySurface : Forms.Form
                         graphics.FillRectangle(background, area);
                         graphics.CompositingMode = CompositingMode.SourceOver;
                         if (Editing) DrawEditorSample(graphics);
-                        else DrawContent(graphics, area, dirty);
+                        else DrawContent(graphics, area);
                         DrawEditorChrome(graphics);
                     }
                 }
@@ -323,9 +323,7 @@ public abstract class OverlaySurface : Forms.Form
         }
     }
 
-    // Cull against the current track, but keep a frame-wide source crop so
-    // splitting destination clips cannot alter GDI+'s fractional sampling.
-    protected abstract void DrawContent(Graphics graphics, Rectangle clip, Rectangle sourceClip);
+    protected abstract void DrawContent(Graphics graphics, Rectangle clip);
     protected abstract bool HasLiveContent { get; }
 
     private void DrawEditorSample(Graphics graphics)

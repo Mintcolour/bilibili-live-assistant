@@ -97,10 +97,10 @@ public sealed class OverlayWindow : OverlaySurface
         }
     }
 
-    protected override void DrawContent(Graphics graphics, Rectangle clip, Rectangle sourceClip)
+    protected override void DrawContent(Graphics graphics, Rectangle clip)
     {
         foreach (var item in _items)
-            if (clip.IntersectsWith(item.Bounds)) OverlayBitmapBlitter.Draw(graphics, item.Image, (float)item.X, item.Y, sourceClip);
+            if (clip.IntersectsWith(item.Bounds)) OverlayBitmapBlitter.Draw(graphics, item.Image, (float)item.X, item.Y, clip);
     }
 
     private void OnEventBatch(IReadOnlyList<LiveEvent> batch)

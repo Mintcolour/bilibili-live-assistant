@@ -315,13 +315,13 @@ internal sealed class FixedOverlayWindow : OverlaySurface
 
     private static int MaxWaitSeconds(LiveEvent value) => value.Type == LiveEventType.Gift ? 60 : 300;
 
-    protected override void DrawContent(Graphics graphics, Rectangle clip, Rectangle sourceClip)
+    protected override void DrawContent(Graphics graphics, Rectangle clip)
     {
         foreach (var sprite in _sprites)
         {
             if (!clip.IntersectsWith(sprite.Bounds)) continue;
             if (Kind == OverlayRegionKind.Interaction) graphics.DrawImageUnscaled(sprite.Image, (int)sprite.X, sprite.Y);
-            else OverlayBitmapBlitter.Draw(graphics, sprite.Image, (float)sprite.X, sprite.Y, sourceClip);
+            else OverlayBitmapBlitter.Draw(graphics, sprite.Image, (float)sprite.X, sprite.Y, clip);
         }
     }
 
