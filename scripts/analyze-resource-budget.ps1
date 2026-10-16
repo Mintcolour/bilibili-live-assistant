@@ -41,6 +41,31 @@ function Memory([string]$Field) {
     if (!$values.Count) { return $null }
     return [ordered]@{ peakBytes=($values | Measure-Object -Maximum).Maximum; lastBytes=$values[-1]; samples=$values.Count }
 }
+function BindingLatency([string]$Group) {
+    if (!$traffic.Count) { return $null }
+    $latest = $traffic[-1].ui.imageResources.bindingReadyLatency.$Group
+    if ($null -eq $latest) { return $null }
+    if ($null -ne $latest.PSObject.Properties['p95UpperMs']) { return $latest }
+    $before = $samples | Where-Object seconds -lt $traffic[0].seconds | Select-Object -Last 1
+    $previous = @{}
+    foreach ($bin in $before.ui.imageResources.bindingReadyLatency.$Group) {
+        $key = if ($null -eq $bin.upperMs) { 2001 } else { [int]$bin.upperMs }
+        $previous[$key] = [long]$bin.count
+    }
+    $histogram = @(foreach ($bin in $latest) {
+        $key = if ($null -eq $bin.upperMs) { 2001 } else { [int]$bin.upperMs }
+        $count = [long]$bin.count - [long]$previous[$key]
+        if ($count -gt 0) { [pscustomobject]@{ upperMs=$key; count=$count } }
+    })
+    $total = ($histogram | Measure-Object count -Sum).Sum
+    if (!$total) { return [ordered]@{ count=0; p95UpperMs=$null; over2000ms=0 } }
+    $cumulative = 0L; $p95 = $null
+    foreach ($bin in $histogram | Sort-Object upperMs) {
+        $cumulative += $bin.count
+        if ($cumulative -ge [math]::Ceiling($total * 0.95)) { if ($bin.upperMs -le 2000) { $p95=$bin.upperMs }; break }
+    }
+    return [ordered]@{ count=$total; p95UpperMs=$p95; over2000ms=[long]($histogram | Where-Object upperMs -eq 2001 | Measure-Object count -Sum).Sum }
+}
 $startup = StartupMedian $rows
 $baselineValues = [Collections.Generic.List[double]]::new()
 $baselineKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -52,7 +77,8 @@ foreach ($baselinePath in $BaselineRuns) {
     if (!$baselineHeader.build.appSha256 -or $baselineHeader.build.appSha256 -ne $header.build.appSha256 -or
         $baselineHeader.winUiVersion -ne $header.winUiVersion -or $baselineHeader.dpi -ne $header.dpi -or
         $baselineHeader.config.View -ne $header.config.View -or $baselineHeader.build.appSdkVersion -ne $header.build.appSdkVersion -or
-        $baselineHeader.config.EntryAvatars -ne $header.config.EntryAvatars) {
+        $baselineHeader.config.EntryAvatars -ne $header.config.EntryAvatars -or
+        $baselineHeader.config.AnimateEmotes -ne $header.config.AnimateEmotes) {
         throw '启动基准的程序哈希、DPI、SDK 或窗口配置不一致'
     }
     $value = StartupMedian $baselineRows
@@ -102,7 +128,7 @@ if (Test-Path -LiteralPath $meterPath) {
 }
 $privateWs = Memory 'privateWorkingSetBytes'
 $observedFailure = ($privateWs -and $privateWs.peakBytes -gt $budget) -or ($meter -and $meter.overBudgetSamples -gt 0)
-$eligible = $header.config.View -eq 'both' -and $header.config.Images -eq 'unique' -and !$header.config.Snapshot -and !$header.config.ScrollProbe -and
+$eligible = $header.config.View -eq 'both' -and $header.config.Images -eq 'unique' -and !$header.config.Snapshot -and !$header.config.ScrollProbe -and !$header.config.LifecycleProbe -and
     !$header.config.DrawingDecode -and $header.config.AttachImages -ne $false -and $header.config.CreateSources -ne $false -and !$header.build.alternateSource
 $complete = $completed -and $fullTraffic -and $visible -and $retention -and $threeBaselines -and $meter -and $meter.coversTraffic -and $eligible
 $tail = @($traffic | Where-Object { $_.seconds -ge ($traffic[-1].seconds - 1800) })
@@ -120,6 +146,8 @@ $allocationRate = if ($traffic.Count -gt 1) { ($traffic[-1].allocatedBytes - $tr
         minimumTargetFps=($traffic.ui.window.overlay.clock.targetFps | Measure-Object -Minimum).Minimum;
         maximumTargetFps=($traffic.ui.window.overlay.clock.targetFps | Measure-Object -Maximum).Maximum };
     allocationMiBPerSecond=$allocationRate;
+    winUiBindingReadyLatency=[ordered]@{ all=(BindingLatency 'all'); waited=(BindingLatency 'waited');
+        note='Successful visible-row bindings, cumulative at last traffic sample. 1 ms buckets, >2000 ms overflow. Not GPU presentation, overlay appearance, failures or cancelled waits.' };
     lastHalfHourSlopeMiBPerMinute=[ordered]@{ privateWorkingSet=(Slope $tail 'privateWorkingSetBytes'); privateCommit=(Slope $tail 'privateBytes'); managed=(Slope $tail 'managedBytes') };
     received=$last.ui.received; archived=$last.ui.history.writtenEvents; archiveDropped=$last.ui.history.dropped; archiveWriteFailures=$last.ui.history.writeFailures;
     images=$last.ui.images; resources=$last.ui.imageResources; uiImages=$last.ui.uiImages; assertions=$assertions;

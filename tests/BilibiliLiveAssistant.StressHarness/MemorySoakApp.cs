@@ -61,7 +61,7 @@ public partial class App : Application
             var live = _config.LiveRoom > 0;
             var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = true,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
-                Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, ShowAvatars = _config.Images is not ("none" or "emotes") } };
+                Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, AnimateEmotes = _config.AnimateEmotes, ShowAvatars = _config.Images is not ("none" or "emotes") } };
             HttpMessageHandler? handler = live ? null : _config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages();
             var images = new BiliImageCache(handler, Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
@@ -140,6 +140,7 @@ public partial class App : Application
                     if ((int)elapsed / 30 != lastProfile) { lastProfile = (int)elapsed / 30; EmitRoom(settings.RoomId); }
                 }
             });
+            if (_config.LifecycleProbe) await VerifyVisibilityAsync();
             // Let the normal display batch finish before taking retention checks.
             await Task.Delay(TimeSpan.FromSeconds(2));
             if (_config.Snapshot) await CaptureOverviewAsync("overview-settled.png", 0);
@@ -239,6 +240,28 @@ public partial class App : Application
         File.WriteAllText(Path.Combine(_config.Output, "completed.json"), JsonSerializer.Serialize(new { seconds = _elapsed.Elapsed.TotalSeconds, produced = _produced }));
         Exit();
     }
+    private async Task VerifyVisibilityAsync()
+    {
+        var checkpoints = new List<object>();
+        for (var i = 0; i < 30; i++)
+        {
+            _phase = "lifecycle_hidden"; _window!.HideToTray();
+            await Task.Delay(250);
+            _phase = "lifecycle_shown"; _window.ShowMainWindow();
+            await Task.Delay(500);
+            checkpoints.Add(new { cycle = i + 1, resources = ImageResourceCounters.Snapshot(), sources = ViewModel.UiImages.GetDiagnostics() });
+        }
+        _phase = "lifecycle_hidden"; _window!.HideToTray();
+        await Task.Delay(TimeSpan.FromSeconds(20));
+        var hiddenSources = JsonSerializer.SerializeToElement(ViewModel.UiImages.GetDiagnostics());
+        var hidden = new { sources = hiddenSources, resources = ImageResourceCounters.Snapshot(),
+            noActiveViews = Interlocked.Read(ref ImageResourceCounters.ActiveViews) == 0,
+            noLeases = hiddenSources.GetProperty("leases").GetInt32() == 0,
+            noPending = hiddenSources.GetProperty("pending").GetInt32() == 0,
+            noSources = hiddenSources.GetProperty("sources").GetInt32() == 0 };
+        _phase = "lifecycle_shown"; _window.ShowMainWindow(); await Task.Delay(1000);
+        File.WriteAllText(Path.Combine(_config.Output, "visibility-check.json"), JsonSerializer.Serialize(new { checkpoints, hidden }));
+    }
     private async Task VerifyScrollAsync()
     {
         try
@@ -324,7 +347,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";

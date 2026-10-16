@@ -621,13 +621,17 @@ internal sealed class BiliImageView : Grid, IDisposable
         if (_disposed || !_active || _loading) return;
         if (_first is not null) { if (_animate && _first.Value.CanAnimate) _clock.Add(this); return; }
         _loading = true; var generation = _generation;
+        var started = PerformanceCounters.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        var waited = false;
         var cancellation = (_loadCancellation ??= new()).Token;
         UiImageSourceService.Lease? acquired = null;
         try
         {
             if (_avatar)
             {
-                _displayUrl = await _cache.Avatars.ResolveAsync(_avatarUid, _url, cancellation);
+                var avatar = _cache.Avatars.ResolveAsync(_avatarUid, _url, cancellation);
+                waited |= !avatar.IsCompletedSuccessfully;
+                _displayUrl = await avatar;
                 if (_disposed || !_active || !_visible() || generation != _generation) return;
                 if (_displayUrl.Length == 0) { Interlocked.Increment(ref ImageResourceCounters.MissingAvatars); return; }
             }
@@ -638,10 +642,13 @@ internal sealed class BiliImageView : Grid, IDisposable
                 return;
             }
 #endif
-            acquired = await _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation, _avatar ? BiliImageRole.Avatar : BiliImageRole.Content);
+            var source = _cache.Sources.AcquireStaticSourceAsync(_displayUrl, RequestedWidth, RequestedDecodeLimit, cancellation, _avatar ? BiliImageRole.Avatar : BiliImageRole.Content);
+            waited |= !source.IsCompletedSuccessfully;
+            acquired = await source;
             if (_disposed || !_active || !_visible() || generation != _generation || acquired is null) return;
             _first = acquired; acquired = null;
             Bind(_first.Value.Source);
+            ImageResourceCounters.BoundReady(started, waited);
             if (_animate && _first.Value.CanAnimate) _clock.Add(this);
         }
         catch (OperationCanceledException) { }

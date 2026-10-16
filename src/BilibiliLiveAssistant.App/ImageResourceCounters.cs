@@ -10,6 +10,27 @@ internal static class ImageResourceCounters
     internal static long BindingAttempts, BindingChanges, RebindAttempts, RebindChanges;
     private static long _decodeInputs, _decodeInputPeak, _decodes, _decodesEnded;
     private static long _bodyStaging, _bodyStagingPeak;
+    private static readonly long[] BindingReady = new long[2002], WaitingBindingReady = new long[2002];
+    internal static void BoundReady(long started, bool waited)
+    {
+        if (started == 0) return;
+        var bin = (int)Math.Clamp(Math.Ceiling(Stopwatch.GetElapsedTime(started).TotalMilliseconds), 0, 2001);
+        Interlocked.Increment(ref BindingReady[bin]);
+        if (waited) Interlocked.Increment(ref WaitingBindingReady[bin]);
+    }
+    private static object ReadySummary(long[] histogram)
+    {
+        long total = 0, cumulative = 0;
+        for (var i = 0; i < histogram.Length; i++) total += Interlocked.Read(ref histogram[i]);
+        int? p50 = null, p95 = null;
+        for (var i = 0; i < 2001 && total > 0; i++)
+        {
+            cumulative += Interlocked.Read(ref histogram[i]);
+            if (p50 is null && cumulative >= Math.Ceiling(total * 0.5)) p50 = i;
+            if (cumulative >= Math.Ceiling(total * 0.95)) { p95 = i; break; }
+        }
+        return new { count = total, p50UpperMs = p50, p95UpperMs = p95, over2000ms = Interlocked.Read(ref histogram[2001]) };
+    }
     internal static void AddBodyStaging(int bytes)
     {
         var current = Interlocked.Add(ref _bodyStaging, bytes);
@@ -62,6 +83,8 @@ internal static class ImageResourceCounters
         rebindAttempts = Interlocked.Read(ref RebindAttempts), rebindChanges = Interlocked.Read(ref RebindChanges),
         decodeInputBytes = Interlocked.Read(ref _decodeInputs), decodeInputPeakBytes = Interlocked.Read(ref _decodeInputPeak),
         bodyReadStagingBytes = Interlocked.Read(ref _bodyStaging), bodyReadStagingPeakBytes = Interlocked.Read(ref _bodyStagingPeak),
+        bindingReadyLatency = new { all = ReadySummary(BindingReady), waited = ReadySummary(WaitingBindingReady),
+            note = "Process-cumulative successful visible WinUI bindings; 1ms histogram. Null quantile means no data or over 2000ms. Not GPU presentation or overlay latency." },
         decodesStarted = Interlocked.Read(ref _decodes), decodesEnded = Interlocked.Read(ref _decodesEnded),
         sourceSizes = new { upTo128 = Interlocked.Read(ref SourceSizes[0]), upTo512 = Interlocked.Read(ref SourceSizes[1]), upTo2048 = Interlocked.Read(ref SourceSizes[2]), larger = Interlocked.Read(ref SourceSizes[3]) },
         decodeTiers = new { px64 = Interlocked.Read(ref DecodeSizes[0]), px128 = Interlocked.Read(ref DecodeSizes[1]), px256 = Interlocked.Read(ref DecodeSizes[2]) },
