@@ -34,6 +34,28 @@ $steady = @($traffic | Where-Object seconds -ge ([math]::Max(60, $last.seconds -
 $allocationRate = if ($steady.Count -gt 1) { ($steady[-1].allocatedBytes - $steady[0].allocatedBytes) / ($steady[-1].seconds - $steady[0].seconds) / 1MB } else { $null }
 $frameIntervals = ($traffic.timing.frameCadence.intervals | Measure-Object -Sum).Sum
 $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Sum
+$completeRenderingRun = $eligible -and $buildVerified -and $retentionPassed -and $null -ne $completed -and
+    $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
+$privateWorkingSetSummary = Get-MemorySummary 'privateWorkingSetBytes'
+function Get-TrafficWindow([object[]]$Window) {
+    if ($Window.Count -lt 2) { return $null }
+    $meanSeconds = ($Window.seconds | Measure-Object -Average).Average
+    $denominator = 0.0
+    foreach ($row in $Window) { $denominator += [math]::Pow($row.seconds - $meanSeconds, 2) }
+    $slopes = [ordered]@{}
+    foreach ($field in @('privateBytes', 'privateWorkingSetBytes', 'managedBytes')) {
+        if (@($Window | Where-Object { $null -eq $_.$field }).Count) { $slopes[$field] = $null; continue }
+        $meanBytes = ($Window | ForEach-Object { $_.$field } | Measure-Object -Average).Average
+        $numerator = 0.0
+        foreach ($row in $Window) { $numerator += ($row.seconds - $meanSeconds) * ($row.$field - $meanBytes) }
+        $slopes[$field] = if ($denominator -gt 0) { [math]::Round(60 * $numerator / $denominator / 1MB, 4) } else { $null }
+    }
+    [ordered]@{ fromSeconds = $Window[0].seconds; toSeconds = $Window[-1].seconds; samples = $Window.Count; slopeMiBPerMinute = $slopes }
+}
+$trafficWindows = @(for ($startMinute = 0; $startMinute * 60 -lt $last.seconds; $startMinute += 15) {
+    $window = @($traffic | Where-Object { $_.seconds -ge $startMinute * 60 -and $_.seconds -lt ($startMinute + 15) * 60 })
+    if ($window.Count -gt 1) { Get-TrafficWindow $window }
+})
 [ordered]@{
     name = $header.config.Name
     configuration = $header.config
@@ -47,11 +69,17 @@ $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Su
     produced = $last.produced
     completedTrafficSeconds = if ($completed) { $header.config.Seconds } else { $null }
     twoHourTrafficCompleted = $null -ne $completed -and $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
-    twoHourRenderingRunCompleted = $eligible -and $buildVerified -and $retentionPassed -and $null -ne $completed -and
-        $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
+    twoHourRenderingRunCompleted = $completeRenderingRun
+    taskManagerMemoryAcceptance = [ordered]@{
+        metric = 'privateWorkingSetBytes'
+        thresholdBytes = 180MB
+        observedPass = $completeRenderingRun -and $null -ne $privateWorkingSetSummary -and $privateWorkingSetSummary.below180MiB
+        note = 'Task Manager commonly labels binary MiB as MB. This evaluates ~5-second observed samples, not unsampled transient peaks or all possible layouts.'
+    }
     privateCommit = Get-MemorySummary 'privateBytes'
     totalWorkingSet = Get-MemorySummary 'workingSetBytes'
-    privateWorkingSet = Get-MemorySummary 'privateWorkingSetBytes'
+    privateWorkingSet = $privateWorkingSetSummary
+    trafficWindows = $trafficWindows
     cpuP95Percent = if ($cpu.Count) { $cpu[[math]::Min($cpu.Count-1, [math]::Ceiling($cpu.Count * 0.95)-1)] } else { $null }
     allocationMiBPerSecond = $allocationRate
     frameIntervals = $frameIntervals
