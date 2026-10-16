@@ -19,6 +19,7 @@ public sealed class OverlayWindow : OverlaySurface
     internal object GetDiagnostics() => new
     {
         visible = _overlayVisible, appearance = DiagnosticAppearance, clock = _frames.GetDiagnostics(), movingItems = _items.Count,
+        compact = _compact.GetDiagnostics(),
         incoming = _incoming.Count, pending = _pendingItems.Count,
         bitmapBytes = _items.Sum(item => (long)item.Image.Width * item.Image.Height * 4),
         scrolling = _fixedRegions.Select(region => region.GetDiagnostics()).ToArray(),
@@ -57,6 +58,7 @@ public sealed class OverlayWindow : OverlaySurface
         SyncRegionVisibility();
         if (!Editing && _items.Count > 0) StartAnimation();
     }
+    public void ReadCompactList() { ActivateOverlay(); _compact.StartReading(); }
 
     public void HideOverlay()
     {

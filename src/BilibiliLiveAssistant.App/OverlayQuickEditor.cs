@@ -46,11 +46,12 @@ internal sealed class OverlayQuickEditor : Forms.Form
         Slider("阴影偏移", 0, 6, initial.ShadowOffset, " px", v => _draft = _draft with { ShadowOffset = v });
         ColorButton("阴影颜色", initial.ShadowColor, v => _draft = _draft with { ShadowColor = v });
         Heading("显示时间与间隔");
-        if (initial.Mode == OverlayDisplayMode.Cards || kind == OverlayRegionKind.Interaction)
+        if (initial.Mode == OverlayDisplayMode.Cards)
+            Heading("固定礼物／SC 按金额计时，请在可视化设置的“紧凑面板 / OBS / 金额停留”调整。", false);
+        else if (kind == OverlayRegionKind.Interaction)
         {
             Slider(kind == OverlayRegionKind.Gift ? "普通礼物停留时间" : "每条停留时间", kind == OverlayRegionKind.Interaction ? 1 : 5, 300,
                 (int)initial.DurationSeconds, " 秒", v => _draft = _draft with { DurationSeconds = v });
-            if (kind == OverlayRegionKind.Gift) Slider("上舰停留时间", 5, 300, (int)initial.GuardDurationSeconds, " 秒", v => _draft = _draft with { GuardDurationSeconds = v });
             if (kind == OverlayRegionKind.Interaction) Slider("关注提醒停留时间", 5, 300, (int)initial.FollowDurationSeconds, " 秒", v => _draft = _draft with { FollowDurationSeconds = v });
         }
         else if (initial.Mode == OverlayDisplayMode.Scrolling)

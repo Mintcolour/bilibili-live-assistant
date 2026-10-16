@@ -121,7 +121,7 @@ internal static class OverlayMessageRenderer
     }
 
     public static Bitmap Render(LiveEvent value, OverlayRegionSettings region, DashboardSettings style, BiliImageCache cache,
-        int width = 0, int maxHeight = 128, bool card = false, bool background = true)
+        int width = 0, int maxHeight = 128, bool card = false, bool background = true, bool inlineHeader = false)
     {
         using var timing = PerformanceCounters.Measure(2);
         var imageStyle = style;
@@ -175,7 +175,7 @@ internal static class OverlayMessageRenderer
             if (follow) Badge(LiveInteractions.FollowLabel(value), OverlayTextRenderer.Color("#AD3E6C"));
             if (like) Badge("点赞", OverlayTextRenderer.Color("#A75432"));
             if (rankMember) Badge($"#{rankPosition}", accent);
-            if (card || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), accent);
+            if (card && !inlineHeader || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), accent);
             if (entry && style.ShowIdentity && value.Appearance is { GuardLevel: 0, WealthLevel: > 0, EntryEffect: { } entryEffect } wealth)
             {
                 if (!ImageBadge(entryEffect.BadgeUrl)) Badge($"◇ {wealth.WealthLevel}", OverlayTextRenderer.Color(LiveEntryStyles.Accent(wealth)));
@@ -191,8 +191,8 @@ internal static class OverlayMessageRenderer
             if (!system)
                 Text((value.Username.Length > 48 ? value.Username[..48] + "…" : value.Username) + " ", nameFont,
                     OverlayTextRenderer.Color(follow ? "#FFE4EF" : entry ? LiveEntryStyles.UsernameColor(value.Appearance, style.UsernameColor) : style.UsernameColor, style.TextOpacity), true);
-            if (card && !system) { NewLine(); lineHeight = rowHeight; bottom = y + lineHeight; }
-            else if (card) { startX = x; lineHeight = Math.Max(headerHeight, rowHeight); bottom = y + lineHeight; }
+            if (card && !system && !inlineHeader) { NewLine(); lineHeight = rowHeight; bottom = y + lineHeight; }
+            else if (card) { if (!inlineHeader) startX = x; lineHeight = Math.Max(headerHeight, rowHeight); bottom = y + lineHeight; }
             if (card && value.Type is LiveEventType.Gift or LiveEventType.Guard)
             {
                 var size = Math.Min(28, rowHeight); var iconUrl = value.HistoryFields?.GiftIconUrl ?? value.Extra.GetValueOrDefault("gift_icon") as string ?? "";

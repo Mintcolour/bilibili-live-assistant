@@ -13,11 +13,13 @@ internal sealed record ObsMessage(long Id, string Type, string Name, string Body
 internal sealed class ObsOverlayProjection
 {
     private AppSettings? _settings;
+    private LiveEvent? _rank;
+    private (int Rank, LiveEvent Value)[] _ranking = [];
     private readonly Dictionary<long, (LiveEvent Value, ObsMessage Message, IReadOnlyDictionary<string, ObsImageReference> Images)> _messages = new();
-    internal void Reset() { _settings = null; _messages.Clear(); }
+    internal void Reset() { _settings = null; _rank = null; _ranking = []; _messages.Clear(); }
     internal ObsOverlayDocument Create(LiveAssistantViewModel vm, CompactTimeline timeline, long revision)
     {
-        if (!ReferenceEquals(_settings, vm.Settings)) { _messages.Clear(); _settings = vm.Settings; }
+        if (!ReferenceEquals(_settings, vm.Settings)) { _messages.Clear(); _settings = vm.Settings; _rank = null; }
         var used = new HashSet<long>(); Dictionary<string, ObsImageReference>? collected = null;
         var images = new Dictionary<string, ObsImageReference>(); var compact = vm.Settings.Compact with
         {
@@ -33,6 +35,7 @@ internal sealed class ObsOverlayProjection
             if (normalized.Length == 0 && (uid <= 0 || role != BiliImageRole.Avatar)) return "";
             var reference = new ObsImageReference(normalized, uid, BiliImageCache.SizeTier(size), role);
             var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{normalized}|{uid}|{reference.Limit}|{role}"))).ToLowerInvariant();
+            if (collected is { Count: >= 16 } && !collected.ContainsKey(key)) return "";
             images.TryAdd(key, reference); collected?.TryAdd(key, reference); return "image/" + key;
         }
         ObsMessage? Message(CompactMessage? item)
@@ -61,8 +64,13 @@ internal sealed class ObsOverlayProjection
             collected = null; _messages[item.Id] = (value, result, messageImages); return result;
         }
         var status = OverlayBulletinRenderer.AudienceMetrics(vm.LatestRank, vm.LatestOnline, true).Select(m => m.Value).ToArray();
-        var ranks = vm.LatestRank is { } rank ? vm.GetRankMembers(rank, OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Status).RankCount)
-            .Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, OverlayBulletinRenderer.MemberEvent(m, "#B998FF"), DateTimeOffset.UtcNow)) }).ToArray() : [];
+        if (!ReferenceEquals(_rank, vm.LatestRank))
+        {
+            _rank = vm.LatestRank;
+            _ranking = _rank is { } rank ? vm.GetRankMembers(rank, OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Status).RankCount)
+                .Select(m => (m.Rank, OverlayBulletinRenderer.MemberEvent(m, "#B998FF"))).ToArray() : [];
+        }
+        var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow)) }).ToArray();
         var payload = new { revision, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
             config = compact, style = new { fontFamily = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).FontFamily,
                 style.ShowAvatars, style.AvatarSize, style.ShowMedals, style.ShowIdentity, style.UsernameColor,

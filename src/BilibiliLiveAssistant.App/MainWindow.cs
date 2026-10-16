@@ -187,6 +187,11 @@ public sealed class MainWindow : Window
         try { await _vm.UpdateCompactAsync(s => s with { DesktopEnabled = !s.DesktopEnabled }); OpenOverlay(); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("浮窗模式保存失败，请重试。"); }
     }
+    public async Task ReadCompactListAsync()
+    {
+        try { if (!CompactMode) await _vm.UpdateCompactAsync(s => s with { DesktopEnabled = true }); OpenOverlay(); _overlay?.ReadCompactList(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("紧凑列表打开失败，请重试。"); }
+    }
 
     public void HideToTray()
     {

@@ -33,7 +33,11 @@
     node.style.fontFamily = fx.fontFamily || 'Microsoft YaHei UI';
     node.style.fontWeight = fx.bold ? '700' : '400'; node.style.fontStyle = fx.italic ? 'italic' : 'normal';
     const shadows = fx.outline ? ['-1px 0 0 #000','1px 0 0 #000','0 -1px 0 #000','0 1px 0 #000'] : [];
-    if (fx.shadow) shadows.push(`${fx.shadowOffset}px ${fx.shadowOffset}px ${fx.shadowSize}px ${color(fx.shadowColor, '#000000')}`);
+    if (fx.shadow) {
+      const hex = color(fx.shadowColor, '#000000');
+      const rgba = `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${Math.max(0, Math.min(1, fx.shadowOpacity))})`;
+      shadows.push(`${fx.shadowOffset}px ${fx.shadowOffset}px ${fx.shadowSize}px ${rgba}`);
+    }
     node.style.textShadow = shadows.length ? shadows.join(',') : 'none';
     if (m.avatar) {
       const wrap = document.createElement('span'); wrap.className = 'avatar-wrap'; wrap.append(image(m.avatar, 'avatar'));

@@ -35,6 +35,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private AppSettings EffectiveSettings => _preview is { } preview ? _vm.Settings with { Compact = preview } : _vm.Settings;
     private bool Editing => (_vm.OverlayInteractive || !_vm.Settings.Display.LayoutLocked) && !_reading;
     private bool Interactive => _reading || Editing;
+    internal object GetDiagnostics() => new { visible = Visible, editing = Editing, reading = _reading, rows = _rows.Count,
+        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4), readingOlder = _anchor is not null };
     private CompactTimeline Timeline => Editing ? _samples : _vm.CompactOverlay.Timeline;
     public CompactOverlayWindow(LiveAssistantViewModel vm)
     {
@@ -185,13 +187,13 @@ internal sealed class CompactOverlayWindow : Forms.Form
         var width = Math.Max(120, ClientSize.Width - 12);
         if (_rows.TryGetValue(key, out var row) && ReferenceEquals(row.Source, value) && row.Width == width && row.MaxHeight == maxHeight && row.Card == card) return row;
         if (row is not null) { row.Dispose(); _rows.Remove(key); }
-        row = new(key, value, CreateBitmap(value, width, maxHeight, card), width, maxHeight, card); _rows.Add(key, row);
+        row = new(key, value, CreateBitmap(value, width, maxHeight, card, key > 0), width, maxHeight, card); _rows.Add(key, row);
         if (!Editing) _ = LoadImagesAsync(row); return row;
     }
-    private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card)
+    private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline)
     {
         var region = ObsOverlayProjection.Region(EffectiveSettings, value);
-        return OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false);
+        return OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false, inlineHeader: inline);
     }
     private void DrawRow(Graphics graphics, Row row) => graphics.DrawImageUnscaled(row.Image, row.Bounds.Location);
     private async Task LoadImagesAsync(Row row)
@@ -213,7 +215,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 {
                     row.RefreshQueued = true;
                     BeginInvoke((Action)(() => { row.RefreshQueued = false; if (!Current()) return;
-                        var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card); row.Image.Dispose(); row.Image = replacement; RequestRender(); }));
+                        var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0); row.Image.Dispose(); row.Image = replacement; RequestRender(); }));
                 }
             }
         }

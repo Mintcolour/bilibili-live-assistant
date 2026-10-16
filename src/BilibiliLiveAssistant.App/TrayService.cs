@@ -24,6 +24,7 @@ public sealed class TrayService : IDisposable
         compact.Click += async (_, _) => await window.ToggleCompactModeAsync();
         _menu.Opening += (_, _) => compact.Checked = window.CompactMode;
         _menu.Items.Add(compact);
+        _menu.Items.Add("阅读紧凑列表", null, async (_, _) => await window.ReadCompactListAsync());
         _menu.Items.Add(new Forms.ToolStripSeparator());
         var quit = _menu.Items.Add("退出软件");
         quit.Click += async (_, _) =>

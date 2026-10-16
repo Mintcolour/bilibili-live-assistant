@@ -122,6 +122,9 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     private async Task Events(Stream stream, CancellationToken cancellation)
     {
         if (Interlocked.Increment(ref _consumers) > 2) { Interlocked.Decrement(ref _consumers); await Reply(stream, 503, "text/plain", [], cancellation); return; }
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var disconnected = WatchDisconnect(stream, lifetime);
+        cancellation = lifetime.Token;
         try
         {
             Task initial; lock (_gate) initial = _changed.Task;
@@ -145,7 +148,17 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
                 try { await next.WaitAsync(TimeSpan.FromSeconds(15), cancellation); } catch (TimeoutException) { }
             }
         }
-        finally { ConsumersChanged?.Invoke(Interlocked.Decrement(ref _consumers)); }
+        finally
+        {
+            lifetime.Cancel(); await disconnected.ConfigureAwait(false);
+            ConsumersChanged?.Invoke(Interlocked.Decrement(ref _consumers));
+        }
+    }
+    private static async Task WatchDisconnect(Stream stream, CancellationTokenSource lifetime)
+    {
+        try { await stream.ReadAsync(new byte[1], lifetime.Token).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException) { }
+        finally { lifetime.Cancel(); }
     }
     private async Task Image(Stream stream, string key, CancellationToken cancellation)
     {

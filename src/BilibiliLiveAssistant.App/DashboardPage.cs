@@ -34,6 +34,7 @@ internal sealed class DashboardPage : Page
     private readonly StackPanel _audienceInfo = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
     private readonly Grid _ranking = new() { ColumnSpacing = 7, Margin = new Thickness(14, 0, 14, 0) };
     private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = new SolidColorBrush(Colors.IndianRed) };
+    private readonly TextBlock _overlayOmissions = new() { FontSize = 12, Foreground = Brush("#D6B35A"), Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
     private readonly Grid _columns = new() { ColumnSpacing = 4 };
     private readonly Grid _left = new();
     private readonly Grid _middle = new();
@@ -143,6 +144,14 @@ internal sealed class DashboardPage : Page
         toolbar.Children.Add(info);
         var more = DashboardUi.Button("\uE712", "更多操作");
         var flyout = new MenuFlyout();
+        var compactMode = new ToggleMenuFlyoutItem { Text = "桌面紧凑面板", IsChecked = vm.Settings.Compact.DesktopEnabled };
+        compactMode.Click += async (_, _) =>
+        {
+            try { await vm.UpdateCompactAsync(s => s with { DesktopEnabled = compactMode.IsChecked }); if (overlay.IsChecked != true) overlay.IsChecked = true; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { compactMode.IsChecked = vm.Settings.Compact.DesktopEnabled; vm.ReportSettingsError("浮窗模式保存失败，请重试。"); }
+        };
+        flyout.Opening += (_, _) => compactMode.IsChecked = vm.Settings.Compact.DesktopEnabled;
+        flyout.Items.Add(compactMode);
         var single = new MenuFlyoutItem { Text = "发送单条测试弹幕" };
         single.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.SendTestDanmaku(); };
         _stressItem.Click += (_, _) =>
@@ -160,7 +169,7 @@ internal sealed class DashboardPage : Page
         flyout.Items.Add(balance); flyout.Items.Add(clear); flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(single); flyout.Items.Add(_stressItem); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
-        heading.Children.Add(top); heading.Children.Add(_error); root.Children.Add(heading);
+        heading.Children.Add(top); heading.Children.Add(_error); heading.Children.Add(_overlayOmissions); root.Children.Add(heading);
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.DanmakuColumnWidth, GridUnitType.Star), MinWidth = 150 });
         _columns.ColumnDefinitions.Add(new() { Width = new(6) });
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.SuperChatColumnWidth, GridUnitType.Star), MinWidth = 150 });
@@ -366,6 +375,8 @@ internal sealed class DashboardPage : Page
         RefreshHeader();
         _error.Text = string.Join("\n", new[] { _vm.ErrorText, _vm.HistoryWarning }.Where(s => s.Length > 0));
         _error.Visibility = _error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        _overlayOmissions.Text = $"悬浮区已省略 {_vm.OverlayDroppedCount:N0} 条提示；概览与历史按原规则保留。";
+        _overlayOmissions.Visibility = _vm.OverlayDroppedCount > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (_settingsDirty)
         {
             _style = _vm.Settings.Dashboard;

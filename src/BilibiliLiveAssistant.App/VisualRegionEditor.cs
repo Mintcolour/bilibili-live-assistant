@@ -79,8 +79,8 @@ internal sealed class VisualRegionEditor : StackPanel
         var cards = mode == OverlayDisplayMode.Cards; var fixedMode = mode != OverlayDisplayMode.Scrolling;
         _mode.Visibility = _kind == OverlayRegionKind.Interaction ? Visibility.Collapsed : Visibility.Visible;
         _speed.Visibility = !fixedMode && _kind != OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
-        _duration.Minimum = cards ? 5 : 1; _duration.Visibility = cards || _kind == OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
-        _guardDuration.Visibility = cards && _kind == OverlayRegionKind.Gift ? Visibility.Visible : Visibility.Collapsed;
+        _duration.Minimum = 1; _duration.Visibility = _kind == OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
+        _guardDuration.Visibility = Visibility.Collapsed;
         _count.Maximum = cards ? 6 : _kind == OverlayRegionKind.Interaction ? 3 : 64;
         _count.Visibility = cards || _kind == OverlayRegionKind.Interaction || _kind == OverlayRegionKind.Danmaku && !fixedMode ? Visibility.Visible : Visibility.Collapsed;
         _cardHeight.Visibility = fixedMode && _kind != OverlayRegionKind.Status ? Visibility.Visible : Visibility.Collapsed;
@@ -88,7 +88,7 @@ internal sealed class VisualRegionEditor : StackPanel
         _background.Visibility = _backgroundOpacity.Visibility = Visibility.Visible;
         _displayInterval.Visibility = _kind == OverlayRegionKind.Interaction || _kind == OverlayRegionKind.Status && !fixedMode ? Visibility.Collapsed : Visibility.Visible;
         _broadcast.Visibility = _kind == OverlayRegionKind.Status && !fixedMode ? Visibility.Visible : Visibility.Collapsed;
-        _modeHint.Text = cards ? "到期前保护当前卡片。礼物待播 64 条/60 秒；上舰与 SC 各 64 条/5 分钟。高度不足减少实际数量；调整浮窗时从类型菜单查看未展示记录。"
+        _modeHint.Text = cards ? "停留时间按金额档位计算，请到“紧凑面板 / OBS / 金额停留”调整。到期前保护当前卡片；礼物待播 64 条/60 秒，上舰与 SC 各 64 条/5 分钟。"
             : mode == OverlayDisplayMode.Grid ? "固定槽位，最多 32 张；沿用概览卡片的精确合并和防刷屏规则。临时交互时悬停保护、点击查看发言者、右键隐藏。"
             : mode == OverlayDisplayMode.List ? "只保存最近 100 条；临时交互时滚轮翻阅。仅可见行加载图片。"
             : mode == OverlayDisplayMode.Panel ? "收到新数据后更新固定面板，无持续动画；临时交互时滚轮查看其余名次。" : "";
