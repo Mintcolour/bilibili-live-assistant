@@ -34,7 +34,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
     private readonly NumberBox _danmaku = Number("普通弹幕保留条数", 500, 50, 2000);
     private readonly NumberBox _gifts = Number("礼物 / 上舰保留条数", 200, 20, 1000);
     private readonly NumberBox _sc = Number("SC 保留条数", 100, 20, 500);
-    private readonly NumberBox _interactions = Number("进房 / 关注保留条数（最多 15 条）", DashboardSettings.MaxInteractionCapacity, 1, DashboardSettings.MaxInteractionCapacity);
+    private readonly NumberBox _interactions = Number("互动保留条数（最多 15 条）", DashboardSettings.MaxInteractionCapacity, 1, DashboardSettings.MaxInteractionCapacity);
     private DashboardSettings _draft;
     private bool _loading;
     public event Action? Changed;
@@ -53,7 +53,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
             UiFactory.Subtitle("表情默认显示静态首帧。动画只在概览可见时播放；格式或帧数不适合播放时回退静态。桌面滚动弹幕使用静态图文缓存。"),
             new Expander { Header = "刷新与本次记录上限", HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel { Spacing = 10, Children = { _rankRefresh, _refresh, _danmaku, _gifts, _sc, _interactions,
-                    UiFactory.Subtitle("记录仅本次运行保留，切换房间后清空。进房 / 关注仅保留最近最多 15 条；其他消息达到上限先移除已读 / 已感谢记录，再移除最早记录。") } } },
+                    UiFactory.Subtitle("记录仅本次运行保留，切换房间后清空。进房、关注、点赞等互动仅保留最近最多 15 条；其他消息达到上限先移除已读 / 已感谢记录，再移除最早记录。") } } },
         }) Children.Add(child);
         Load(settings);
         SettingEvents.Watch(this, () => { if (!_loading) Changed?.Invoke(); });

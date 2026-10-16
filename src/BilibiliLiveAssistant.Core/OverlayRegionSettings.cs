@@ -87,7 +87,7 @@ public static class OverlayRegions
     public static string Title(OverlayRegionKind kind) => kind switch
     {
         OverlayRegionKind.Danmaku => "普通弹幕", OverlayRegionKind.Gift => "礼物 / 上舰",
-        OverlayRegionKind.SuperChat => "醒目留言 SC", OverlayRegionKind.Interaction => "进房 / 关注",
+        OverlayRegionKind.SuperChat => "醒目留言 SC", OverlayRegionKind.Interaction => "进房 / 互动",
         _ => "人数 / 高能榜",
     };
 

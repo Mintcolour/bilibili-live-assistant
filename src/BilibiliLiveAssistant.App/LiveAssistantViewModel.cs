@@ -461,6 +461,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 EntryEffect = new(HighlightColor: "#FFE96D") }));
         Example(new LiveEvent(LiveEventType.Enter, "新关注示例", "关注了主播", "#FF8AB3", 11,
             Appearance: new LiveMessageAppearance { AvatarUrl = entryAvatar }) { HistoryFields = new(InteractionKind: 2) });
+        Example(new LiveEvent(LiveEventType.Enter, "点赞示例", "为主播点赞了", "#FFAA78", 12,
+            Appearance: new LiveMessageAppearance { AvatarUrl = entryAvatar }) { HistoryFields = new(InteractionKind: 6) });
         var sample = new Dictionary<string, object?> { ["sample"] = true };
         Example(new LiveEvent(LiveEventType.Online, "示例系统", "示例人气：1234 · 看过：5678", "#2196F3", Metadata: sample));
         Example(new LiveEvent(LiveEventType.Rank, "示例系统", "高能榜: 1.示例观众甲 | 2.示例观众乙 | 3.示例观众丙", "#9C27B0",
@@ -539,8 +541,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (batch.Length > 0)
         {
             var accepted = new List<LiveEvent>(batch.Length);
-            foreach (var value in batch)
+            // Raw events have already been archived at ingress. Show only the
+            // latest like per existing UI refresh, without another timer/queue.
+            var lastLike = Array.FindLastIndex(batch, LiveInteractions.IsLike);
+            for (var index = 0; index < batch.Length; index++)
             {
+                var value = batch[index];
+                if (index != lastLike && LiveInteractions.IsLike(value)) continue;
                 var example = value.Extra.GetValueOrDefault("sample") is true;
                 if (!example && value.Type == LiveEventType.Online
                     && value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile liveProfile

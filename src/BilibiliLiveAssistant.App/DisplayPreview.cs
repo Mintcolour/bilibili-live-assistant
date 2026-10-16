@@ -142,7 +142,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         var effective = OverlayRegions.ForRendering(_region);
         _canvas.Height = Math.Max(280, y + (stationary && columns > 1 ? Math.Max(effective.CardHeight, effective.FontSize * 3 + 24) + 12 : 0)); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
         _hint.Text = stationary ? $"{OverlayRegions.ModeTitle(_region.Mode)} · 高度 {_region.CardHeight} px" + (_region.Mode == OverlayDisplayMode.Cards ? $" · 每条 {_region.DurationSeconds:0} 秒 / 上舰 {_region.GuardDurationSeconds:0} 秒 · 最多 {_region.MaxVisible} 张" : " · 无持续动画")
-            : kind == OverlayRegionKind.Interaction ? $"进房 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
+            : kind == OverlayRegionKind.Interaction ? $"进房／点赞 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
         var download = new CancellationTokenSource(); _downloads = download;
         var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)
@@ -175,7 +175,7 @@ internal static class PreviewSamples
         var type = kind switch { OverlayRegionKind.Gift => LiveEventType.Gift, OverlayRegionKind.SuperChat => LiveEventType.SuperChat,
             OverlayRegionKind.Interaction => LiveEventType.Enter, _ => LiveEventType.Danmaku };
         if (kind == OverlayRegionKind.Interaction) return [new(type, "关注观众", "关注了主播", "#FF8AB3", 1, Appearance: Appearance) { HistoryFields = new(InteractionKind: 2) },
-            new(type, "特别关注观众", "特别关注了主播", "#FF8AB3", 2, Appearance: Appearance) { HistoryFields = new(InteractionKind: 4) },
+            new(type, "点赞观众", "为主播点赞了", "#FFAA78", 2, Appearance: Appearance) { HistoryFields = new(InteractionKind: 6) },
             new(type, "进房观众", "进入了直播间", "#71C6A6", 3, Appearance: Appearance)];
         return new[] { new LiveEvent(type, "示例观众", kind == OverlayRegionKind.Gift ? "赠送 小心心 × 3" : kind == OverlayRegionKind.SuperChat ? "¥30 这是一条醒目留言 [热] 😊" : "这是一条带图片表情的弹幕 [热] 😊", "#FFFFFF", 1, Appearance: Appearance),
             new LiveEvent(LiveEventType.Danmaku, "大表情示例", "[图片表情]", "#FFFFFF", 2, Appearance: Appearance with

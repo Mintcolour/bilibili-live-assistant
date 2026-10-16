@@ -144,6 +144,7 @@ internal sealed class MessageCard : Grid, IDisposable
     {
         var message = record.Event;
         var follow = LiveInteractions.IsFollow(message);
+        var like = LiveInteractions.IsLike(message);
         var appearance = message.Appearance;
         var effect = appearance?.EntryEffect;
         Margin = new(0, 0, 0, Math.Min(style.MessageSpacing, 5));
@@ -166,7 +167,7 @@ internal sealed class MessageCard : Grid, IDisposable
         }
         var text = new RichTextBlock
         {
-            FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(follow ? "#FFD275" : effect?.TextColor ?? "#A7B1C2"),
+            FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.FontSize, Foreground = Brush(follow ? "#FFD275" : like ? "#FFBF98" : effect?.TextColor ?? "#A7B1C2"),
             TextWrapping = TextWrapping.Wrap, Opacity = style.TextOpacity, VerticalAlignment = VerticalAlignment.Center,
             LineHeight = style.FontSize * 1.25 + Math.Min(style.LineSpacing, 4),
         };
@@ -182,6 +183,7 @@ internal sealed class MessageCard : Grid, IDisposable
         if (!reusableEntry)
         {
             if (follow) AddBadge(paragraph, LiveInteractions.FollowLabel(message), "#AD3E6C", style.BadgeSize);
+            if (like) AddBadge(paragraph, "点赞", "#A75432", style.BadgeSize);
             if (style.ShowIdentity && appearance is not null)
             {
                 var guard = appearance.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" };
@@ -476,7 +478,9 @@ internal sealed class MessageCard : Grid, IDisposable
         } });
         paragraph.Inlines.Add(new Run { Text = " " });
     }
-    internal static long AvatarUid(LiveEvent value) => value.Extra.GetValueOrDefault("sample") is true ? 0 : value.Uid;
+    // Likes can arrive in bursts without faces. Keep supplied images, but do
+    // not add per-user profile requests just to decorate a short notification.
+    internal static long AvatarUid(LiveEvent value) => value.Extra.GetValueOrDefault("sample") is true || LiveInteractions.IsLike(value) ? 0 : value.Uid;
     internal static SolidColorBrush Brush(string hex, double opacity = 1)
     {
         return MessageVisualResources.Brush(hex, opacity);

@@ -132,6 +132,7 @@ internal static class OverlayMessageRenderer
         var rankMember = value.Extra.TryGetValue("rank_position", out var rankPosition);
         var entry = value.Type == LiveEventType.Enter && !string.IsNullOrEmpty(value.Username);
         var follow = LiveInteractions.IsFollow(value);
+        var like = LiveInteractions.IsLike(value);
         if (entry) card = false;
         maxHeight = Math.Max(36, maxHeight);
         var maxWidth = Math.Clamp(width > 0 ? width : rankMember ? 3000 : 4096, 24, 7680);
@@ -172,6 +173,7 @@ internal static class OverlayMessageRenderer
             }
             startX = x;
             if (follow) Badge(LiveInteractions.FollowLabel(value), OverlayTextRenderer.Color("#AD3E6C"));
+            if (like) Badge("点赞", OverlayTextRenderer.Color("#A75432"));
             if (rankMember) Badge($"#{rankPosition}", accent);
             if (card || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), accent);
             if (entry && style.ShowIdentity && value.Appearance is { GuardLevel: 0, WealthLevel: > 0, EntryEffect: { } entryEffect } wealth)
@@ -205,7 +207,7 @@ internal static class OverlayMessageRenderer
             foreach (var segment in RichMessageSegments.Split(content, value.Appearance))
             {
                 if (stop) break;
-                if (segment.Emote is not { } emote) { Text(segment.Text, bodyFont, OverlayTextRenderer.Color(follow ? "#FFD275" : entry ? value.Appearance?.EntryEffect?.TextColor ?? "#B2BDCD" : card ? style.TextColor : region.Color, style.TextOpacity)); continue; }
+                if (segment.Emote is not { } emote) { Text(segment.Text, bodyFont, OverlayTextRenderer.Color(follow ? "#FFD275" : like ? "#FFBF98" : entry ? value.Appearance?.EntryEffect?.TextColor ?? "#B2BDCD" : card ? style.TextColor : region.Color, style.TextOpacity)); continue; }
                 var large = value.Appearance?.FullEmote is not null;
                 var aspect = Math.Max(1f, emote.Width) / Math.Max(1, emote.Height);
                 var h = Math.Min(large ? region.LargeEmoteHeight : region.EmoteSize, Math.Max(0, maxHeight - y - pad));
@@ -397,7 +399,7 @@ internal static class OverlayMessageRenderer
         using var graphics = Graphics.FromImage(bitmap);
         var accent = OverlayTextRenderer.Color(region.Color);
         DrawBackground(graphics, bitmap.Size, region, accent);
-        OverlayTextRenderer.Draw(graphics, "近期进房 / 关注", titleFont, new(pad, 10), accent, false);
+        OverlayTextRenderer.Draw(graphics, "近期互动", titleFont, new(pad, 10), accent, false);
         var y = 32;
         for (var i = 0; i < shown; i++)
         {
@@ -421,7 +423,7 @@ internal static class OverlayMessageRenderer
     {
         LiveEventType.Gift => "礼物", LiveEventType.Guard => "上舰", LiveEventType.SuperChat => "SC" + Price(value)
             + (value.Extra.TryGetValue("scroll_part", out var part) && part is string { Length: > 0 } ? $" · {part}" : ""),
-        LiveEventType.Enter => "进房 / 关注", LiveEventType.Online => "房间人气", LiveEventType.Rank => "高能榜", _ => "弹幕",
+        LiveEventType.Enter => "进房 / 互动", LiveEventType.Online => "房间人气", LiveEventType.Rank => "高能榜", _ => "弹幕",
     };
     private static string Price(LiveEvent value)
     {

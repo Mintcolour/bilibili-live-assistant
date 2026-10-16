@@ -101,7 +101,7 @@ internal sealed class OverlayEditorPreview : IDisposable
             OverlayRegionKind.Gift => [Sample(LiveEventType.Gift, "礼物示例", "赠送 小心心 × 3"), Sample(LiveEventType.Guard, "上舰示例", "开通 舰长 × 1", 2)],
             OverlayRegionKind.SuperChat => [Sample(LiveEventType.SuperChat, "SC 示例", "¥30 这是一条醒目留言，谢谢陪伴 😊")],
             OverlayRegionKind.Interaction => [Sample(LiveEventType.Enter, "新关注示例", "关注了主播") with { HistoryFields = new(InteractionKind: 2) },
-                Sample(LiveEventType.Enter, "特别关注示例", "特别关注了主播", 2) with { HistoryFields = new(InteractionKind: 4) },
+                Sample(LiveEventType.Enter, "点赞示例", "为主播点赞了", 2) with { HistoryFields = new(InteractionKind: 6) },
                 Sample(LiveEventType.Enter, "进房示例", "进入了直播间", 3)],
             _ => [Sample(LiveEventType.Danmaku, "弹幕示例", "这是一条普通弹幕，预览字体和大小 😊"), Sample(LiveEventType.Danmaku, "观众示例", "一起享受直播时光！", 2)],
         };
