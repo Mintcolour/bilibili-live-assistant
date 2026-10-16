@@ -42,4 +42,9 @@
     <Content Include="../../scripts/analyze-performance.ps1" Link="tools/analyze-performance.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Obs\index.html" />
+    <EmbeddedResource Include="Obs\overlay.js" />
+    <EmbeddedResource Include="Obs\overlay.css" />
+  </ItemGroup>
 </Project>

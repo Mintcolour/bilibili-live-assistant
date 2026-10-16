@@ -33,6 +33,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private AppSettings _settings;
     internal ILocalHistory History { get; }
     internal PerformanceLog Diagnostics { get; }
+    internal CompactOverlayController CompactOverlay { get; }
     internal Func<object>? WindowDiagnostics { get; set; }
     private HistoryContext? _historyContext;
     private EventHandler<LiveEvent>? _networkHandler;
@@ -108,7 +109,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         try { historySettings = (settings.History ?? new()).Normalize(); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
         { historySettings = new(); _historyConfigurationWarning = "存档目录配置无效，已使用默认目录；请在可视化设置中重新保存目录。"; }
-        _settings = settings with { Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
+        _settings = settings with { Compact = (settings.Compact ?? new()).Normalize(), PriceDurations = (settings.PriceDurations ?? new()).Normalize(), Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = historySettings };
         Dashboard.Cleared += CardBoard.Clear;
         _store = store;
@@ -127,6 +128,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         History.StatusChanged += OnHistoryStatus;
         _client.StatusChanged += OnStatus;
         Diagnostics = new(_dispatcher, CapturePerformanceSnapshot);
+        CompactOverlay = new(this, _dispatcher);
     }
 
     internal object CapturePerformanceSnapshot()
@@ -137,6 +139,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
             roomResources = new { resets = _resourceResets, reason = _lastResetReason, offline = _roomOffline },
             received = ReceivedEventCount, pending = _pendingEvents.Count, bufferDropped = BufferedDroppedCount,
             overlayDropped = OverlayDroppedCount, overlayMedia = _overlayMediaCount,
+            compact = CompactOverlay.GetDiagnostics(),
             dashboard = new { danmaku = Dashboard.Danmaku.Count, gifts = Dashboard.Gifts.Count,
                 sc = Dashboard.SuperChats.Count, interactions = Dashboard.Interactions.Count, events = Events.Count },
             images = Images.GetDiagnostics(), avatars = Images.Avatars.GetDiagnostics(), imageResources = ImageResourceCounters.Snapshot(), uiImages = UiImages.GetDiagnostics(), media = Media.GetDiagnostics(),
@@ -243,6 +246,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         finally { _connectionGate.Release(); }
     }
 
+    internal async Task UpdateCompactAsync(Func<CompactOverlaySettings, CompactOverlaySettings> update)
+    {
+        await _connectionGate.WaitAsync();
+        try { await SaveCoreAsync(_settings with { Compact = update(_settings.Compact).Normalize() }); }
+        finally { _connectionGate.Release(); }
+    }
+
     internal async Task LockOverlayLayoutAsync()
     {
         await _connectionGate.WaitAsync();
@@ -262,7 +272,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private async Task SaveCoreAsync(AppSettings settings)
     {
         var previous = _settings;
-        settings = settings with { History = (settings.History ?? new()).Normalize() };
+        settings = settings with { Compact = (settings.Compact ?? new()).Normalize(), PriceDurations = (settings.PriceDurations ?? new()).Normalize(), History = (settings.History ?? new()).Normalize() };
         var directoryChanged = !string.Equals(previous.History.EffectiveDirectory, settings.History.EffectiveDirectory, StringComparison.OrdinalIgnoreCase);
         if (directoryChanged && _monitorRequested) throw new InvalidOperationException("更换存档目录前请先停止监视");
         if (directoryChanged) await History.MoveAsync(settings.History.EffectiveDirectory, CancellationToken.None);
@@ -631,6 +641,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        await CompactOverlay.DisposeAsync();
         await Diagnostics.DisposeAsync(); WindowDiagnostics = null;
         _authTimer.Stop(); await AccountSync.DisposeAsync();
         _eventTimer.Stop();
