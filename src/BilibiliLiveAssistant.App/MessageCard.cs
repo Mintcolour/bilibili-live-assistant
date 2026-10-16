@@ -67,7 +67,7 @@ internal sealed class MessageCard : Grid, IDisposable
         var layout = new Grid { ColumnSpacing = 10 };
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        if (style.ShowAvatars)
+        if (style.ShowsAvatar(message))
         {
             var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, style.AvatarSize, style.AvatarSize, false, animations, visible, true, avatarUid: AvatarUid(message));
             avatar.VerticalAlignment = VerticalAlignment.Top; _images.Add(avatar); layout.Children.Add(avatar);
@@ -132,7 +132,7 @@ internal sealed class MessageCard : Grid, IDisposable
         var layout = new Grid { ColumnSpacing = 7 };
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        if (style.ShowAvatars)
+        if (style.ShowsAvatar(message))
         {
             var size = Math.Clamp(style.AvatarSize, 28, 40);
             var frame = style.ShowIdentity && appearance?.AvatarFrameUrl is { Length: > 0 };
@@ -268,7 +268,7 @@ internal sealed class MessageCard : Grid, IDisposable
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        if (style.ShowAvatars)
+        if (style.ShowsAvatar(message))
         {
             var size = Math.Clamp(style.AvatarSize, 24, 32);
             var avatar = new BiliImageView(vm.Images, message.Appearance?.AvatarUrl ?? "", message.Username, size, size, false, animations, visible, true, avatarUid: AvatarUid(message));

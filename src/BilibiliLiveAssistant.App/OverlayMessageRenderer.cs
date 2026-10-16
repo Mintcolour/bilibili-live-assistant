@@ -66,7 +66,7 @@ internal static class OverlayMessageRenderer
 
     internal static async Task<LiveEvent> ResolveAvatarAsync(LiveEvent value, DashboardSettings style, BiliImageCache cache, CancellationToken cancellation)
     {
-        if (!style.ShowAvatars || MessageCard.AvatarUid(value) <= 0 || BiliImageCache.NormalizeUrl(value.Appearance?.AvatarUrl) is not null) return value;
+        if (!style.ShowsAvatar(value) || MessageCard.AvatarUid(value) <= 0 || BiliImageCache.NormalizeUrl(value.Appearance?.AvatarUrl) is not null) return value;
         var avatar = await cache.Avatars.ResolveAsync(value.Uid, value.Appearance?.AvatarUrl, cancellation);
         return avatar.Length == 0 ? value : value with { Appearance = (value.Appearance ?? new()) with { AvatarUrl = avatar } };
     }
@@ -81,8 +81,8 @@ internal static class OverlayMessageRenderer
                 foreach (var url in ImageUrls(OverlayBulletinRenderer.MemberEvent(member, value.Color), style)) yield return url;
             yield break;
         }
-        if (style.ShowAvatars && value.Appearance?.AvatarUrl is { Length: > 0 } avatar) yield return avatar;
-        if (style.ShowAvatars && style.ShowIdentity && value.Appearance?.AvatarFrameUrl is { Length: > 0 } frame) yield return frame;
+        if (style.ShowsAvatar(value) && value.Appearance?.AvatarUrl is { Length: > 0 } avatar) yield return avatar;
+        if (style.ShowsAvatar(value) && style.ShowIdentity && value.Appearance?.AvatarFrameUrl is { Length: > 0 } frame) yield return frame;
         if (style.ShowIdentity && value.Appearance?.InteractionIconUrl is { Length: > 0 } icon) yield return icon;
         if (style.ShowIdentity && value.Appearance?.EntryEffect?.BadgeUrl is { Length: > 0 } badge) yield return badge;
         if (value.Appearance?.EntryEffect?.BackgroundUrl is { Length: > 0 } background) yield return background;
@@ -100,6 +100,7 @@ internal static class OverlayMessageRenderer
         if (!card && value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
             return OverlayBulletinRenderer.Render(bulletin, background ? region : region with { BackgroundOpacity = 0 }, style, cache, maxHeight);
         style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };
+        var showAvatar = style.ShowsAvatar(value);
         var rankMember = value.Extra.TryGetValue("rank_position", out var rankPosition);
         var entry = value.Type == LiveEventType.Enter && !string.IsNullOrEmpty(value.Username);
         var follow = LiveInteractions.IsFollow(value);
@@ -114,13 +115,13 @@ internal static class OverlayMessageRenderer
         using var badgeFont = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(8, Math.Min(15 * (float)region.ContentScale, region.FontSize * 0.5f)), true);
         using var measureImage = new Bitmap(1, 1);
         using var measure = Graphics.FromImage(measureImage);
-        var framedAvatar = style.ShowIdentity && value.Appearance?.AvatarFrameUrl is { Length: > 0 };
-        var rowHeight = Math.Max(bodyFont.GetHeight(measure) + Math.Clamp(style.LineSpacing, 3, 10), style.ShowAvatars && !system ? Math.Min(style.AvatarSize, region.FontSize + 10) + (framedAvatar ? 6 : 0) : 0);
+        var framedAvatar = showAvatar && style.ShowIdentity && value.Appearance?.AvatarFrameUrl is { Length: > 0 };
+        var rowHeight = Math.Max(bodyFont.GetHeight(measure) + Math.Clamp(style.LineSpacing, 3, 10), showAvatar && !system ? Math.Min(style.AvatarSize, region.FontSize + 10) + (framedAvatar ? 6 : 0) : 0);
         var hasInlineEmotes = value.Appearance is { FullEmote: null } appearance && appearance.Emotes.Any(emote =>
             !string.IsNullOrEmpty(emote.Token) && value.Content.Contains(emote.Token, StringComparison.Ordinal));
         if (hasInlineEmotes) rowHeight = Math.Max(rowHeight, region.EmoteSize);
         if (!card && value.Appearance?.FullEmote is not null) rowHeight = Math.Max(rowHeight, region.LargeEmoteHeight);
-        var headerHeight = card ? Math.Max(nameFont.GetHeight(measure) + 8, style.ShowAvatars && !system ? Math.Min(style.AvatarSize, region.FontSize + 12) : 0) : rowHeight;
+        var headerHeight = card ? Math.Max(nameFont.GetHeight(measure) + 8, showAvatar && !system ? Math.Min(style.AvatarSize, region.FontSize + 12) : 0) : rowHeight;
         var pieces = new List<Piece>();
         var images = new Dictionary<string, Bitmap?>();
         var x = (float)pad; var y = (float)pad;
@@ -132,7 +133,7 @@ internal static class OverlayMessageRenderer
         var stop = false;
         try
         {
-            if (style.ShowAvatars && !system)
+            if (showAvatar && !system)
             {
                 var size = Math.Max(16, Math.Min(style.AvatarSize, (int)headerHeight - (framedAvatar ? 6 : 0)));
                 var bounds = new RectangleF(x + (framedAvatar ? 3 : 0), y + (headerHeight - size) / 2, size, size);

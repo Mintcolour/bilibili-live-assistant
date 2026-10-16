@@ -2,6 +2,9 @@ namespace BilibiliLiveAssistant.Core;
 
 public static class LiveInteractions
 {
+    public static bool IsEntry(LiveEvent value) => value.Type == LiveEventType.Enter
+        && value.HistoryFields?.InteractionKind is null or 1;
+
     // Trust the parsed upstream interaction kind, never a nickname or body match.
     public static bool IsFollow(LiveEvent value) => value.Type == LiveEventType.Enter
         && value.HistoryFields?.InteractionKind is 2 or 4 or 5;

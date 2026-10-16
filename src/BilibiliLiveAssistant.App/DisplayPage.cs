@@ -26,6 +26,7 @@ internal sealed class DisplayPage : Page
     private readonly ToggleSwitch _locked = new() { Header = "锁定实际窗口位置" };
     private readonly HashSet<OverlayRegionKind> _layoutDirty = new();
     private readonly CheckBox _avatars = new() { Content = "头像" }, _medals = new() { Content = "粉丝牌" }, _identity = new() { Content = "身份徽章" };
+    private readonly CheckBox _entryAvatars = new() { Content = "加载进房头像与头像框（不影响关注提醒）" };
     private readonly StackPanel _shared = new() { Spacing = 8 };
     private readonly ComboBox _frameRate = new() { Header = "滚动帧率", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly SettingSlider _tracks = new("普通弹幕最多轨道", 8, 1, 24);
@@ -60,6 +61,7 @@ internal sealed class DisplayPage : Page
         _columns.Children.Add(new ScrollViewer { Content = previewContent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         _shared.Children.Add(new TextBlock { Text = "共享图文元素", FontSize = 13 });
         _shared.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _avatars, _medals, _identity } });
+        _shared.Children.Add(_entryAvatars);
         foreach (var (label, rate) in new[] { ("30 FPS · 省电", 30), ("60 FPS · 平衡", 60), ("120 FPS", 120), ("跟随屏幕", 0) }) _frameRate.Items.Add(new ComboBoxItem { Content = label, Tag = rate });
         var properties = new StackPanel { Spacing = 12, Children = { _dashboard, _mediaEditor, _cardEditor, _historyEditor, _enabled, _shared, _editor, _tracks, _frameRate, _locked, _poll } };
         var propertiesScroll = new ScrollViewer { Content = properties, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; Grid.SetColumn(propertiesScroll, 1); _columns.Children.Add(propertiesScroll);
@@ -160,6 +162,8 @@ internal sealed class DisplayPage : Page
         _frameRate.Visibility = _selected is not null and not OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
         _locked.Visibility = _selected is null ? Visibility.Collapsed : Visibility.Visible;
         _avatars.IsChecked = _dashboardDraft.ShowAvatars; _medals.IsChecked = _dashboardDraft.ShowMedals; _identity.IsChecked = _dashboardDraft.ShowIdentity;
+        _entryAvatars.IsChecked = _dashboardDraft.ShowEntryAvatars;
+        _entryAvatars.Visibility = _selected == OverlayRegionKind.Interaction ? Visibility.Visible : Visibility.Collapsed;
         if (_selected is { } kind) { _editor.Load(kind, _drafts[kind]); _enabled.IsOn = OverlayRegions.Enabled(_displayDraft, kind); }
         else if (_feature == "media") _mediaEditor.Load(_mediaDraft);
         else if (_feature == "cards") _cardEditor.Load(_cardDraft);
@@ -178,7 +182,7 @@ internal sealed class DisplayPage : Page
             var previous = _drafts[kind]; var next = _editor.Read(previous) with { Enabled = _enabled.IsOn }; _drafts[kind] = next;
             if (previous.X != next.X || previous.Y != next.Y || previous.Width != next.Width || previous.Height != next.Height) _layoutDirty.Add(kind);
             _displayDraft = OverlayRegions.WithEnabled(_displayDraft, kind, _enabled.IsOn);
-            _dashboardDraft = _dashboardDraft with { ShowAvatars = _avatars.IsChecked == true, ShowMedals = _medals.IsChecked == true, ShowIdentity = _identity.IsChecked == true };
+            _dashboardDraft = _dashboardDraft with { ShowAvatars = _avatars.IsChecked == true, ShowEntryAvatars = _entryAvatars.IsChecked == true, ShowMedals = _medals.IsChecked == true, ShowIdentity = _identity.IsChecked == true };
         }
         else _dashboardDraft = _dashboard.Read(_dashboardDraft);
         _displayDraft = _displayDraft with { LayoutLocked = _locked.IsOn, MaxTracks = (int)_tracks.Value, AnimationFrameRate = (_frameRate.SelectedItem as ComboBoxItem)?.Tag is int rate ? rate : 60 };

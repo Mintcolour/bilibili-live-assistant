@@ -20,6 +20,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
     private readonly SettingSlider _padding = new("消息内边距", 12, 0, 32, " px");
     private readonly SettingSlider _radius = new("气泡圆角", 8, 0, 32, " px");
     private readonly CheckBox _avatars = new() { Content = "显示头像（缺失时显示占位）" };
+    private readonly CheckBox _entryAvatars = new() { Content = "加载进房头像与头像框（不影响关注提醒）" };
     private readonly CheckBox _medals = new() { Content = "显示粉丝牌" };
     private readonly CheckBox _identity = new() { Content = "显示舰长 / 提督 / 总督 / 房管标识" };
     private readonly CheckBox _animation = new() { Content = "播放动态表情（最多同时 4 个，最高 10 帧/秒）" };
@@ -48,7 +49,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
         foreach (var child in new UIElement[] { _preset, apply, _font, _size, _nameSize, _textColor, _nameColor, _background, _textOpacity, _backgroundOpacity,
             new Expander { Header = "排版与图文尺寸", HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel { Spacing = 10, Children = { _lines, _spacing, _padding, _radius, _avatarSize, _badgeSize, _emoteSize, _largeEmote } } },
-            _compact, _avatars, _medals, _identity, _animation,
+            _compact, _avatars, _entryAvatars, _medals, _identity, _animation,
             UiFactory.Subtitle("表情默认显示静态首帧。动画只在概览可见时播放；格式或帧数不适合播放时回退静态。桌面滚动弹幕使用静态图文缓存。"),
             new Expander { Header = "刷新与本次记录上限", HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel { Spacing = 10, Children = { _rankRefresh, _refresh, _danmaku, _gifts, _sc, _interactions,
@@ -67,6 +68,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
         _textOpacity.Value = settings.TextOpacity * 100; _backgroundOpacity.Value = settings.BackgroundOpacity * 100;
         _lines.Value = settings.LineSpacing; _spacing.Value = settings.MessageSpacing; _padding.Value = settings.Padding; _radius.Value = settings.CornerRadius;
         _avatars.IsChecked = settings.ShowAvatars; _medals.IsChecked = settings.ShowMedals; _identity.IsChecked = settings.ShowIdentity; _animation.IsChecked = settings.AnimateEmotes;
+        _entryAvatars.IsChecked = settings.ShowEntryAvatars;
         _compact.IsChecked = settings.CompactMessages;
         _avatarSize.Value = settings.AvatarSize; _badgeSize.Value = settings.BadgeSize; _emoteSize.Value = settings.EmoteSize; _largeEmote.Value = settings.LargeEmoteHeight;
         _refresh.Value = settings.RefreshIntervalMs; _danmaku.Value = settings.DanmakuCapacity; _gifts.Value = settings.GiftCapacity; _sc.Value = settings.SuperChatCapacity; _interactions.Value = settings.InteractionCapacity;
@@ -80,6 +82,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
             TextColor = _textColor.Text.Trim(), UsernameColor = _nameColor.Text.Trim(), BackgroundColor = _background.Text.Trim(), TextOpacity = _textOpacity.Value / 100, BackgroundOpacity = _backgroundOpacity.Value / 100,
             LineSpacing = Value(_lines, 4), MessageSpacing = Value(_spacing, 8), Padding = Value(_padding, 12), CornerRadius = Value(_radius, 8),
             ShowAvatars = _avatars.IsChecked == true, ShowMedals = _medals.IsChecked == true, ShowIdentity = _identity.IsChecked == true, AnimateEmotes = _animation.IsChecked == true,
+            ShowEntryAvatars = _entryAvatars.IsChecked == true,
             CompactMessages = _compact.IsChecked == true,
             AvatarSize = Value(_avatarSize, 36), BadgeSize = Value(_badgeSize, 12), EmoteSize = Value(_emoteSize, 28), LargeEmoteHeight = Value(_largeEmote, 100), RefreshIntervalMs = Value(_refresh, 250),
             RankRefreshSeconds = Value(_rankRefresh, 60),

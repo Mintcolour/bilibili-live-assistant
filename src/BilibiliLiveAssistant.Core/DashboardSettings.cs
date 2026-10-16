@@ -21,6 +21,7 @@ public sealed record DashboardSettings
     public int EmoteSize { get; init; } = 28;
     public int LargeEmoteHeight { get; init; } = 100;
     public bool ShowAvatars { get; init; } = true;
+    public bool ShowEntryAvatars { get; init; } = true;
     public bool ShowMedals { get; init; } = true;
     public bool ShowIdentity { get; init; } = true;
     public bool AnimateEmotes { get; init; }
@@ -47,8 +48,12 @@ public sealed record DashboardSettings
         TextOpacity == other.TextOpacity && BackgroundOpacity == other.BackgroundOpacity &&
         LineSpacing == other.LineSpacing && MessageSpacing == other.MessageSpacing && Padding == other.Padding && CornerRadius == other.CornerRadius &&
         AvatarSize == other.AvatarSize && BadgeSize == other.BadgeSize && EmoteSize == other.EmoteSize && LargeEmoteHeight == other.LargeEmoteHeight &&
-        ShowAvatars == other.ShowAvatars && ShowMedals == other.ShowMedals && ShowIdentity == other.ShowIdentity &&
+        ShowAvatars == other.ShowAvatars && ShowEntryAvatars == other.ShowEntryAvatars && ShowMedals == other.ShowMedals && ShowIdentity == other.ShowIdentity &&
         AnimateEmotes == other.AnimateEmotes && CompactMessages == other.CompactMessages;
+
+    // Older entry events have no interaction kind. Explicit follows, shares and
+    // likes keep the global avatar policy; only room entries use this switch.
+    public bool ShowsAvatar(LiveEvent message) => ShowAvatars && (ShowEntryAvatars || !LiveInteractions.IsEntry(message));
 
     public DashboardSettings Normalize() => this with
     {

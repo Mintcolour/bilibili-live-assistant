@@ -403,6 +403,20 @@ public abstract class OverlaySurface : Forms.Form
             _editorMenu.Items.Add(item);
         }
         _editorMenu.Items.Add(new Forms.ToolStripSeparator());
+        if (Kind == OverlayRegionKind.Interaction)
+        {
+            var avatars = new Forms.ToolStripMenuItem("加载进房头像与头像框") { Checked = ViewModel.Settings.Dashboard.ShowEntryAvatars };
+            avatars.Click += async (_, _) =>
+            {
+                try
+                {
+                    var current = ViewModel.Settings;
+                    await ViewModel.SaveAsync(current with { Dashboard = current.Dashboard with { ShowEntryAvatars = !current.Dashboard.ShowEntryAvatars } });
+                }
+                catch (Exception ex) { ViewModel.ReportSettingsError("保存进房头像设置失败：" + ex.Message); }
+            };
+            _editorMenu.Items.Add(avatars);
+        }
         var appearance = new Forms.ToolStripMenuItem("大小、透明度、背景与时间…");
         appearance.Click += async (_, _) => { await SaveInlineAsync(); if (!IsDisposed && Visible && Editing) OpenQuickEditor(); }; _editorMenu.Items.Add(appearance);
         AddEditorMenuItems(_editorMenu);
