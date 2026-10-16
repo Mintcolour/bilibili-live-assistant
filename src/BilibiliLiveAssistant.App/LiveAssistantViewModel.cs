@@ -440,6 +440,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     public void SendDisplayExamples()
     {
+        if (_settings.Compact.DesktopEnabled)
+        {
+            // Compact examples belong to its local editor, never the shared OBS timeline.
+            if (!OverlayInteractive) ToggleOverlayInteraction();
+            return;
+        }
         void Example(LiveEvent value) => OnEvent(this, value with
             { Metadata = new Dictionary<string, object?>(value.Extra) { ["sample"] = true } });
         var small = new LiveEmote("[热]", "https://i0.hdslb.com/bfs/live/6df760280b17a6cbac8c1874d357298f982ba4cf.png", 20, 20);
