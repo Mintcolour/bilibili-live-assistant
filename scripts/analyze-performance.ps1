@@ -88,8 +88,18 @@ $phases = foreach ($segment in $segments) {
         Samples = $rows.Count; SpanSeconds = [math]::Round($seconds, 1)
         CpuP50 = Percentile @($rows.cpuPercent) 0.5; CpuP95 = Percentile @($rows.cpuPercent) 0.95; CpuMax = Percentile @($rows.cpuPercent) 1
         PrivatePeakMiB = [math]::Round(($rows | Measure-Object privateBytes -Maximum).Maximum / 1MB, 2)
+        PrivateWorkingSetSamples = @($rows | Where-Object { $null -ne $_.privateWorkingSetBytes }).Count
+        PrivateWorkingSetPeakMiB = $(
+            $peak = Optional-Peak @($rows | ForEach-Object { $_.privateWorkingSetBytes })
+            if ($null -ne $peak) { [math]::Round($peak / 1MB, 2) } else { $null })
+        PrivateWorkingSetMiBPerMinute = $(
+            $measured = @($rows | Where-Object { $null -ne $_.privateWorkingSetBytes })
+            Growth $measured 'privateWorkingSetBytes')
         WorkingSetPeakMiB = [math]::Round(($rows | Measure-Object workingSetBytes -Maximum).Maximum / 1MB, 2)
         ManagedPeakMiB = [math]::Round(($rows | Measure-Object managedBytes -Maximum).Maximum / 1MB, 2)
+        GcHeapPeakBytes = Optional-Peak @($rows | ForEach-Object { $_.gcHeapBytes })
+        GcFragmentedPeakBytes = Optional-Peak @($rows | ForEach-Object { $_.gcFragmentedBytes })
+        GcCommittedPeakBytes = Optional-Peak @($rows | ForEach-Object { $_.gcCommittedBytes })
         PrivateMiBPerMinute = Growth $rows 'privateBytes'; ManagedMiBPerMinute = Growth $rows 'managedBytes'
         AllocatedMiBPerSecond = $(if ($allSeconds -gt 0) { [math]::Round(($rows | Measure-Object allocatedBytes -Sum).Sum / 1MB / $allSeconds, 3) } else { $null })
         EventsPerSecond = $(if ($seconds -gt 0) { [math]::Round($received / $seconds, 2) } else { $null })
@@ -101,6 +111,11 @@ $phases = foreach ($segment in $segments) {
         ImageEvictedDelta = Get-Delta $rows { param($r) $r.ui.images.evicted }
         ImageDiskHitsDelta = Get-Delta $rows { param($r) $r.ui.images.diskHits }
         ImageNetworkRequestsDelta = Get-Delta $rows { param($r) $r.ui.images.networkRequests }
+        ImageNetworkBytesDelta = Get-Delta $rows { param($r) $r.ui.images.networkBytes }
+        ImageDiskBytesDelta = Get-Delta $rows { param($r) $r.ui.images.diskBytes }
+        ImageRawBodyBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.images.rawBodyBytesPeak })
+        ImageExactLengthReadsDelta = Get-Delta $rows { param($r) $r.ui.images.exactLengthReads }
+        ImageUnknownLengthReadsDelta = Get-Delta $rows { param($r) $r.ui.images.unknownLengthReads }
         ImageFrameHitsDelta = Get-Delta $rows { param($r) $r.ui.images.frameHits }
         ImageFrameMissesDelta = Get-Delta $rows { param($r) $r.ui.images.frameMisses }
         StaticPixelBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.images.staticPixelBytes })
@@ -152,6 +167,8 @@ $phases = foreach ($segment in $segments) {
 }
 $report = [pscustomobject]@{ Session = $Session; Samples = $ordered.Count; SkippedPartialLines = $skipped
     Notes = @('CPU 为本进程按可用逻辑处理器数归一化的百分比；不含 BrowserHost/浏览器。',
+        'privateBytes 为私有提交量，workingSetBytes 为包含共享页的总工作集；schema 4 新增 privateWorkingSetBytes，才对应本轮任务管理器内存验收口径。旧日志缺失时返回 null，不以其他指标替代。',
+        'gcGenerations 为最近一次 GC 后的分代观测，索引 0–2 为普通代、3 为 LOH、4 为 POH；不是当前时刻的逐对象内存清单。图片读入字节累计值用于分析分配压力，不代表常驻内存。',
         '内存增长率至少 3 个点，仅作定位线索；缓存预热、GC 和原生内存都会影响，不能直接认定泄漏。',
         'timings 为 UI 脉冲间的区间统计；嵌套测量会重叠，不要相加当作 CPU。frameGap 是回调间隔，不是屏幕实际呈现帧率。',
         'schema 3 的 uiImages 内，active、idle、reserved 的显示源及估算字节互斥；reserved 为创建完成、尚未发出租约的资源。',

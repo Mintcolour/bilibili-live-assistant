@@ -92,6 +92,15 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
                 var nextCpu = process.TotalProcessorTime;
                 var nextAllocated = GC.GetTotalAllocatedBytes(false);
                 var gc = GC.GetGCMemoryInfo(); // Latest GC observation, not a forced collection.
+                var native = new ProcessMemoryCounters { Size = (uint)Marshal.SizeOf<ProcessMemoryCounters>() };
+                var hasNativeMemory = GetProcessMemoryInfo(process.Handle, ref native, native.Size);
+                var generations = new object[gc.GenerationInfo.Length];
+                for (var i = 0; i < generations.Length; i++)
+                {
+                    var generation = gc.GenerationInfo[i];
+                    generations[i] = new { generation = i, sizeAfterBytes = generation.SizeAfterBytes,
+                        fragmentedAfterBytes = generation.FragmentationAfterBytes };
+                }
                 var ui = Volatile.Read(ref _ui);
                 // Timings belong to this pulse, never repeat them while the UI is stalled.
                 var fresh = ui is not null && ui.At != lastUiAt;
@@ -101,7 +110,10 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
                     kind = "sample", session, scenario = Scenario, utc = DateTimeOffset.UtcNow, uptimeSeconds = Stopwatch.GetElapsedTime(start, now).TotalSeconds,
                     intervalSeconds = elapsed, cpuPercent = (nextCpu - cpu).TotalSeconds / elapsed / Environment.ProcessorCount * 100,
                     workingSetBytes = process.WorkingSet64, privateBytes = process.PrivateMemorySize64,
+                    privateWorkingSetBytes = hasNativeMemory ? (ulong?)native.PrivateWorkingSetSize : null,
                     managedBytes = GC.GetTotalMemory(false), gcHeapBytes = gc.HeapSizeBytes, gcFragmentedBytes = gc.FragmentedBytes,
+                    gcCommittedBytes = gc.TotalCommittedBytes, gcGenerations = generations,
+                    gcFinalizationPending = gc.FinalizationPendingCount,
                     allocatedBytes = Math.Max(0, nextAllocated - allocated), gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
                     threads = process.Threads.Count, handles = process.HandleCount,
                     gdiObjects = GetGuiResources(process.Handle, 0), userObjects = GetGuiResources(process.Handle, 1),
@@ -140,7 +152,7 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
             await writer.FlushAsync(token).ConfigureAwait(false);
             length += Encoding.UTF8.GetByteCount(line) + 1;
         }
-        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 3, session, utc = DateTimeOffset.UtcNow,
+        Task HeaderAsync() => WriteAsync(JsonSerializer.Serialize(new { kind = "header", schema = 4, session, utc = DateTimeOffset.UtcNow,
             version = typeof(App).Assembly.GetName().Version?.ToString(),
             build = typeof(App).Assembly.GetCustomAttributes(false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion,
             logicalProcessors = Environment.ProcessorCount, sampleSeconds = 5, processScope = "app-only",
@@ -178,4 +190,18 @@ internal sealed class PerformanceLog(DispatcherQueue dispatcher, Func<object> sn
         Changed = null;
     }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
+    // PROCESS_MEMORY_COUNTERS_EX2 from the Windows SDK. Older Windows may not
+    // support this size: keep the metric null rather than substituting commit.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessMemoryCounters
+    {
+        public uint Size, PageFaultCount;
+        public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+            QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage,
+            PrivateUsage, PrivateWorkingSetSize;
+        public ulong SharedCommitUsage;
+    }
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
