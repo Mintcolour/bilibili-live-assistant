@@ -103,3 +103,7 @@ v11短测已结束：外部峰值152.55 MiB，绝对160 MiB超限为0；分配�
 停止／停播／同房保留、换房清空断言均通过。最终隐藏20秒后noActiveViews、noLeases、noPending、noSources均为true，显示源创建／释放为2035／2035，正文暂存字节与待上传归零；不能据此声称进程内存全部返还系统。
 
 用户要求本轮先收尾并发布实际试用，因此不再启动后续长测。最终候选发布目录为`artifacts/releases/runtime-resource-budget-v12`，继承`runtime-image-buffers`设置；真实使用、完整一小时及160 MiB死线仍未验收，不将旧性能目标标为达标。
+
+## 最终发布核对
+
+源码提交`9621001`已完成正式Release x64发布，未启动App或BrowserHost。`verify-local-history-release.ps1`核对通过：AMD64、PerMonitorV2、SQLite 8.0.32、三份ReadyToRun程序集、BrowserHost、设置继承字节一致；两份WinUI DLL与v12隔离构建一致。主ZIP 952项、扩展ZIP 7项，逐项哈希匹配且排除用户设置、历史库和诊断日志。EXE SHA256为`EC92AD43761E5C67BE0D07E1D2AAC751CAA29BB0A195D62B2F55DDC11E76CEBD`。核对报告：`artifacts/runtime-resource-budget-v12-verification/release-verification.json`。本轮交付完成，实际启动与长期性能由用户手动验证。
