@@ -88,6 +88,7 @@ public partial class App : Application
             _phase = "startup_baseline";
             await Task.Delay(TimeSpan.FromSeconds(_config.BaselineSeconds));
             if (_config.StartupOnly) { await FinishAsync(); return; }
+            if (_config.TradeProbe) { await VerifyTradesAsync(); await FinishAsync(); return; }
             if (_config.InteractionProbe) await VerifyInteractionBurstAsync();
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
@@ -315,13 +316,13 @@ public partial class App : Application
         for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(node); i++)
             foreach (var child in FindChildren<T>(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(node, i))) yield return child;
     }
-    private async Task CaptureOverviewAsync(string filename = "overview.png", int delaySeconds = 20)
+    private async Task CaptureOverviewAsync(string filename = "overview.png", int delaySeconds = 20, UIElement? element = null)
     {
         try
         {
             if (delaySeconds > 0) await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
             var bitmap = new Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap();
-            await bitmap.RenderAsync((UIElement)_window!.Content);
+            await bitmap.RenderAsync(element ?? (UIElement)_window!.Content);
             var pixels = await bitmap.GetPixelsAsync();
             using var file = File.Create(Path.Combine(_config.Output, filename));
             using var output = file.AsRandomAccessStream();
@@ -356,6 +357,94 @@ public partial class App : Application
         ViewModel.Dashboard.Clear();
         await ViewModel.SaveAsync(ViewModel.Settings with { Dashboard = ViewModel.Settings.Dashboard with { ShowEntryAvatars = _config.EntryAvatars } });
     }
+    private async Task VerifyTradesAsync()
+    {
+        var history = ViewModel.History; var context = history.Begin(900000002);
+        var start = DateTimeOffset.Now; var inputs = new List<LiveEvent>();
+        for (var i = 0; i < 480; i++)
+        {
+            var sc = i >= 257; var guard = !sc && i % 5 == 0;
+            var coin = guard ? "" : i % 2 == 0 ? "gold" : "silver";
+            var amount = i % 7 == 0 || !sc && coin != "gold" ? (long?)null : (i % 9) * 1000L;
+            var value = new LiveEvent(sc ? LiveEventType.SuperChat : guard ? LiveEventType.Guard : LiveEventType.Gift,
+                "筛选验证" + i, sc ? "SC 排序验证" : "赠送测试礼物", "#FFFFFF", i + 1, start)
+            { HistoryFields = new(GiftName: sc ? null : i % 3 == 0 ? "玫瑰" : "灯牌", Quantity: i % 11 + 1, CoinType: coin, AmountMilliYuan: amount) };
+            inputs.Add(value); history.Capture(context, value, start.AddMilliseconds(i / 13));
+        }
+        history.End(context);
+        if (!await history.FlushAsync(TimeSpan.FromSeconds(5))) throw new InvalidOperationException("隔离筛选数据未提交");
+        var scope = new HistoryFilter(new(null, 900000002, "", ""), start.ToString("yyyy-MM-dd"), start.ToString("yyyy-MM-dd"), SessionId: context.Id);
+        async Task<List<HistoryRow>> ReadAll(HistoryFilter filter)
+        {
+            var all = new List<HistoryRow>();
+            for (var page = 0; page < 10; page++)
+            {
+                var rows = await history.QueryAsync(filter, _stop.Token); all.AddRange(rows);
+                if (rows.Count < 100) return all;
+                var last = rows[^1];
+                filter = filter with { BeforeId = last.Id, BeforeReceivedAt = last.ReceivedAt,
+                    BeforeSortValue = filter.Trade?.Sort == MessageSort.QuantityDescending ? last.Fields.Quantity : last.Fields.AmountMilliYuan };
+            }
+            throw new InvalidOperationException("分页未终止");
+        }
+        var baseline = await ReadAll(scope); var checks = new List<object>();
+        foreach (var type in new[] { LiveEventType.Gift, LiveEventType.SuperChat })
+        foreach (var category in type == LiveEventType.Gift ? Enum.GetValues<GiftCategory>() : new[] { GiftCategory.All })
+        foreach (var sort in Enum.GetValues<MessageSort>())
+        {
+            var trade = new TradeFilter { Category = category, Sort = sort };
+            var filter = scope with { Type = type, IncludeGuardGifts = true, Trade = trade };
+            var rows = await ReadAll(filter); var count = await history.MatchingCountAsync(filter, _stop.Token);
+            var expected = baseline.Where(r => (type == LiveEventType.Gift ? r.Event.Type is LiveEventType.Gift or LiveEventType.Guard : r.Event.Type == type) && trade.Matches(r.Event)).ToArray();
+            static int Metric(long? a, long? b, bool desc) => a is null ? b is null ? 0 : 1 : b is null ? -1 : desc ? b.Value.CompareTo(a.Value) : a.Value.CompareTo(b.Value);
+            Array.Sort(expected, (a, b) =>
+            {
+                var c = sort switch { MessageSort.AmountAscending => Metric(a.Fields.AmountMilliYuan, b.Fields.AmountMilliYuan, false),
+                    MessageSort.AmountDescending => Metric(a.Fields.AmountMilliYuan, b.Fields.AmountMilliYuan, true),
+                    MessageSort.QuantityDescending => Metric(a.Fields.Quantity, b.Fields.Quantity, true), _ => 0 };
+                if (c != 0) return c;
+                c = sort == MessageSort.Oldest ? a.ReceivedAt.CompareTo(b.ReceivedAt) : b.ReceivedAt.CompareTo(a.ReceivedAt);
+                return c != 0 ? c : sort == MessageSort.Oldest ? a.Id.CompareTo(b.Id) : b.Id.CompareTo(a.Id);
+            });
+            checks.Add(new { type = type.ToString(), category = category.ToString(), sort = sort.ToString(), count,
+                passed = count == expected.Length && rows.Select(r => r.Id).SequenceEqual(expected.Select(r => r.Id)) });
+        }
+        foreach (var trade in new[] { new TradeFilter { GiftName = "玫瑰" }, new TradeFilter { MinimumMilliYuan = 2000, MaximumMilliYuan = 5000 } })
+        {
+            var type = trade.GiftName.Length > 0 ? LiveEventType.Gift : LiveEventType.SuperChat;
+            var filter = scope with { Type = type, IncludeGuardGifts = true, Trade = trade };
+            var rows = await ReadAll(filter);
+            var expected = inputs.Count(v => (type == LiveEventType.Gift ? v.Type is LiveEventType.Gift or LiveEventType.Guard : v.Type == type) && trade.Matches(v));
+            checks.Add(new { filter = trade, passed = rows.Count == expected && await history.MatchingCountAsync(filter, _stop.Token) == expected });
+        }
+        ViewModel.Dashboard.AddBatch(inputs.Take(24).Concat(inputs.Skip(257).Take(8)).ToArray(), ViewModel.Settings.Dashboard, 0);
+        await Task.Delay(600); await CaptureOverviewAsync("trade-overview.png", 0);
+        var preferences = new TradeViewSettings { Gifts = new() { Category = GiftCategory.Paid, Sort = MessageSort.AmountDescending, OnlyUnread = true },
+            SuperChats = new() { MinimumMilliYuan = 2000, MaximumMilliYuan = 5000, Sort = MessageSort.AmountAscending },
+            History = new() { Category = GiftCategory.Free, Sort = MessageSort.AmountDescending }, HistoryType = LiveEventType.Gift };
+        await ViewModel.SaveAsync(ViewModel.Settings with { TradeViews = preferences });
+        ViewModel.Dashboard.Mark(ViewModel.Dashboard.Gifts.First(r => preferences.Gifts.Matches(r.Event)), false);
+        await Task.Delay(600);
+        var dashboard = JsonSerializer.SerializeToElement(ViewModel.CapturePerformanceSnapshot()).GetProperty("window").GetProperty("dashboard");
+        checks.Add(new { caseName = "overview-filter-and-unread", passed = dashboard.GetProperty("gifts").GetProperty("items").GetInt32()
+            == ViewModel.Dashboard.Gifts.Count(r => !r.IsRead && preferences.Gifts.Matches(r.Event)) });
+        checks.Add(new { caseName = "preference-round-trip", passed = JsonSerializer.Deserialize<TradeViewSettings>(JsonSerializer.Serialize(ViewModel.Settings.TradeViews)) == preferences });
+        await CaptureOverviewAsync("trade-filtered-overview.png", 0);
+        var navigation = FindChildren<Microsoft.UI.Xaml.Controls.NavigationView>(_window!.Content).First();
+        navigation.SelectedItem = navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i => (string?)i.Tag == "history");
+        await Task.Delay(1200);
+        var page = FindChildren<HistoryPage>(_window.Content).First();
+        await Task.Delay(300); await CaptureOverviewAsync("trade-history.png", 0);
+        var editor = new TradeFilterEditor(preferences.SuperChats, false, true, _ => { });
+        var host = new Microsoft.UI.Xaml.Controls.Border { Child = editor, Padding = new Thickness(16),
+            Background = MessageCard.Brush("#171A21"), RequestedTheme = ElementTheme.Dark,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var pageRoot = (Microsoft.UI.Xaml.Controls.Grid)page.Content;
+        Microsoft.UI.Xaml.Controls.Grid.SetRowSpan(host, 2); pageRoot.Children.Add(host);
+        await Task.Delay(400); await CaptureOverviewAsync("trade-sc-editor.png", 0, host); pageRoot.Children.Remove(host);
+        checks.Add(new { caseName = "history-page-query", passed = !FindChildren<Microsoft.UI.Xaml.Controls.TextBlock>(page).Any(t => t.Text.StartsWith("查询失败", StringComparison.Ordinal)) });
+        File.WriteAllText(Path.Combine(_config.Output, "trade-check.json"), JsonSerializer.Serialize(checks));
+    }
     [DllImport("user32.dll")] private static extern uint GetGuiResources(nint process, uint flags);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
     // Layout from the installed Windows SDK psapi.h PROCESS_MEMORY_COUNTERS_EX2.
@@ -372,7 +461,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
