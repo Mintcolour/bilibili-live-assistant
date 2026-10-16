@@ -35,4 +35,6 @@
 
 首轮 `stable-rows-two-hour-v1` 在约 38 分钟后主窗口被隐藏，约 43 分钟后恢复。隐藏期间共享显示源和租约均降为零，进程私有工作集仍有波动。因此不能将这轮算作连续双窗口两小时验收，已保存 `interrupted.json` 和中断分析；隔离测试进程在确认可执行文件绝对路径后终止，模拟归档可能尚有待提交数据，不作为完整归档验收。用户确认继续完整验收后，使用相同已核对的二进制重新启动 `stable-rows-two-hour-v2`。不通过降低采样完整性或可见性要求来把中断运行判为通过。
 
+第二轮用户确认正在使用远程桌面。系统的 Microsoft Remote Display Adapter 返回 32 Hz；现有帧时钟按屏幕刷新率限制目标至 32 FPS，实际回调约 11 次／秒。实体 NVIDIA 屏幕另有 165 Hz 模式。没有修改程序请求帧率或绕过限速逻辑；本轮结果须标为远程桌面环境，不能与首轮 60 FPS 阶段直接比较 CPU，也不能宣称实体屏幕下 60／165 FPS 已通过两小时验收。分析脚本同时输出目标帧率范围与观察到的回调频率，回调不是 GPU 实际呈现 FPS。
+
 复现入口：`scripts/build-memory-soak.ps1`、`scripts/start-memory-soak.ps1` 和 `scripts/analyze-memory-soak.ps1`。原始模拟日志保存在忽略的 `artifacts/memory-soak/`，不随分享包交付。

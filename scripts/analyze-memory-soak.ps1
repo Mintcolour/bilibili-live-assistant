@@ -34,6 +34,11 @@ $steady = @($traffic | Where-Object seconds -ge ([math]::Max(60, $last.seconds -
 $allocationRate = if ($steady.Count -gt 1) { ($steady[-1].allocatedBytes - $steady[0].allocatedBytes) / ($steady[-1].seconds - $steady[0].seconds) / 1MB } else { $null }
 $frameIntervals = ($traffic.timing.frameCadence.intervals | Measure-Object -Sum).Sum
 $lateFrames = ($traffic.timing.frameCadence.lateFrames | Measure-Object -Sum).Sum
+$frameObservationSeconds = 0.0
+for ($i = 1; $i -lt $samples.Count; $i++) {
+    if ($samples[$i].phase -eq 'traffic') { $frameObservationSeconds += $samples[$i].seconds - $samples[$i - 1].seconds }
+}
+$targetRates = @($traffic | ForEach-Object { $_.ui.window.overlay.clock.targetFps } | Where-Object { $null -ne $_ })
 $maxTrafficGap = 0.0
 for ($i = 1; $i -lt $traffic.Count; $i++) { $maxTrafficGap = [math]::Max($maxTrafficGap, $traffic[$i].seconds - $traffic[$i - 1].seconds) }
 $visibleThroughout = $traffic.Count -gt 0 -and @($traffic | Where-Object {
@@ -93,6 +98,12 @@ $trafficWindows = @(for ($startMinute = 0; $startMinute * 60 -lt $last.seconds; 
     cpuP95Percent = if ($cpu.Count) { $cpu[[math]::Min($cpu.Count-1, [math]::Ceiling($cpu.Count * 0.95)-1)] } else { $null }
     allocationMiBPerSecond = $allocationRate
     frameIntervals = $frameIntervals
+    frameRateCondition = [ordered]@{
+        minimumTargetFps = ($targetRates | Measure-Object -Minimum).Minimum
+        maximumTargetFps = ($targetRates | Measure-Object -Maximum).Maximum
+        observedCallbacksPerSecond = if ($frameObservationSeconds -gt 0) { [math]::Round($frameIntervals / $frameObservationSeconds, 2) } else { $null }
+        note = 'Callbacks are measured over traffic sample intervals and are not GPU-presented FPS. Display/remote-desktop refresh limits must accompany performance comparisons.'
+    }
     lateFrameFraction = if ($frameIntervals) { $lateFrames / $frameIntervals } else { $null }
     displayBufferDropped = $last.ui.bufferDropped
     overlayDropped = $last.ui.overlayDropped
