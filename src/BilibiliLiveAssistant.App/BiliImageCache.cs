@@ -61,6 +61,7 @@ internal sealed class BiliImageCache : IDisposable
     private bool _disposed;
     private long _hits, _loads, _evicted, _loadFailures, _frameHits, _frameMisses, _diskHits, _networkRequests;
     private long _networkBytes, _diskBytes, _rawBodyBytesPeak, _exactLengthReads, _unknownLengthReads;
+    private long _segmentedLengthReads, _cancelledSegmentedReads;
     internal object GetDiagnostics()
     {
         lock (_gate) return new { items = _memory.Count, estimatedBytes = _bytes, inflight = _inflight.Count,
@@ -72,6 +73,7 @@ internal sealed class BiliImageCache : IDisposable
             bodies = _bodies.Snapshot(),
             admission = ImageDecodeAdmission.Snapshot(),
             exactLengthReads = Interlocked.Read(ref _exactLengthReads), unknownLengthReads = Interlocked.Read(ref _unknownLengthReads),
+            segmentedLengthReads = Interlocked.Read(ref _segmentedLengthReads), cancelledSegmentedReads = Interlocked.Read(ref _cancelledSegmentedReads),
             diskScans = Interlocked.Read(ref _diskScans), diskEvictions = Interlocked.Read(ref _diskEvictions),
             staticPixelBytes = _memory.Values.Sum(v => v.Asset is BiliStaticImageAsset s ? s.Frame.Bytes : 0),
             animationEncodedBytes = _memory.Values.Sum(v => v.Asset is BiliAnimationAsset a ? a.Frames.Sum(f => (long)f.Length) : 0),
@@ -364,11 +366,11 @@ internal sealed class BiliImageCache : IDisposable
 
     private async Task<byte[]> ReadImageBodyAsync(Stream source, long? contentLength, CancellationToken token)
     {
-        if (contentLength is { } length)
+        if (contentLength is < 0 or > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
+        if (contentLength is { } length && length <= 65536)
         {
-            if (length is < 0 or > DownloadLimit) throw new InvalidDataException("图片超过大小限制");
-            // Most CDN responses supply a length. Fill the final owned array
-            // directly: no growing LOH buffer or second ToArray copy per image.
+            // Small responses can fill their final array directly. Large ones
+            // must not reserve a full LOH body before a cancellable slow read.
             var result = GC.AllocateUninitializedArray<byte>(checked((int)length));
             await source.ReadExactlyAsync(result.AsMemory(), token).ConfigureAwait(false);
             var probe = ArrayPool<byte>.Shared.Rent(1);
@@ -381,29 +383,33 @@ internal sealed class BiliImageCache : IDisposable
             Interlocked.Increment(ref _exactLengthReads);
             return result;
         }
-        // A growing MemoryStream temporarily keeps multiple large LOH arrays
-        // before ToArray makes the final copy. Use bounded small segments instead;
-        // do not retain a process-wide pool of full-sized original image bodies.
+        // Defer a large contiguous allocation until the response is complete.
+        // Rapid hide/show cancels many reads: allocating Content-Length up front
+        // left a fresh, mostly unused LOH array on every cancelled attempt.
+        // Successful large reads pay one bounded copy; no original-body pool.
         const int segmentSize = 16384;
         var segments = new List<(byte[] Data, int Count)>();
         var total = 0; var staging = 0;
+        var expected = contentLength is { } declared ? checked((int)declared) : DownloadLimit;
         try
         {
-            while (total < DownloadLimit)
+            while (total < expected)
             {
-                var buffer = GC.AllocateUninitializedArray<byte>(Math.Min(segmentSize, DownloadLimit - total));
+                token.ThrowIfCancellationRequested();
+                var buffer = GC.AllocateUninitializedArray<byte>(Math.Min(segmentSize, expected - total));
                 staging += buffer.Length; ImageResourceCounters.AddBodyStaging(buffer.Length);
                 var count = await source.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, token).ConfigureAwait(false);
                 if (count > 0) { segments.Add((buffer, count)); total += count; }
                 if (count < buffer.Length) break;
             }
-            if (total == DownloadLimit)
+            if (contentLength.HasValue && total != expected) throw new EndOfStreamException("图片响应长度不足");
+            if (contentLength.HasValue || total == DownloadLimit)
             {
                 var probe = ArrayPool<byte>.Shared.Rent(1);
                 try
                 {
                     if (await source.ReadAsync(probe.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
-                        throw new InvalidDataException("图片超过大小限制");
+                        throw new InvalidDataException("图片响应长度不一致或超过大小限制");
                 }
                 finally { ArrayPool<byte>.Shared.Return(probe); }
             }
@@ -412,9 +418,12 @@ internal sealed class BiliImageCache : IDisposable
             var offset = 0;
             foreach (var segment in segments)
             { segment.Data.AsSpan(0, segment.Count).CopyTo(result.AsSpan(offset)); offset += segment.Count; }
-            Interlocked.Increment(ref _unknownLengthReads);
+            if (contentLength.HasValue)
+            { Interlocked.Increment(ref _exactLengthReads); Interlocked.Increment(ref _segmentedLengthReads); }
+            else Interlocked.Increment(ref _unknownLengthReads);
             return result;
         }
+        catch (OperationCanceledException) { Interlocked.Increment(ref _cancelledSegmentedReads); throw; }
         finally { segments.Clear(); ImageResourceCounters.AddBodyStaging(-staging); }
     }
 
