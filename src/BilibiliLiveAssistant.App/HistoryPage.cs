@@ -23,6 +23,8 @@ internal sealed class HistoryPage : Page
     private readonly ComboBox _sessions = new() { Header = "监视记录", HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 190 };
     private readonly ComboBox _broadcasts = new() { Header = "直播场次", HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 250, MaxWidth = 400 };
     private readonly ComboBox _type = new() { Header = "消息类型", MinWidth = 110 };
+    private readonly Button _tradeButton = UiFactory.Button("筛选与排序");
+    private long _matchingCount, _scopeMessageCount;
     private readonly TextBox _uid = new() { Header = "UID", PlaceholderText = "全部", MaxLength = 20, MinWidth = 100 };
     private readonly TextBox _name = new() { Header = "昵称包含", PlaceholderText = "全部", MaxLength = 128, MinWidth = 110 };
     private readonly TextBox _keyword = new() { Header = "正文包含", PlaceholderText = "关键词", MaxLength = 256, MinWidth = 130 };
@@ -42,7 +44,7 @@ internal sealed class HistoryPage : Page
     private readonly RadioButtons _tabs = new() { MaxColumns = 3, SelectedIndex = 0, Items = { "消息记录", "趋势分析", "成员变化" } };
     private readonly Grid _tabContent = new();
     private int _selectedTab;
-    private readonly List<(long? Id, DateTimeOffset? At)> _cursors = new() { (null, null) };
+    private readonly List<(long? Id, DateTimeOffset? At, long? SortValue)> _cursors = new() { (null, null, null) };
     private CancellationTokenSource? _query;
     private CancellationTokenSource? _anchorQuery;
     private CancellationTokenSource? _maintenance;
@@ -94,9 +96,20 @@ internal sealed class HistoryPage : Page
         var apply = UiFactory.Button("查询记录"); apply.VerticalAlignment = VerticalAlignment.Bottom; apply.Click += async (_, _) => await RefreshAsync(false);
         _type.Header = "类型";
         _type.Items.Add(new ComboBoxItem { Content = "全部互动" });
-        foreach (var type in new[] { LiveEventType.Danmaku, LiveEventType.Gift, LiveEventType.SuperChat, LiveEventType.Guard, LiveEventType.Enter }) _type.Items.Add(new ComboBoxItem { Content = TypeName(type), Tag = type });
+        foreach (var type in new[] { LiveEventType.Danmaku, LiveEventType.Gift, LiveEventType.SuperChat, LiveEventType.Guard, LiveEventType.Enter }) _type.Items.Add(new ComboBoxItem { Content = type == LiveEventType.Gift ? "礼物 / 上舰" : TypeName(type), Tag = type });
         _type.SelectedIndex = 0;
-        var dates = Strip(_broadcasts, _from, _to, _type, apply); Grid.SetRow(dates, 1); right.Children.Add(dates);
+        foreach (var item in _type.Items.OfType<ComboBoxItem>())
+            if (item.Tag is LiveEventType type && type == vm.Settings.TradeViews.HistoryType) _type.SelectedItem = item;
+        _tradeButton.Click += (_, _) => OpenTradeFilter(); UpdateTradeButton();
+        var dates = new Grid { ColumnSpacing = 8 };
+        dates.ColumnDefinitions.Add(new() { Width = new(1.4, GridUnitType.Star) });
+        dates.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        dates.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        _broadcasts.MinWidth = 0; _broadcasts.MaxWidth = double.PositiveInfinity;
+        var dateFields = new FrameworkElement[] { _broadcasts, _from, _to };
+        for (var i = 0; i < dateFields.Length; i++)
+        { dateFields[i].MinWidth = 0; dateFields[i].HorizontalAlignment = HorizontalAlignment.Stretch; Grid.SetColumn(dateFields[i], i); dates.Children.Add(dateFields[i]); }
+        Grid.SetRow(dates, 1); right.Children.Add(dates);
         ToolTipService.SetToolTip(_broadcasts, "按真实房间与开播时间归档，同一场直播的多次监视统一汇总；旧版或开播资料缺失的内容保留在未识别场次。");
         var stats = new StackPanel { Spacing = 8 };
         var statGrid = new Grid { ColumnSpacing = 10 };
@@ -108,13 +121,28 @@ internal sealed class HistoryPage : Page
             Grid.SetColumn(card, i); statGrid.Children.Add(card);
         }
         stats.Children.Add(statGrid); _summary.Opacity = 0.8; stats.Children.Add(_summary); Grid.SetRow(stats, 2); right.Children.Add(stats);
-        var advanced = new Expander { Header = "更多筛选", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var advanced = UiFactory.Button("更多条件"); advanced.VerticalAlignment = VerticalAlignment.Bottom;
         var advancedFields = new StackPanel { Spacing = 8 };
         advancedFields.Children.Add(Strip(_sessions, _uid, _name));
         var cancel = UiFactory.Button("取消查询"); cancel.VerticalAlignment = VerticalAlignment.Bottom; cancel.Click += (_, _) => { _query?.Cancel(); _status.Text = "已取消查询"; };
-        var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += (_, _) => { _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0; _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; _broadcasts.SelectedIndex = _broadcasts.Items.Count > 0 ? 0 : -1; };
-        _keyword.MinWidth = 230; advancedFields.Children.Add(Strip(_keyword, reset, cancel)); advanced.Content = advancedFields;
-        Grid.SetRow(advanced, 3); right.Children.Add(advanced);
+        var reset = UiFactory.Button("重置筛选"); reset.VerticalAlignment = VerticalAlignment.Bottom; reset.Click += async (_, _) =>
+        {
+            _uid.Text = _name.Text = _keyword.Text = ""; _type.SelectedIndex = 0;
+            _sessions.SelectedIndex = _sessions.Items.Count > 0 ? 0 : -1; _broadcasts.SelectedIndex = _broadcasts.Items.Count > 0 ? 0 : -1;
+            try { await _vm.SaveAsync(_vm.Settings with { TradeViews = _vm.Settings.TradeViews with { History = new(), HistoryType = null } }); ConditionsChanged(); UpdateTradeButton(); }
+            catch (Exception ex) { _status.Text = "重置筛选失败：" + ex.Message; }
+        };
+        _keyword.MinWidth = 230; advancedFields.Children.Add(Strip(_keyword, reset, cancel));
+        advanced.Flyout = new Flyout { Content = new ScrollViewer { Content = advancedFields, MaxHeight = 360,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            RequestedTheme = ElementTheme.Dark } };
+        var actions = new Grid { ColumnSpacing = 8 };
+        actions.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        foreach (var _ in Enumerable.Range(0, 3)) actions.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        _type.HorizontalAlignment = HorizontalAlignment.Stretch; _tradeButton.VerticalAlignment = VerticalAlignment.Bottom;
+        var actionFields = new FrameworkElement[] { _type, _tradeButton, advanced, apply };
+        for (var i = 0; i < actionFields.Length; i++) { Grid.SetColumn(actionFields[i], i); actions.Children.Add(actionFields[i]); }
+        Grid.SetRow(actions, 3); right.Children.Add(actions);
         var tabHeader = new StackPanel { Spacing = 5, Children = { _tabs, _status } };
         Grid.SetRow(tabHeader, 4); right.Children.Add(tabHeader);
         _tabContent.Children.Add(_messages); _tabContent.Children.Add(_analysis); _tabContent.Children.Add(_changes);
@@ -126,14 +154,16 @@ internal sealed class HistoryPage : Page
             _messages.Visibility = _selectedTab == 0 ? Visibility.Visible : Visibility.Collapsed;
             _analysis.Visibility = _selectedTab == 1 ? Visibility.Visible : Visibility.Collapsed;
             _changes.Visibility = _selectedTab == 2 ? Visibility.Visible : Visibility.Collapsed;
-            SetTabActive(); _type.IsEnabled = _keyword.IsEnabled = _selectedTab == 0; _uid.IsEnabled = _name.IsEnabled = _selectedTab != 1;
+            SetTabActive(); _tradeButton.IsEnabled = _type.IsEnabled = _keyword.IsEnabled = _selectedTab == 0; _uid.IsEnabled = _name.IsEnabled = _selectedTab != 1;
             await RefreshAsync(false);
         };
         var pager = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _page, _next } };
         _previous.Click += async (_, _) => { if (_cursors.Count > 1) { _cursors.RemoveAt(_cursors.Count - 1); _pageNumber--; await LoadPageAsync(); } };
         _next.Click += async (_, _) =>
         {
-            if (_rows.Count < 100) return; var last = _rows[^1]; _cursors.Add((last.Id, last.ReceivedAt));
+            if (_rows.Count < 100) return; var last = _rows[^1];
+            var sortValue = _vm.Settings.TradeViews.History.Sort == MessageSort.QuantityDescending ? last.Fields.Quantity : last.Fields.AmountMilliYuan;
+            _cursors.Add((last.Id, last.ReceivedAt, sortValue));
             if (_cursors.Count > 256) _cursors.RemoveAt(0); _pageNumber++; await LoadPageAsync();
         };
         Grid.SetRow(pager, 6); right.Children.Add(pager); Grid.SetColumn(right, 1); body.Children.Add(right); Grid.SetRow(body, 1); root.Children.Add(body); Content = root;
@@ -141,7 +171,19 @@ internal sealed class HistoryPage : Page
         _anchors.SelectionChanged += async (_, _) => { UpdateAnchorHeading(); if (!_loading && !_managing) await RefreshAsync(false, true, true); };
         _broadcasts.SelectionChanged += async (_, _) => { if (!_loading && !_managing) await RefreshAsync(false, true); };
         _from.DateChanged += (_, _) => ConditionsChanged(true); _to.DateChanged += (_, _) => ConditionsChanged(true);
-        _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += (_, _) => ConditionsChanged();
+        _sessions.SelectionChanged += (_, _) => ConditionsChanged(true); _type.SelectionChanged += async (_, _) =>
+        {
+            ConditionsChanged(); UpdateTradeButton();
+            if (_loading || _disposed) return;
+            try
+            {
+                var selectedType = (_type.SelectedItem as ComboBoxItem)?.Tag as LiveEventType?;
+                var trade = _vm.Settings.TradeViews.History;
+                if (selectedType is not (LiveEventType.Gift or LiveEventType.Guard) && trade.Sort == MessageSort.QuantityDescending) trade = trade with { Sort = MessageSort.Newest };
+                await _vm.SaveAsync(_vm.Settings with { TradeViews = _vm.Settings.TradeViews with { HistoryType = selectedType, History = trade } }); UpdateTradeButton();
+            }
+            catch (Exception ex) { _status.Text = "保存筛选失败：" + ex.Message; }
+        };
         foreach (var input in new[] { _uid, _name, _keyword }) input.TextChanged += (_, _) => ConditionsChanged();
         _history.Committed += OnCommitted; _vm.PropertyChanged += OnVmChanged;
         Loaded += (_, _) => { _pageLoaded = true; SetActive(_visible()); };
@@ -156,6 +198,7 @@ internal sealed class HistoryPage : Page
     }
     private void ShowSummary(HistorySummary? summary)
     {
+        _scopeMessageCount = summary?.Events ?? 0;
         var counts = summary is null ? null : new[] { summary.Danmaku, summary.Gifts + summary.Guards, summary.SuperChats, summary.Interactions };
         for (var i = 0; i < _statValues.Length; i++) _statValues[i].Text = counts is null ? "—" : counts[i].ToString("N0");
         if (summary is null) { _summary.Text = "统计待查询"; return; }
@@ -182,7 +225,9 @@ internal sealed class HistoryPage : Page
         return new(anchor, from.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), to.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), (_sessions.SelectedItem as HistorySession)?.Id,
             list && (_type.SelectedItem as ComboBoxItem)?.Tag is LiveEventType type ? type : null, uid,
             list ? _name.Text.Trim() : "", list ? _keyword.Text.Trim() : "", list ? cursor.Id : null, list ? cursor.At : null,
-            BroadcastId: (_broadcasts.SelectedItem as HistoryBroadcast)?.Id);
+            BroadcastId: (_broadcasts.SelectedItem as HistoryBroadcast)?.Id,
+            Trade: list && _selectedTab == 0 ? _vm.Settings.TradeViews.History : null,
+            BeforeSortValue: list ? cursor.SortValue : null, IncludeGuardGifts: true);
     }
     private void ConditionsChanged(bool scope = false)
     {
@@ -192,7 +237,7 @@ internal sealed class HistoryPage : Page
         if (scope) ShowSummary(null);
         _status.Text = "条件已修改 · 点击查询"; UpdatePager();
     }
-    private void ResetPages() { _cursors.Clear(); _cursors.Add((null, null)); _pageNumber = 1; }
+    private void ResetPages() { _cursors.Clear(); _cursors.Add((null, null, null)); _matchingCount = 0; _pageNumber = 1; }
     private CancellationTokenSource NewQuery()
     {
         _query?.Cancel(); _query?.Dispose(); return _query = new();
@@ -260,8 +305,10 @@ internal sealed class HistoryPage : Page
                 new LiveEvent(LiveEventType.Rank, c.After.Name, ChangeDescription(c), "#FFFFFF", c.After.Uid, c.At.ToLocalTime(), Appearance: c.After.Appearance), new())).ToArray();
             _changes.SetRows(_rows); _status.Text = "可核实的观察变化 · 首次观察不是加入事件 · 粉丝牌归属未核实 · 不从离榜推断退舰/退团"; return;
         }
-        var rows = await _history.QueryAsync(Filter(true), run.Token); if (!Current(run)) return;
-        _rows = rows; _messages.SetRows(rows); _status.Text = rows.Count == 0 ? "此范围没有符合条件的消息" : "按接收时间倒序 · 列表筛选不改变上方统计";
+        var listFilter = Filter(true);
+        if (_pageNumber == 1) { _matchingCount = await _history.MatchingCountAsync(listFilter, run.Token); if (!Current(run)) return; }
+        var rows = await _history.QueryAsync(listFilter, run.Token); if (!Current(run)) return;
+        _rows = rows; _messages.SetRows(rows); _status.Text = $"匹配 {_matchingCount:N0} / {_scopeMessageCount:N0} 条 · {TradeFilterEditor.SortLabel(_vm.Settings.TradeViews.History.Sort)} · 筛选不改变统计";
     }
     private void UpdatePager() { _page.Text = _selectedTab == 1 ? "最多显示最近 1200 次采样" : $"第 {_pageNumber} 页 · {_rows.Count} 条"; _previous.Visibility = _next.Visibility = _selectedTab == 1 ? Visibility.Collapsed : Visibility.Visible; _previous.IsEnabled = _cursors.Count > 1 && !_managing; _next.IsEnabled = _rows.Count == 100 && !_managing; }
     private static string ChangeDescription(HistoryMemberChange c)
@@ -289,6 +336,26 @@ internal sealed class HistoryPage : Page
     }
     private void OnVmChanged(object? sender, PropertyChangedEventArgs args)
     { if (args.PropertyName is nameof(LiveAssistantViewModel.HistoryWarning) or nameof(LiveAssistantViewModel.Settings)) UpdateStorage(); }
+    private void UpdateTradeButton()
+    {
+        _tradeButton.Content = _vm.Settings.TradeViews.History.IsDefault ? "筛选与排序" : "● 筛选与排序";
+        _next.Content = "下一页 100 条";
+    }
+    private void OpenTradeFilter()
+    {
+        var type = (_type.SelectedItem as ComboBoxItem)?.Tag as LiveEventType?;
+        var flyout = new Flyout();
+        flyout.Content = new TradeFilterEditor(_vm.Settings.TradeViews.History, type is LiveEventType.Gift or LiveEventType.Guard, type == LiveEventType.SuperChat, async value =>
+        {
+            try
+            {
+                await _vm.SaveAsync(_vm.Settings with { TradeViews = _vm.Settings.TradeViews with { History = value } });
+                ConditionsChanged(); UpdateTradeButton(); flyout.Hide(); await RefreshAsync(false);
+            }
+            catch (Exception ex) { _status.Text = "保存筛选失败：" + ex.Message; }
+        });
+        flyout.ShowAt(_tradeButton);
+    }
     private void UpdateStorage()
     {
         var status = _history.Status;

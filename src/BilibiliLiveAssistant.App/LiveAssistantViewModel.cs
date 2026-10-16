@@ -108,7 +108,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         try { historySettings = (settings.History ?? new()).Normalize(); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
         { historySettings = new(); _historyConfigurationWarning = "存档目录配置无效，已使用默认目录；请在可视化设置中重新保存目录。"; }
-        _settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
+        _settings = settings with { Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = historySettings };
         Dashboard.Cleared += CardBoard.Clear;
         _store = store;
@@ -269,7 +269,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         var wasRunning = _client.IsRunning;
         var previousCookies = EffectiveCookies(previous);
         if (wasRunning && previous.RoomId != settings.RoomId) await StopCoreAsync();
-        settings = settings with { Cookies = new(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
+        settings = settings with { Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize() };
         _settings = settings;
         History.Configure(settings.History);

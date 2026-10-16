@@ -408,6 +408,8 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly MessageAnimationClock _animations;
     private readonly Func<bool> _visible;
     private readonly bool _important;
+    private TradeFilter _trade = new();
+    private readonly Button _tradeButton = DashboardUi.Button("\uE71C", "筛选与排序", 28);
     private readonly ListView _list = new() { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = null };
     private readonly RecordCollection _items = new();
     private readonly HashSet<MessageCard> _cards = new();
@@ -468,7 +470,8 @@ internal sealed class DashboardList : Grid, IDisposable
             _readAll.Click += (_, _) => MarkAllRequested?.Invoke();
             _unread.Checked += (_, _) => { _version = -1; FilterChanged?.Invoke(); };
             _unread.Unchecked += (_, _) => { _version = -1; FilterChanged?.Invoke(); };
-            actions.Children.Add(_unread); actions.Children.Add(_readAll);
+            _tradeButton.Click += (_, _) => OpenTradeFilter();
+            actions.Children.Add(_tradeButton); actions.Children.Add(_readAll);
         }
         actions.Children.Add(_latest);
         if (extraAction is not null) actions.Children.Add(extraAction);
@@ -514,10 +517,13 @@ internal sealed class DashboardList : Grid, IDisposable
     public void Sync(List<DashboardRecord> source, bool styleChanged)
     {
         _syncCalls++;
+        var trade = _important ? (_title == "SC" ? _vm.Settings.TradeViews.SuperChats : _vm.Settings.TradeViews.Gifts) : TradeFilter.Default;
+        if (_important && _unread.IsChecked != trade.OnlyUnread) _unread.IsChecked = trade.OnlyUnread;
+        var tradeChanged = _trade != trade; _trade = trade;
         var state = _vm.Dashboard.GetColumnState(source);
-        if (_version == state.Version && !styleChanged) return;
+        if (_version == state.Version && !styleChanged && !tradeChanged) return;
         var unread = state.Unread; var thanked = state.Thanked;
-        var contentChanged = _contentVersion != state.ContentVersion || styleChanged || _filtered != (_unread.IsChecked == true);
+        var contentChanged = _contentVersion != state.ContentVersion || styleChanged || tradeChanged || _filtered != (_unread.IsChecked == true);
         _version = state.Version; _contentVersion = state.ContentVersion;
         _unreadCount = unread; _thankedCount = thanked; _filtered = _unread.IsChecked == true;
         _total.Text = source.Count.ToString();
@@ -526,6 +532,7 @@ internal sealed class DashboardList : Grid, IDisposable
         DashboardUi.Describe(_unreadTotal, $"未读 {unread} 条");
         if (!contentChanged && !_filtered)
         {
+            _total.Text = !_trade.IsDefault ? $"{_items.Count} / {source.Count}" : source.Count.ToString();
             foreach (var container in _containerCards.Keys.ToArray())
             {
                 var index = _list.IndexFromContainer(container);
@@ -538,11 +545,13 @@ internal sealed class DashboardList : Grid, IDisposable
         _fullSyncs++;
         _filteredRecords.Clear();
         IReadOnlyList<DashboardRecord> selected = source;
-        if (_filtered)
+        if (_filtered || !_trade.IsDefault)
         {
-            foreach (var record in source) if (!record.IsRead) _filteredRecords.Add(record);
+            foreach (var record in source) if ((!_filtered || !record.IsRead) && _trade.Matches(record.Event)) _filteredRecords.Add(record);
+            if (_trade.Sort != MessageSort.Newest) _filteredRecords.Sort(_trade.Compare);
             selected = _filteredRecords;
         }
+        _total.Text = _filtered || !_trade.IsDefault ? $"{selected.Count} / {source.Count}" : source.Count.ToString();
         Guid readingAnchor = Guid.Empty;
         var oldIndex = -1; var readingPixels = 0d;
         if (_readingRestore is { } pending && _recordIndices.TryGetValue(pending.Id, out var pendingIndex))
@@ -564,7 +573,7 @@ internal sealed class DashboardList : Grid, IDisposable
         // RowSlot identities produce no ContainerContentChanging notification.
         if (selected.Count == 0 || styleChanged) ClearCardPool();
         _empty.Visibility = selected.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        _empty.Text = _filtered ? "没有未读消息" : "暂无消息";
+        _empty.Text = _filtered || !_trade.IsDefault ? "没有符合条件的消息" : "暂无消息";
         // Stable row identities keep the native item/template tree in place.
         // Only the managed record behind a slot changes as new messages arrive.
         _items.Synchronize(selected);
@@ -647,15 +656,34 @@ internal sealed class DashboardList : Grid, IDisposable
     {
         var atLatest = _items.Count == 0 || _scrollViewer is not null && _scrollViewer.VerticalOffset < 0.5;
         _latest.IsEnabled = !atLatest;
-        DashboardUi.Describe(_latest, _items.Count == 0 ? "暂无消息" : atLatest ? "已在最新位置" : "回到最新");
+        var position = _trade.Sort == MessageSort.Newest ? "最新位置" : "排序顶部";
+        DashboardUi.Describe(_latest, _items.Count == 0 ? "暂无消息" : atLatest ? "已在" + position : "回到" + position);
     }
     private void UpdateActions(int total, int unread)
     {
         _readAll.IsEnabled = unread > 0;
         DashboardUi.Describe(_readAll, unread > 0 ? $"全部标为已读（{unread} 条）" : "没有未读消息");
         _unread.IsEnabled = total > 0 || _unread.IsChecked == true;
+        _tradeButton.Foreground = MessageCard.Brush(_filtered || !_trade.IsDefault ? "#FFD878" : "#D6DCE7");
+        DashboardUi.Describe(_tradeButton, (_filtered || !_trade.IsDefault ? "筛选已启用 · " : "") + "筛选与排序 · " + TradeFilterEditor.SortLabel(_trade.Sort));
         DashboardUi.Describe(_unread, _unread.IsChecked == true ? "正在仅显示未读，点击显示全部" : total > 0 ? "仅显示未读" : "暂无消息可筛选");
         UpdateLatestAction();
+    }
+    private void OpenTradeFilter()
+    {
+        var flyout = new Flyout();
+        flyout.Content = new TradeFilterEditor(_trade, _title != "SC", _title == "SC", async value =>
+        {
+            try
+            {
+                var views = _vm.Settings.TradeViews;
+                await _vm.SaveAsync(_vm.Settings with { TradeViews = _title == "SC" ? views with { SuperChats = value } : views with { Gifts = value } });
+                _version = -1; FilterChanged?.Invoke(); flyout.Hide();
+            }
+            catch (Exception ex) { _vm.ReportSettingsError("保存筛选失败：" + ex.Message); }
+        }, _unread.IsChecked == true, value => _unread.IsChecked = value,
+            _vm.Dashboard.Gifts.Select(r => r.Event.HistoryFields?.GiftName ?? ""));
+        flyout.ShowAt(_tradeButton);
     }
     private void OnScrolled(object? sender, ScrollViewerViewChangedEventArgs e)
     {
