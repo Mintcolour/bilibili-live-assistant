@@ -1,4 +1,7 @@
-param([Parameter(Mandatory)][string]$Path)
+param(
+    [Parameter(Mandatory)][string]$Path,
+    [ValidateRange(0,14400)][int]$ObservationSeconds = 0
+)
 $ErrorActionPreference = 'Stop'
 $runPath = (Resolve-Path -LiteralPath $Path).Path
 $rows = @(Get-Content -LiteralPath (Join-Path $runPath 'samples.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
@@ -51,6 +54,14 @@ $completeRenderingRun = $eligible -and $buildVerified -and $retentionPassed -and
     $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
 $privateWorkingSetSummary = Get-MemorySummary 'privateWorkingSetBytes'
 $privateWorkingSetMeasured = @($samples | Where-Object { $null -eq $_.privateWorkingSetBytes }).Count -eq 0
+$observationEndPath = Join-Path $runPath 'observation-ended.json'
+$observationEnd = if (Test-Path -LiteralPath $observationEndPath) { Get-Content -LiteralPath $observationEndPath -Raw | ConvertFrom-Json } else { $null }
+$observedTrafficSeconds = if ($traffic.Count -gt 1) { $traffic[-1].seconds - $traffic[0].seconds } else { 0 }
+$observationComplete = $ObservationSeconds -ge 60 -and $eligible -and $buildVerified -and $visibleThroughout -and
+    ($null -ne $completed -or ($null -ne $observationEnd -and $observationEnd.acceptedTrafficSeconds -eq $ObservationSeconds)) -and
+    $observedTrafficSeconds -ge $ObservationSeconds -and $maxTrafficGap -le 30 -and
+    $traffic.Count -ge [math]::Floor($ObservationSeconds / 5 * 0.9) -and $last.produced -ge $ObservationSeconds * $header.config.Rate
+$memoryScopeComplete = if ($ObservationSeconds -gt 0) { $observationComplete } else { $completeRenderingRun }
 function Get-TrafficWindow([object[]]$Window) {
     if ($Window.Count -lt 2) { return $null }
     $meanSeconds = ($Window.seconds | Measure-Object -Average).Average
@@ -84,11 +95,20 @@ $trafficWindows = @(for ($startMinute = 0; $startMinute * 60 -lt $last.seconds; 
     completedTrafficSeconds = if ($completed) { $header.config.Seconds } else { $null }
     twoHourTrafficCompleted = $null -ne $completed -and $header.config.Seconds -ge 7200 -and $completed.seconds -ge 7200 -and $completed.produced -ge 7200 * $header.config.Rate
     twoHourRenderingRunCompleted = $completeRenderingRun
+    requestedObservation = [ordered]@{
+        seconds = $ObservationSeconds
+        observedTrafficSecondsLowerBound = $observedTrafficSeconds
+        completed = $observationComplete
+        userEnded = $null -ne $observationEnd
+        normalHarnessCompletion = $null -ne $completed
+        note = 'An explicitly requested observation can end without the harness final retention assertions or graceful archive drain. These are reported separately and are not synthesized.'
+    }
     displayAndSampling = [ordered]@{ visibleThroughout = $visibleThroughout; samplingComplete = $samplingComplete; trafficSamples = $traffic.Count; maximumGapSeconds = $maxTrafficGap }
     taskManagerMemoryAcceptance = [ordered]@{
         metric = 'privateWorkingSetBytes'
         thresholdBytes = 180MB
-        observedPass = $completeRenderingRun -and $privateWorkingSetMeasured -and $null -ne $privateWorkingSetSummary -and $privateWorkingSetSummary.below180MiB
+        scope = if ($ObservationSeconds -gt 0) { 'explicitly-requested-observation' } else { 'complete-two-hour-run' }
+        observedPass = $memoryScopeComplete -and $privateWorkingSetMeasured -and $null -ne $privateWorkingSetSummary -and $privateWorkingSetSummary.below180MiB
         note = 'Task Manager commonly labels binary MiB as MB. This evaluates ~5-second observed samples, not unsampled transient peaks or all possible layouts.'
     }
     privateCommit = Get-MemorySummary 'privateBytes'
