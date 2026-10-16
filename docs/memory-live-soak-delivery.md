@@ -11,6 +11,7 @@
 | 输入消息／轮换用户 | 184,885 条／20,000 个 UID |
 | 私有工作集：峰值／末值 | 150.22／140.75 MiB |
 | 私有提交量：峰值／末值 | 215.76／206.18 MiB；未低于 180 MiB，不与工作集混用 |
+| 总工作集：峰值／末值 | 315.88／306.40 MiB；包含共享页，不作为本轮 180 MB 判定值 |
 | 第 45–60 分钟工作集斜率 | 约 +0.0392 MiB／分钟 |
 | 双窗口可见性／最大采样间隔 | 所有流量采样均可见／约 5.06 秒 |
 | 归档观察期间丢失／写入失败 | 0／0 |
@@ -43,7 +44,7 @@
 
 ## 发布与人工回看
 
-发布目标为独立目录 `artifacts/releases/memory-live-soak`，沿用 `room-resource-release` 的 `settings.json`，发布核对须确认字节一致、ReadyToRun、SQLite、DPI、BrowserHost、扩展与性能分析工具保留。分享 ZIP 不包含用户设置、真实历史库或诊断日志。正式 App 与 BrowserHost 只编译和核对文件，不启动。
+已发布到独立目录 `artifacts/releases/memory-live-soak`，沿用 `room-resource-release` 的 `settings.json`，核对字节一致。ReadyToRun、SQLite 8.0.32、PerMonitorV2、BrowserHost、扩展与性能分析工具保留。分享 ZIP 不包含用户设置、真实历史库或诊断日志。正式 App 与 BrowserHost 只编译和核对文件，没有启动。具体产物核对见 [发布核对](memory-live-soak-release-verification.md)。
 
 使用时请回看头像与表情、滚动阅读、感谢按钮、隐藏后恢复，以及停止保留和换房清理。在本地显示器上还需人工确认原刷新率下的流畅度和实际直播占用；本次远程模拟结果不替代这些检查。
 
