@@ -35,9 +35,10 @@ OBS 网页源启用、地址复制和输出宽高设置仍位于上方「OBS 网
 | `.bla-audience`、`.bla-watched` | 房间人数、看过人数 |
 | `.bla-metric-icon`、`.bla-metric-value` | 统计图标、数值 |
 | `.bla-rank-member`、`.bla-rank-index` | 榜单成员、名次 |
-| `.bla-counts`、`.bla-ranks`、`.bla-rank-list`、`.bla-rank-icon` | 两行人数、榜单分区、三行成员、榜单图标 |
+| `.bla-counts`、`.bla-ranks`、`.bla-rank-list`、`.bla-rank-icon` | 横排人数、榜单分区、横排成员、榜单图标 |
+| `.bla-rank-viewport`、`.bla-rank-track`、`.bla-rank-copy` | 榜单裁剪区域、滚动运动层、循环副本 |
 
-紧凑布局默认将房间人数与看过人数上下排列；旁边仅用奖杯图标标识榜单，前三名上下排列，不生成榜单头像。名单不足三人时仅显示接口已提供的成员。旧的成员、名次、昵称和徽章选择器继续可用；用户 CSS 可以覆盖默认排版。`--bla-rank-avatar-size` 保留为旧样式变量，但当前榜单没有头像节点。
+紧凑布局将房间人数、看过人数和榜单横向排列；人数固定，奖杯图标后的前三名以每秒 40 px 从右向左循环滚动，不生成榜单头像。名单不足三人时仅显示接口已提供的成员。循环副本使用 `aria-hidden`，不代表额外成员。人数更新不重建榜单动画，隐藏或断线时取消动画。旧的成员、名次、昵称和徽章选择器继续可用；用户 CSS 可以覆盖默认排版。`.bla-rank-track` 的 `transform` 由运行时管理，请在 `.bla-rank-list` 或成员内自定义外观。`--bla-rank-avatar-size` 保留为旧样式变量，但当前榜单没有头像节点。
 
 `.bla-message[data-type="…"]` 中的类型为 `Danmaku`、`SuperChat`、`Gift`、`Guard`、`Enter`、`Follow`、`Like`。固定区和列表使用相同消息内容结构，用父区域限定即可分别调整，例如 `#sc .bla-content` 与 `#list .bla-message[data-type="SuperChat"] .bla-content`。
 
