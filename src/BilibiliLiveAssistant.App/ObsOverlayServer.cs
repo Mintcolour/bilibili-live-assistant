@@ -117,6 +117,17 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
                 var route = request[1][_prefix.Length..];
                 if (route == "events") { deadline.CancelAfter(Timeout.InfiniteTimeSpan); await Events(stream, deadline.Token); return; }
                 if (route.StartsWith("image/", StringComparison.Ordinal)) { deadline.CancelAfter(TimeSpan.FromSeconds(10)); await Image(stream, route[6..], deadline.Token); return; }
+                if (route.StartsWith("assets/", StringComparison.Ordinal))
+                {
+                    await _imageSlots.WaitAsync(deadline.Token);
+                    try
+                    {
+                        var asset = await ObsThemeAssets.ReadAsync(route[7..], deadline.Token);
+                        await Reply(stream, asset is null ? 404 : 200, asset?.Type ?? "text/plain", asset?.Bytes ?? [], deadline.Token);
+                    }
+                    finally { _imageSlots.Release(); }
+                    return;
+                }
                 var resource = route switch { "" => ("index.html", "text/html; charset=utf-8"), "overlay.js" => ("overlay.js", "text/javascript; charset=utf-8"), "theme.js" => ("theme.js", "text/javascript; charset=utf-8"), "overlay.css" => ("overlay.css", "text/css; charset=utf-8"), _ => ("", "text/plain") };
                 if (resource.Item1.Length == 0) { await Reply(stream, 404, "text/plain", [], deadline.Token); return; }
                 using var file = Assembly.GetExecutingAssembly().GetManifestResourceStream("BilibiliLiveAssistant.App.Obs." + resource.Item1) ?? throw new IOException("OBS resource missing");
@@ -206,7 +217,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     { await Header(stream, status, type, body.Length, cancellation); if (body.Length > 0) await stream.WriteAsync(body, cancellation); }
     private static Task Header(Stream stream, int status, string type, int? length, CancellationToken cancellation)
     {
-        var header = $"HTTP/1.1 {status} {(status == 200 ? "OK" : "Unavailable")}\r\nContent-Type: {type}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r\n";
+        var header = $"HTTP/1.1 {status} {(status == 200 ? "OK" : "Unavailable")}\r\nContent-Type: {type}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r\n";
         if (length is { } size) header += $"Content-Length: {size}\r\n";
         return stream.WriteAsync(Encoding.ASCII.GetBytes(header + "\r\n"), cancellation).AsTask();
     }
