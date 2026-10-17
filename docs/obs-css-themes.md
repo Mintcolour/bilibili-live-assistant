@@ -35,6 +35,9 @@ OBS 网页源启用、地址复制和输出宽高设置仍位于上方「OBS 网
 | `.bla-audience`、`.bla-watched` | 房间人数、看过人数 |
 | `.bla-metric-icon`、`.bla-metric-value` | 统计图标、数值 |
 | `.bla-rank-member`、`.bla-rank-index` | 榜单成员、名次 |
+| `.bla-counts`、`.bla-ranks`、`.bla-rank-list`、`.bla-rank-icon` | 两行人数、榜单分区、三行成员、榜单图标 |
+
+紧凑布局默认将房间人数与看过人数上下排列；旁边仅用奖杯图标标识榜单，前三名上下排列，不生成榜单头像。名单不足三人时仅显示接口已提供的成员。旧的成员、名次、昵称和徽章选择器继续可用；用户 CSS 可以覆盖默认排版。`--bla-rank-avatar-size` 保留为旧样式变量，但当前榜单没有头像节点。
 
 `.bla-message[data-type="…"]` 中的类型为 `Danmaku`、`SuperChat`、`Gift`、`Guard`、`Enter`、`Follow`、`Like`。固定区和列表使用相同消息内容结构，用父区域限定即可分别调整，例如 `#sc .bla-content` 与 `#list .bla-message[data-type="SuperChat"] .bla-content`。
 
