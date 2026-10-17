@@ -165,7 +165,9 @@
     if (styleKey !== sk) {
       styleKey = sk; window.BlaTheme.update(next); fit();
     }
-    const now = next.now;
+    // A font/image resize or theme redraw must not restart an old snapshot's remaining lifetime.
+    // The loopback producer and OBS share this machine's clock.
+    const now = Date.now();
     section('sc', next.sc, c.showSuperChat, now); section('gift', next.gift, c.showGift, now);
     section('entry', next.entry, c.showEntry, now); section('follow', next.follow, c.showFollow, now);
     const rows = c.showList ? (next.rows || []).slice(-32) : [];

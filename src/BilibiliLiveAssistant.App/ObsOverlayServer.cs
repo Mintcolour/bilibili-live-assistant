@@ -28,6 +28,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     private TaskCompletionSource<bool> _changed = Signal();
     private byte[] _snapshot = "{}"u8.ToArray();
     private byte[] _theme = "{}"u8.ToArray();
+    private ObsThemeSettings? _themeSettings;
     private long _themeVersion;
     private TaskCompletionSource<bool> _previewChanged = Signal();
     private byte[] _previewSnapshot = "{}"u8.ToArray(), _previewTheme = "{}"u8.ToArray();
@@ -67,6 +68,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
         lock (_gate)
         {
             if (_stop.IsCancellationRequested) return;
+            if (snapshot.AsSpan().SequenceEqual(_previewSnapshot) && theme.AsSpan().SequenceEqual(_previewTheme)) return;
             _previewSnapshot = snapshot; _previewTheme = theme; _previewVersion++;
             var signal = _previewChanged; _previewChanged = Signal(); signal.TrySetResult(true);
         }
@@ -78,11 +80,12 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     public void ClearSnapshot() => Publish(new("{}"u8.ToArray(), new Dictionary<string, ObsImageReference>()));
     public void PublishTheme(ObsThemeSettings theme)
     {
+        lock (_gate) { if (_stop.IsCancellationRequested || theme == _themeSettings) return; }
         var bytes = JsonSerializer.SerializeToUtf8Bytes(theme, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         lock (_gate)
         {
             if (_stop.IsCancellationRequested || bytes.AsSpan().SequenceEqual(_theme)) return;
-            _theme = bytes; _themeVersion++; var signal = _changed; _changed = Signal(); signal.TrySetResult(true);
+            _themeSettings = theme; _theme = bytes; _themeVersion++; var signal = _changed; _changed = Signal(); signal.TrySetResult(true);
         }
     }
     internal object GetDiagnostics() => new { connections = Volatile.Read(ref _connections), clients = Volatile.Read(ref _consumers), previewClients = PreviewConsumerCount,
@@ -291,7 +294,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_stop.IsCancellationRequested) return;
-        _stop.Cancel(); _listener.Stop(); lock (_gate) { foreach (var entry in _images.Values) entry.Dispose(); _images.Clear(); _snapshot = []; _theme = []; _previewSnapshot = []; _previewTheme = []; _changed.TrySetCanceled(); _previewChanged.TrySetCanceled(); }
+        _stop.Cancel(); _listener.Stop(); lock (_gate) { foreach (var entry in _images.Values) entry.Dispose(); _images.Clear(); _snapshot = []; _theme = []; _themeSettings = null; _previewSnapshot = []; _previewTheme = []; _changed.TrySetCanceled(); _previewChanged.TrySetCanceled(); }
         if (_accept is not null) await _accept.ConfigureAwait(false);
         Task[] requests; lock (_gate) requests = _requests.ToArray();
         try { await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
