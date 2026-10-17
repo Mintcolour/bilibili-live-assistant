@@ -89,7 +89,8 @@ internal sealed class DisplayPage : Page
         _columns.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 280 }); _columns.ColumnDefinitions.Add(new() { Width = new(330), MinWidth = 270 });
         var previewContent = new StackPanel { Spacing = 12, Children = { new TextBlock { Text = "实时预览", FontSize = 16 }, _preview,
             _featurePreview, _historyPreview, _compactPreview, _hotPreview, _layoutLabel, _layout } };
-        _columns.Children.Add(new ScrollViewer { Content = previewContent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        var previewScroll = new ScrollViewer { Content = previewContent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        _columns.Children.Add(previewScroll);
         _shared.Children.Add(new TextBlock { Text = "共享图文元素", FontSize = 13 });
         _shared.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _avatars, _medals, _identity } });
         _shared.Children.Add(_entryAvatars);
@@ -143,6 +144,8 @@ internal sealed class DisplayPage : Page
             if (_loading) return; Capture(); _selected = (_selector.SelectedItem as ListViewItem)?.Tag is OverlayRegionKind kind ? kind : null;
             _feature = (_selector.SelectedItem as ListViewItem)?.Tag is string tag && tag is "media" or "cards" or "history" or "compact" or "obs" or "prices" or "hot" ? tag : null;
             LoadSelection(); RefreshPreview();
+            propertiesScroll.ChangeView(null, 0, null, disableAnimation: true);
+            previewScroll.ChangeView(null, 0, null, disableAnimation: true);
         };
         _editor.Changed += OnEdited; _dashboard.Changed += OnEdited;
         _mediaEditor.Changed += OnEdited; _cardEditor.Changed += OnEdited;

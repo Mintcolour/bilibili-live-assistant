@@ -99,7 +99,7 @@ internal sealed class OverlayEditorPreview : IDisposable
         return kind switch
         {
             OverlayRegionKind.Gift => [Sample(LiveEventType.Gift, "礼物示例", "赠送 小心心 × 3"), Sample(LiveEventType.Guard, "上舰示例", "开通 舰长 × 1", 2)],
-            OverlayRegionKind.SuperChat => [Sample(LiveEventType.SuperChat, "SC 示例", "¥30 这是一条醒目留言，谢谢陪伴 😊")],
+            OverlayRegionKind.SuperChat => [Sample(LiveEventType.SuperChat, "SC 示例", "这是一条醒目留言，谢谢陪伴 😊") with { HistoryFields = new(AmountMilliYuan: 30000) }],
             OverlayRegionKind.Interaction => [Sample(LiveEventType.Enter, "新关注示例", "关注了主播") with { HistoryFields = new(InteractionKind: 2) },
                 Sample(LiveEventType.Enter, "点赞示例", "为主播点赞了", 2) with { HistoryFields = new(InteractionKind: 6) },
                 Sample(LiveEventType.Enter, "进房示例", "进入了直播间", 3)],
