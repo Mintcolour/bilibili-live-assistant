@@ -19,6 +19,7 @@
     const s = base.style || {};
     const decorate = m => ({...m,avatar:s.showAvatars === false ? '' : m.avatar,medal:s.showMedals === false ? '' : m.medal,guard:s.showIdentity === false ? '' : m.guard});
     return {...base,roomId:0,now:Date.now(),rows:rows.map(decorate),
+      hotPhrases:[{text:'好好好',count:37},{text:'谢谢陪伴',count:12},{text:'晚上见',count:9}],
       sc:decorate(sample(100,'SuperChat','固定 SC 示例：感谢陪伴！这是一段用于检查正文行数、字号和换行的长文字。'.repeat(5),{price:'¥100',amountMilliYuan:100000,priceTier:3})),
       gift:decorate(sample(101,'Gift','星星 × 3',{giftName:'星星',quantity:3,price:'¥15',amountMilliYuan:15000,priceTier:3})),
       entry:decorate(sample(102,'Enter','进入直播间',{avatar:s.showEntryAvatars === false ? '' : 'sample-avatar.svg'})),

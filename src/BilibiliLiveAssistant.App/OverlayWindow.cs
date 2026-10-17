@@ -163,6 +163,10 @@ public sealed class OverlayWindow : OverlaySurface
 
     private int TrackHeight => Math.Max(_vm.Settings.Display.TrackHeight,
         Math.Max(RegionSettings.FontSize * 2 + 8, Math.Max(RegionSettings.EmoteSize, RegionSettings.LargeEmoteHeight) + 8));
+    protected override void OnHotLayoutChanged()
+    {
+        foreach (var item in _items) item.SetY(ContentTop + item.Track * TrackHeight);
+    }
     private int FindFreeTrack(int span = 1)
     {
         var count = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, Math.Min(24, (ClientSize.Height - ContentTop) / TrackHeight)));

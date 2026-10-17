@@ -37,6 +37,8 @@ internal sealed class DashboardPage : Page
     private readonly TextBlock _overlayOmissions = new() { FontSize = 12, Foreground = Brush("#D6B35A"), Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
     private readonly Grid _columns = new() { ColumnSpacing = 4 };
     private readonly Grid _left = new();
+    private readonly StackPanel _hotPhrases = new() { Spacing = 3, Margin = new(5, 3, 5, 3), Visibility = Visibility.Collapsed };
+    private IReadOnlyList<HotPhrase>? _hotSnapshot;
     private readonly Grid _middle = new();
     private readonly DashboardRankPanel _rankPanel;
     private readonly AnchorSummary _anchor;
@@ -183,7 +185,10 @@ internal sealed class DashboardPage : Page
         _left.RowDefinitions.Add(new() { Height = new(1 - _style.InteractionPanelRatio, GridUnitType.Star), MinHeight = 100 });
         _left.RowDefinitions.Add(new() { Height = new(8) });
         _left.RowDefinitions.Add(new() { Height = new(_style.InteractionPanelRatio, GridUnitType.Star), MinHeight = 60 });
-        _left.Children.Add(_danmaku); _left.Children.Add(_cardPanel); Grid.SetRow(_interactions, 2); _left.Children.Add(_interactions);
+        var chatArea = new Grid(); chatArea.RowDefinitions.Add(new() { Height = GridLength.Auto }); chatArea.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
+        DashboardUi.Describe(_hotPhrases, "最近 60 秒高频弹幕 · 至少 3 次 · 前 5 条");
+        chatArea.Children.Add(_hotPhrases); Grid.SetRow(_danmaku, 1); Grid.SetRow(_cardPanel, 1);
+        chatArea.Children.Add(_danmaku); chatArea.Children.Add(_cardPanel); _left.Children.Add(chatArea); Grid.SetRow(_interactions, 2); _left.Children.Add(_interactions);
         AddInteractionSplitter(); _columns.Children.Add(_left);
         _middle.RowDefinitions.Add(new() { Height = new(1 - _style.RankPanelRatio, GridUnitType.Star), MinHeight = 100 });
         _middle.RowDefinitions.Add(new() { Height = new(6) });
@@ -230,6 +235,7 @@ internal sealed class DashboardPage : Page
             _historyAnchor.Width = e.NewSize.Width < 900 ? 220 : 270;
         };
         vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty; vm.CardBoard.Changed += Dirty;
+        vm.HotPhrasesChanged += Dirty;
         vm.AuthenticationChanged += _rankPanel.AuthenticationChanged;
         vm.RoomHistoryReset += ResetRank;
         Unloaded += OnUnloaded;
@@ -377,6 +383,20 @@ internal sealed class DashboardPage : Page
         _animations.Wake();
         if (!_dirty) return;
         var history = _vm.Dashboard;
+        if (!ReferenceEquals(_hotSnapshot, _vm.HotPhrases))
+        {
+            _hotSnapshot = _vm.HotPhrases; _hotPhrases.Children.Clear();
+            foreach (var item in _hotSnapshot)
+            {
+                var row = new Grid { ColumnSpacing = 8, Padding = new(8, 3, 8, 3), CornerRadius = new(4), Background = Brush(_hotPhrases.Children.Count < 3 ? "#F7E7AE" : "#DDE1EA") };
+                row.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+                var text = new TextBlock { Text = item.Text, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Foreground = Brush("#242935") };
+                var count = new TextBlock { Text = $"×{item.Count}", FontSize = 13, FontWeight = new(600), Foreground = Brush("#242935") };
+                Grid.SetColumn(count, 1); row.Children.Add(text); row.Children.Add(count); _hotPhrases.Children.Add(row);
+                DashboardUi.Describe(row, item.Text + $" ×{item.Count}");
+            }
+            _hotPhrases.Visibility = _hotSnapshot.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
         RefreshHeader();
         _error.Text = string.Join("\n", new[] { _vm.ErrorText, _vm.HistoryWarning }.Where(s => s.Length > 0));
         _error.Visibility = _error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -410,6 +430,7 @@ internal sealed class DashboardPage : Page
     {
         _unloaded = true; _refresh.Stop(); StopStress(); _animations.Dispose();
         _vm.PropertyChanged -= OnPropertyChanged; _vm.Dashboard.Changed -= Dirty; _vm.CardBoard.Changed -= Dirty;
+        _vm.HotPhrasesChanged -= Dirty;
         _vm.AuthenticationChanged -= _rankPanel.AuthenticationChanged;
         _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose(); _historyAnchor.Dispose();
         _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose(); _cardPanel.Dispose();

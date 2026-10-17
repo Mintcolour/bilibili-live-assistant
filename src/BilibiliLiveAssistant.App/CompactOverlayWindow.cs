@@ -45,6 +45,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private bool _statusVisible, _listMoving;
     private Forms.Form? _detail;
     private readonly Forms.ContextMenuStrip _menu = new();
+    private readonly HotPhraseSprite _hotSprite = new();
     private readonly CompactTimeline _samples = new();
     private CompactOverlaySettings? _preview;
     private AppSettings EffectiveSettings => _preview is { } preview ? _vm.Settings with { Compact = preview } : _vm.Settings;
@@ -214,6 +215,14 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 _statusStrip.Draw(g, _statusLocation, now - _statusStarted); top += _statusStrip.Height + 4;
             }
             else { _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null; }
+            if (!Editing && config.ShowList && OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku))
+            {
+                var height = HotPhraseSprite.Height(_vm.HotPhrases, Math.Min(ClientSize.Height / 4, Math.Max(0, bottom - top - 120)), config.FontSize);
+                _hotSprite.Draw(g, _vm.HotPhrases, new(6, top, Math.Max(1, ClientSize.Width - 12), height),
+                    ObsOverlayProjection.Region(EffectiveSettings, new(LiveEventType.Danmaku, "", "", "#FFFFFF")).FontFamily, config.FontSize);
+                if (height > 0) top += height + 4;
+            }
+            else _hotSprite.Dispose();
             void AtTop(CompactMessage? item, int maxHeight, bool show, long key)
             {
                 if (!show || item is null || bottom - top < 60) return;
@@ -437,6 +446,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     }
     private void ReleaseRows()
     {
+        _hotSprite.Dispose();
         _frames.Stop(OnAnimationFrame); _listReady = false; _latestListId = 0;
         _statusVisible = _listMoving = false; _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null;
         foreach (var row in _rows.Values) row.Dispose(); _rows.Clear();

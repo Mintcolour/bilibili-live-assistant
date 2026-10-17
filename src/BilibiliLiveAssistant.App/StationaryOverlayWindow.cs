@@ -184,6 +184,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         }
         finally { _rebuilding = false; }
     }
+    protected override void OnHotLayoutChanged() => Rebuild();
     private void AdmitMedia(CardView view)
     {
         if (Kind is not (OverlayRegionKind.Danmaku or OverlayRegionKind.SuperChat) || view.Value.MediaReferences.Count == 0) return;

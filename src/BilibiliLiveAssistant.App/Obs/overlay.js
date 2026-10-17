@@ -10,6 +10,7 @@
   let listReady = false, latestListId = 0;
   let source, state, expiry, statusKey = '', styleKey = '';
   let countsKey = '', rankMotion, rankMotionKey = '', rankViewport, rankContent;
+  let hotKey = '';
   function stopRankMotion() {
     rankMotion?.cancel(); rankMotion = undefined; rankMotionKey = '';
     if (rankViewport) rowResize.unobserve(rankViewport);
@@ -190,6 +191,17 @@
     // A font/image resize or theme redraw must not restart an old snapshot's remaining lifetime.
     // The loopback producer and OBS share this machine's clock.
     const now = Date.now();
+    const hot = document.getElementById('hot-phrases');
+    const nextHotKey = JSON.stringify(next.hotPhrases || []);
+    if (hot && hotKey !== nextHotKey) {
+      hotKey = nextHotKey; hot.replaceChildren();
+      for (const item of (next.hotPhrases || []).slice(0, 5)) {
+        const row = document.createElement('div'); row.className = 'bla-hot-phrase';
+        const text = document.createElement('span'); text.className = 'bla-hot-text'; text.textContent = item.text;
+        const count = document.createElement('span'); count.className = 'bla-hot-count'; count.textContent = '×' + item.count;
+        row.append(text, count); hot.append(row);
+      }
+    }
     section('sc', next.sc, c.showSuperChat, now); section('gift', next.gift, c.showGift, now);
     section('entry', next.entry, c.showEntry, now); section('follow', next.follow, c.showFollow, now);
     const rows = c.showList ? (next.rows || []).slice(-32) : [];
@@ -268,6 +280,7 @@
     source?.close(); source = undefined; clearTimeout(expiry);
     for (const node of panel.querySelectorAll('img')) { observer.unobserve(node); node.removeAttribute('src'); }
     for (const id of sections) document.getElementById(id).replaceChildren(); list.replaceChildren(); document.getElementById('status').replaceChildren();
+    document.getElementById('hot-phrases')?.replaceChildren(); hotKey = '';
     rowResize.disconnect(); clearTimeout(resizePending); resizePending = undefined; rowNodes.clear(); sectionKeys.clear(); statusKey = ''; styleKey = ''; state = undefined;
     window.BlaTheme.clear();
   }

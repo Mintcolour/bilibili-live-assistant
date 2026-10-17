@@ -79,6 +79,7 @@ internal sealed class ObsOverlayProjection
             // CSS is delivered separately on changes; never repeat up to 256 KiB per message batch.
             config = Configuration(compact), style = Style(vm.Settings),
             rows = timeline.Rows.Select(item => Message(item)).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
+            hotPhrases = compact.ShowList && OverlayRegions.Enabled(vm.Settings.Display, OverlayRegionKind.Danmaku) ? vm.HotPhrases : Array.Empty<HotPhrase>(),
             status, ranks };
         foreach (var key in _messages.Keys.Where(k => !used.Contains(k)).ToArray()) _messages.Remove(key);
         return new(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)), images);

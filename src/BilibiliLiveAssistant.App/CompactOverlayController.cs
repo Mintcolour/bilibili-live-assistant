@@ -30,6 +30,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
         _publish.Tick += (_, _) => Publish();
         Timeline.Dropped += vm.RecordOverlayDropped;
         vm.EventBatchReceived += Intake; vm.RoomHistoryReset += Reset; vm.Dashboard.Cleared += Reset; vm.PropertyChanged += SettingsChanged;
+        vm.HotPhrasesChanged += HotPhrasesChanged;
         ConfigureServer();
     }
     public void SetDesktopVisible(bool visible)
@@ -49,6 +50,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
         Timeline.AddBatch(batch, DateTimeOffset.UtcNow, _vm.Settings); QueuePublish(); Schedule();
     }
     private void QueuePublish() { if (!_publish.IsRunning) _publish.Start(); }
+    private void HotPhrasesChanged() { if (!_disposed && Active) QueuePublish(); }
     private void Publish()
     {
         if (_disposed) return;
@@ -99,6 +101,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
         if (_disposed) return; _disposed = true;
         _wake.Stop(); _publish.Stop();
         _vm.EventBatchReceived -= Intake; _vm.RoomHistoryReset -= Reset; _vm.Dashboard.Cleared -= Reset; _vm.PropertyChanged -= SettingsChanged;
+        _vm.HotPhrasesChanged -= HotPhrasesChanged;
         Timeline.Dropped -= _vm.RecordOverlayDropped; Timeline.Clear(); _projection.Reset(); Changed = null;
         if (_server is { } server) { _server = null; await server.DisposeAsync(); }
     }

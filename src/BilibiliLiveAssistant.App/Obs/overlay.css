@@ -11,6 +11,11 @@
     text-shadow: var(--bla-text-shadow, none);
   }
   :where(section:empty, header:empty) { display: none; }
+  :where(.bla-hot-phrases) { flex: none; max-height: 25%; overflow: hidden; font-size: min(1em, 20px); text-shadow: none; }
+  :where(.bla-hot-phrase) { display: flex; gap: 8px; padding: 3px 8px; margin-bottom: 3px; border-radius: 4px; color: #242935; background: #dde1ea; }
+  :where(.bla-hot-phrase:nth-child(-n+3)) { background: #f7e7ae; }
+  :where(.bla-hot-text) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :where(.bla-hot-count) { flex: none; font-weight: 600; }
   :where(#status) { flex: none; font-size: .85em; display: flex; align-items: center; gap: 8px; white-space: nowrap; min-height: 30px; min-width: 0; }
   :where(.bla-counts) { display: flex; flex-direction: row; flex: none; max-width: 65%; gap: 8px; overflow: hidden; }
   :where(.bla-audience, .bla-watched) { display: flex; align-items: center; gap: 4px; min-width: 0; }
