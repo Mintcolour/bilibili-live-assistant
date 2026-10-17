@@ -15,6 +15,8 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     private readonly Microsoft.UI.Xaml.Controls.Image _image = new() { Stretch = Stretch.Fill };
     private readonly Grid _surface = new();
     private readonly Canvas _listCanvas = new() { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
+    private readonly Canvas _rankCanvas = new() { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
+    private readonly Storyboard _rankAnimation = new() { RepeatBehavior = RepeatBehavior.Forever };
     private readonly List<UiPixelSource> _rowSources = new(4);
     private readonly List<(PreviewImage Image, CompositeTransform Transform, double TargetY, double FromY, bool Leaving, bool Entering)> _previewRows = new(4);
     private readonly Storyboard _animation = new();
@@ -28,7 +30,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     public CompactPreview(LiveAssistantViewModel vm)
     {
         _vm = vm; _settings = vm.Settings; Spacing = 10;
-        _surface.Children.Add(_image); _surface.Children.Add(_listCanvas);
+        _surface.Children.Add(_image); _surface.Children.Add(_listCanvas); _surface.Children.Add(_rankCanvas);
         Children.Add(new Viewbox { Child = _surface, Stretch = Stretch.Uniform, MaxHeight = 640, HorizontalAlignment = HorizontalAlignment.Left });
         var replay = UiFactory.Button("播放出入示例"); replay.Click += (_, _) => PlaySample();
         Children.Add(replay); Children.Add(_summary);
@@ -54,6 +56,9 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     {
         _generation++; _cancellation?.Cancel(); _cancellation?.Dispose(); _cancellation = null;
         _animation.Stop(); _animation.Children.Clear(); _previewRows.Clear();
+        _rankAnimation.Stop(); _rankAnimation.Children.Clear();
+        foreach (var child in _rankCanvas.Children.OfType<Canvas>().SelectMany(canvas => canvas.Children.OfType<PreviewImage>())) child.Source = null;
+        _rankCanvas.Children.Clear();
         foreach (var child in _listCanvas.Children.OfType<PreviewImage>()) child.Source = null;
         _listCanvas.Children.Clear(); foreach (var source in _rowSources) source.Dispose(); _rowSources.Clear();
         _image.Source = null; _source?.Dispose(); _source = null;
@@ -97,12 +102,14 @@ internal sealed class CompactPreview : StackPanel, IDisposable
         if (!_active || _disposed) return;
         Clear(); var generation = _generation; var token = (_cancellation = new()).Token;
         UiPixelSource? backgroundSource = null;
+        UiPixelSource? rankSource = null;
+        CompactStatusStrip? status = null;
         var localRows = new List<(UiPixelSource Source, int Width, int Height)>(4);
         try
         {
             var settings = _settings; var c = settings.Compact; var width = Math.Min(600, c.ObsWidth); var height = Math.Min(800, c.ObsHeight);
             using var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            var listTop = 0; var listHeight = 0;
+            var listTop = 0; var listHeight = 0; var statusTop = 8;
             using (var g = Graphics.FromImage(bitmap))
             {
                 g.Clear(System.Drawing.Color.Transparent);
@@ -111,8 +118,11 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                 if (c.ShowStatus)
                 {
                     var region = ObsOverlayProjection.Region(settings, new(LiveEventType.Rank, "", "", "#B998FF"));
-                    using var status = OverlayBulletinRenderer.RenderCompact(CompactExamples.Bulletin(), region, settings.Dashboard, _vm.Images, width - 16);
-                    g.DrawImageUnscaled(status, 8, top); top += status.Height + 4;
+                    status = OverlayBulletinRenderer.CreateCompact(CompactExamples.Bulletin(), region, settings.Dashboard, _vm.Images, width - 16);
+                    statusTop = top;
+                    var saved = g.Save(); g.SetClip(new Rectangle(8, top, status.RankLeft, status.Height));
+                    g.DrawImageUnscaled(status.Prefix, 8, top + (status.Height - status.Prefix.Height) / 2); g.Restore(saved);
+                    top += status.Height + 4;
                 }
                 var messages = CompactExamples.Messages();
                 void Draw(LiveEvent value, int maxHeight, bool card = true, bool inline = false)
@@ -132,6 +142,8 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                 if (c.ShowFollow) Draw(messages[4], 54, false);
             }
             backgroundSource = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(bitmap), bitmap.Width, false, 256, token);
+            if (status?.Members is { } rankImage)
+                rankSource = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(rankImage), rankImage.Width, false, 256, token);
             if (c.ShowList && listHeight >= 40)
             {
                 var samples = CompactExamples.Messages();
@@ -148,6 +160,24 @@ internal sealed class CompactPreview : StackPanel, IDisposable
             if (_disposed || !_active || generation != _generation) return;
             _source = backgroundSource; backgroundSource = null; _image.Source = _source.Source;
             _surface.Width = width; _surface.Height = height; _surface.Opacity = c.Opacity;
+            if (rankSource is not null && status?.Members is { } members)
+            {
+                var source = rankSource; _rowSources.Add(source); rankSource = null;
+                _rankCanvas.Width = status.RankWidth; _rankCanvas.Height = status.Height;
+                _rankCanvas.Margin = new Thickness(8 + status.RankLeft, statusTop, 0, 0);
+                _rankCanvas.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, status.RankWidth, status.Height) };
+                var transform = new CompositeTransform();
+                var track = new Canvas { Width = status.Period + members.Width, Height = status.Height, RenderTransform = transform };
+                foreach (var x in new[] { 0d, status.Period })
+                {
+                    var copy = new PreviewImage { Source = source.Source, Width = members.Width, Height = members.Height, Stretch = Stretch.None };
+                    Canvas.SetLeft(copy, x); Canvas.SetTop(copy, (status.Height - members.Height) / 2d); track.Children.Add(copy);
+                }
+                _rankCanvas.Children.Add(track);
+                var scroll = new DoubleAnimation { From = 0, To = -status.Period, Duration = new Duration(TimeSpan.FromSeconds(status.Period / CompactStatusStrip.Speed)) };
+                Storyboard.SetTarget(scroll, transform); Storyboard.SetTargetProperty(scroll, "TranslateX"); _rankAnimation.Children.Add(scroll);
+                _rankAnimation.Begin();
+            }
             var visibleHeight = Math.Min(listHeight, localRows.Skip(1).Sum(row => row.Height + 4));
             _listCanvas.Width = width - 16; _listCanvas.Height = visibleHeight;
             _listCanvas.Margin = new Thickness(8, listTop + listHeight - visibleHeight, 0, 0);
@@ -169,7 +199,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (generation == _generation) { Clear(); _summary.Text = "本地预览暂不可用。"; } }
-        finally { backgroundSource?.Dispose(); foreach (var row in localRows) row.Source.Dispose(); }
+        finally { status?.Dispose(); rankSource?.Dispose(); backgroundSource?.Dispose(); foreach (var row in localRows) row.Source.Dispose(); }
     }
     public void Dispose() { if (_disposed) return; _disposed = true; _timer.Stop(); Clear(); }
 }

@@ -38,6 +38,11 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private long _latestListId;
     private static double MotionNow => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
     private LiveEvent? _statusRank, _statusOnline, _statusValue;
+    private LiveEvent? _renderedStatus;
+    private CompactStatusStrip? _statusStrip;
+    private Point _statusLocation;
+    private double _statusStarted;
+    private bool _statusVisible, _listMoving;
     private Forms.Form? _detail;
     private readonly Forms.ContextMenuStrip _menu = new();
     private readonly CompactTimeline _samples = new();
@@ -46,7 +51,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private bool Editing => (_vm.OverlayInteractive || !_vm.Settings.Display.LayoutLocked) && !_reading;
     private bool Interactive => _reading || Editing;
     internal object GetDiagnostics() => new { visible = Visible, editing = Editing, reading = _reading, rows = _rows.Count,
-        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4), readingOlder = _anchor is not null,
+        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4) + (_statusStrip?.Bytes ?? 0), readingOlder = _anchor is not null,
         animationActive = _frames.IsRunning(OnAnimationFrame), leavingRows = _rows.Values.Count(row => row.Motion.Leaving) };
     private CompactTimeline Timeline => Editing ? _samples : _vm.CompactOverlay.Timeline;
     public CompactOverlayWindow(LiveAssistantViewModel vm, OverlayFrameClock frames)
@@ -82,7 +87,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _renderQueued = false; ReleaseRows(); _canvas?.Dispose(); _canvas = null;
     }
     public void StartReading()
-    { _reading = true; if (!_vm.OverlayInteractive) _vm.ToggleOverlayInteraction(); _vm.CompactOverlay.SetDesktopVisible(Visible); ApplyInteraction(); ReleaseRows(); RequestRender(); }
+    { _reading = true; _statusValue = null; if (!_vm.OverlayInteractive) _vm.ToggleOverlayInteraction(); _vm.CompactOverlay.SetDesktopVisible(Visible); ApplyInteraction(); ReleaseRows(); RequestRender(); }
     private void Reset() { _anchor = null; _statusRank = _statusOnline = _statusValue = null; _detail?.Close(); ReleaseRows(); RequestRender(); }
     private void SettingsChanged(object? sender, PropertyChangedEventArgs args)
     {
@@ -176,6 +181,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
             var config = EffectiveSettings.Compact; var timeline = Timeline; var keep = new HashSet<long>();
             var now = MotionNow; var seconds = config.ListAnimationDurationMs / 1000d;
             var top = Interactive ? 36 : 4; var bottom = ClientSize.Height - 4;
+            _statusVisible = false;
             if (config.BackgroundOpacity > 0)
             { using var brush = new SolidBrush(OverlayTextRenderer.Color(config.BackgroundColor, config.BackgroundOpacity)); g.FillRectangle(brush, ClientRectangle); }
             if (Interactive)
@@ -196,9 +202,18 @@ internal sealed class CompactOverlayWindow : Forms.Form
                         : _statusRank is { } latest ? _vm.GetRankMembers(latest, 3) : [];
                     _statusValue = new(LiveEventType.Rank, "", "", "#B998FF", Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, members, members.Count > 0) });
                 }
-                var status = GetRow(-5, _statusValue, Math.Max(36, bottom - top), false); keep.Add(-5);
-                status.Bounds = new(6, top, status.Image.Width, status.Image.Height); DrawRow(g, status); top += status.Image.Height + 4;
+                var statusWidth = Math.Max(120, ClientSize.Width - 12);
+                if (_statusStrip is null || !ReferenceEquals(_renderedStatus, _statusValue) || _statusStrip.Width != statusWidth)
+                {
+                    var bulletin = (LiveRoomBulletin)_statusValue.Extra["room_bulletin"]!;
+                    var replacement = OverlayBulletinRenderer.CreateCompact(bulletin, ObsOverlayProjection.Region(EffectiveSettings, _statusValue), _vm.Settings.Dashboard, _vm.Images, statusWidth);
+                    if (_statusStrip is null) _statusStarted = now;
+                    _statusStrip?.Dispose(); _statusStrip = replacement; _renderedStatus = _statusValue;
+                }
+                _statusLocation = new(6, top); _statusVisible = true;
+                _statusStrip.Draw(g, _statusLocation, now - _statusStarted); top += _statusStrip.Height + 4;
             }
+            else { _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null; }
             void AtTop(CompactMessage? item, int maxHeight, bool show, long key)
             {
                 if (!show || item is null || bottom - top < 60) return;
@@ -255,15 +270,36 @@ internal sealed class CompactOverlayWindow : Forms.Form
             _listReady = config.ShowList && _listBounds.Height > 0;
             foreach (var key in _rows.Keys.Where(k => !keep.Contains(k)).ToArray()) { _rows[key].Dispose(); _rows.Remove(key); }
             _canvas.Present(Handle, Location, config.Opacity, ClientRectangle);
-            if (moving) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
+            _listMoving = moving;
+            if (moving || _statusVisible && _statusStrip?.Moving == true) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         { _frames.Stop(OnAnimationFrame); ReportRenderError(ex); }
     }
     private void OnAnimationFrame(double elapsed)
     {
-        if (_disposed || !Visible || _anchor is not null) { _frames.Stop(OnAnimationFrame); return; }
-        if (!_renderQueued) Render();
+        if (_disposed || !Visible) { _frames.Stop(OnAnimationFrame); return; }
+        if (_renderQueued) return;
+        if (_listMoving && _anchor is null) { Render(); return; }
+        if (!_statusVisible || _statusStrip?.Moving != true || _canvas is null) { _frames.Stop(OnAnimationFrame); return; }
+        try
+        {
+            var strip = _statusStrip;
+            var dirty = new Rectangle(_statusLocation.X + strip.RankLeft, _statusLocation.Y, strip.RankWidth, strip.Height);
+            var g = _canvas.Graphics; var saved = g.Save();
+            try
+            {
+                g.SetClip(dirty); g.CompositingMode = CompositingMode.SourceCopy; g.FillRectangle(Brushes.Transparent, dirty);
+                g.CompositingMode = CompositingMode.SourceOver;
+                var config = EffectiveSettings.Compact;
+                if (config.BackgroundOpacity > 0)
+                { using var brush = new SolidBrush(OverlayTextRenderer.Color(config.BackgroundColor, config.BackgroundOpacity)); g.FillRectangle(brush, dirty); }
+                strip.Draw(g, _statusLocation, MotionNow - _statusStarted);
+            }
+            finally { g.Restore(saved); }
+            _canvas.Present(Handle, Location, EffectiveSettings.Compact.Opacity, dirty);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _frames.Stop(OnAnimationFrame); ReportRenderError(ex); }
     }
     private void DrawMovingRow(Graphics graphics, Row row, double now)
     {
@@ -307,8 +343,6 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline)
     {
         var region = ObsOverlayProjection.Region(EffectiveSettings, value);
-        if (value.Extra.GetValueOrDefault("room_bulletin") is LiveRoomBulletin bulletin)
-            return OverlayBulletinRenderer.RenderCompact(bulletin, region, _vm.Settings.Dashboard, _vm.Images, width);
         return OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false, inlineHeader: inline);
     }
     private void DrawRow(Graphics graphics, Row row) => graphics.DrawImageUnscaled(row.Image, row.Bounds.Location);
@@ -404,6 +438,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private void ReleaseRows()
     {
         _frames.Stop(OnAnimationFrame); _listReady = false; _latestListId = 0;
+        _statusVisible = _listMoving = false; _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null;
         foreach (var row in _rows.Values) row.Dispose(); _rows.Clear();
     }
     protected override void Dispose(bool disposing)

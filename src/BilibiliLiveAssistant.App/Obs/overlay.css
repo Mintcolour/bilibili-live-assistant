@@ -11,16 +11,19 @@
     text-shadow: var(--bla-text-shadow, none);
   }
   :where(section:empty, header:empty) { display: none; }
-  :where(#status) { flex: none; font-size: .85em; display: flex; align-items: flex-start; gap: 8px; white-space: nowrap; min-height: 30px; min-width: 0; }
-  :where(.bla-counts) { display: flex; flex-direction: column; flex: none; max-width: 40%; gap: 3px; }
+  :where(#status) { flex: none; font-size: .85em; display: flex; align-items: center; gap: 8px; white-space: nowrap; min-height: 30px; min-width: 0; }
+  :where(.bla-counts) { display: flex; flex-direction: row; flex: none; max-width: 65%; gap: 8px; overflow: hidden; }
   :where(.bla-audience, .bla-watched) { display: flex; align-items: center; gap: 4px; min-width: 0; }
   :where(.bla-metric-value) { overflow: hidden; text-overflow: ellipsis; }
-  :where(.bla-ranks) { display: flex; align-items: flex-start; gap: 5px; flex: 1; min-width: 0; }
+  :where(.bla-ranks) { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 48px; }
   :where(.bla-rank-icon, .bla-metric-icon, .bla-rank-index) { flex: none; }
-  :where(.bla-rank-list) { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-  :where(#status .member) { display: flex; align-items: center; gap: 3px; min-width: 0; }
-  :where(#status .name) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  :where(#status .badge) { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+  :where(.bla-rank-viewport) { display: block; flex: 1; min-width: 0; overflow: hidden; padding: 4px 0; }
+  :where(.bla-rank-track) { display: block; position: relative; width: max-content; }
+  :where(.bla-rank-list) { display: inline-flex; align-items: center; gap: 14px; width: max-content; vertical-align: top; }
+  :where(.bla-rank-copy) { position: absolute; top: 0; }
+  :where(#status .member) { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+  :where(#status .name) { flex: none; }
+  :where(#status .badge) { flex: none; }
   :where(#status .badge) { font-size: 10px; }
   :where(.fixed) { flex: none; padding: 6px 8px; border-left: 3px solid #d48be5; border-radius: 5px; }
   :where(#sc) { border-color: #e6b85d; max-height: 40%; overflow: hidden; }

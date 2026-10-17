@@ -9,6 +9,28 @@
   const leavingNodes = new Map();
   let listReady = false, latestListId = 0;
   let source, state, expiry, statusKey = '', styleKey = '';
+  let countsKey = '', rankMotion, rankMotionKey = '', rankViewport, rankContent;
+  function stopRankMotion() {
+    rankMotion?.cancel(); rankMotion = undefined; rankMotionKey = '';
+    if (rankViewport) rowResize.unobserve(rankViewport);
+    if (rankContent) rowResize.unobserve(rankContent);
+    rankViewport = rankContent = undefined;
+  }
+  function updateRankMotion() {
+    const viewport = document.querySelector('.bla-rank-viewport');
+    const track = viewport?.querySelector('.bla-rank-track');
+    const content = track?.querySelector('.bla-rank-list');
+    if (!viewport || !track || !content || document.hidden || !viewport.clientWidth || !content.offsetWidth || !viewport.getClientRects().length) { stopRankMotion(); return; }
+    const period = Math.max(viewport.clientWidth, content.offsetWidth) + 24;
+    const key = `${viewport.clientWidth},${content.offsetWidth},${period}`;
+    if (rankMotionKey === key && rankViewport === viewport) return;
+    stopRankMotion(); rankViewport = viewport; rankContent = content;
+    rowResize.observe(viewport); rowResize.observe(content);
+    track.querySelector('.bla-rank-copy')?.remove();
+    const copy = content.cloneNode(true); copy.classList.add('bla-rank-copy'); copy.setAttribute('aria-hidden','true'); copy.style.left = period + 'px'; track.append(copy);
+    rankMotionKey = key;
+    rankMotion = track.animate([{transform:'translateX(0)'},{transform:`translateX(${-period}px)`}], {duration:period / 40 * 1000, iterations:Infinity, easing:'linear'});
+  }
   const color = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
   const observer = new IntersectionObserver(entries => {
     for (const entry of entries) {
@@ -183,21 +205,18 @@
       else list.append(node);
       rowNodes.set(row.id, {key, node, fadeUntil: existing?.fadeUntil || 0}); rowResize.observe(node);
     }
-    const rankKey = JSON.stringify([c.showStatus, next.status, next.ranks]);
+    const rankKey = JSON.stringify([c.showStatus, next.ranks]);
     if (rankKey !== statusKey) {
+      stopRankMotion(); countsKey = '';
       statusKey = rankKey; const header = document.getElementById('status'); for (const node of Array.from(header.children)) release(node); header.replaceChildren();
       if (c.showStatus) {
         const counts = document.createElement('span'); counts.className = 'bla-counts';
-        for (const [className, icon, value] of [['bla-audience','◉',next.status?.[0] || '—'],['bla-watched','👁',next.status?.[1]]]) {
-          if (!value) continue;
-          const part = document.createElement('span'); part.className = className;
-          const mark = document.createElement('span'); mark.className = 'bla-metric-icon'; mark.textContent = icon + ' '; mark.setAttribute('aria-hidden','true');
-          const count = document.createElement('span'); count.className = 'bla-metric-value'; count.textContent = value;
-          part.append(mark,count,document.createTextNode(' ')); counts.append(part);
-        } header.append(counts);
+        header.append(counts);
         const ranks = document.createElement('span'); ranks.className = 'bla-ranks';
         const rankIcon = document.createElement('span'); rankIcon.className = 'bla-rank-icon'; rankIcon.textContent = '🏆'; rankIcon.setAttribute('aria-label','高能榜');
         const rankList = document.createElement('span'); rankList.className = 'bla-rank-list';
+        const viewport = document.createElement('span'); viewport.className = 'bla-rank-viewport';
+        const track = document.createElement('span'); track.className = 'bla-rank-track';
         for (const rank of (next.ranks || []).slice(0, 3)) {
           const member = document.createElement('span'); member.className = 'member bla-rank-member'; member.dataset.rank = String(rank.rank);
           const msg = rank.message; member.dataset.guardLevel = String(msg.guardLevel || 0);
@@ -205,9 +224,25 @@
           badge(member, msg.medal, msg.medalColor, 'bla-fan-medal'); badge(member, msg.guard, '#458ac1', 'bla-identity');
           const name = document.createElement('span'); name.className = 'name bla-name'; name.textContent = msg.name; member.append(name); rankList.append(member);
         }
-        if (rankList.childElementCount) { ranks.append(rankIcon, rankList); header.append(ranks); }
+        if (rankList.childElementCount) { track.append(rankList); viewport.append(track); ranks.append(rankIcon, viewport); header.append(ranks); }
       }
     }
+    const metricsKey = JSON.stringify([c.showStatus, next.status]);
+    if (metricsKey !== countsKey) {
+      countsKey = metricsKey;
+      const counts = document.querySelector('#status .bla-counts');
+      if (counts) {
+        counts.replaceChildren();
+        for (const [className, icon, value] of [['bla-audience','◉',next.status?.[0] || '—'],['bla-watched','👁',next.status?.[1]]]) {
+          if (!value) continue;
+          const part = document.createElement('span'); part.className = className;
+          const mark = document.createElement('span'); mark.className = 'bla-metric-icon'; mark.textContent = icon; mark.setAttribute('aria-hidden','true');
+          const count = document.createElement('span'); count.className = 'bla-metric-value'; count.textContent = value;
+          part.append(mark,count); counts.append(part);
+        }
+      }
+    }
+    updateRankMotion();
     const currentBounds = list.getBoundingClientRect();
     const geometryChanged = Math.abs(before.geometry.rect.height - currentBounds.height) >= .5 || Math.abs(before.geometry.rect.top - currentBounds.top) >= .5;
     animateList(before, removed, c.listAnimationEnabled !== false && !styleChanged && previousRoom === next.roomId,
@@ -222,14 +257,14 @@
     source = new EventSource(preview ? 'preview-events' : 'events');
     source.addEventListener('open', stopListMotion);
     source.addEventListener('error', () => {
-      stopListMotion();
+      stopListMotion(); stopRankMotion();
       if (preview) { disconnect(); window.BlaTheme.set({}); window.dispatchEvent(new Event('bla-preview-disconnected')); }
     });
     source.addEventListener('state', event => { try { const next = JSON.parse(event.data); render(preview ? window.BlaPreviewState(next) : next); } catch { /* wait for the next complete state */ } });
     source.addEventListener('theme', event => { try { if (window.BlaTheme.set(JSON.parse(event.data))) { stopListMotion(); if (state) render(state); } } catch { /* Keep the last applied theme. */ } });
   }
   function disconnect() {
-    stopListMotion(); latestListId = 0;
+    stopListMotion(); stopRankMotion(); countsKey = ''; latestListId = 0;
     source?.close(); source = undefined; clearTimeout(expiry);
     for (const node of panel.querySelectorAll('img')) { observer.unobserve(node); node.removeAttribute('src'); }
     for (const id of sections) document.getElementById(id).replaceChildren(); list.replaceChildren(); document.getElementById('status').replaceChildren();
