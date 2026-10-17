@@ -1,17 +1,22 @@
+param(
+    [ValidatePattern('^[a-z0-9][a-z0-9-]{0,63}$')]
+    [string]$ReleaseName = 'compact-overlay-obs',
+    [ValidatePattern('^[a-z0-9][a-z0-9-]{0,63}\.md$')]
+    [string]$DeliveryDocument = 'compact-overlay-obs-delivery.md'
+)
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $repository 'artifacts/releases'))
-$release = [IO.Path]::GetFullPath((Join-Path $releaseRoot 'compact-overlay-obs'))
-$archive = [IO.Path]::GetFullPath((Join-Path $releaseRoot 'compact-overlay-obs-win-x64.zip'))
-$temporary = [IO.Path]::GetFullPath((Join-Path $releaseRoot 'compact-overlay-obs-win-x64.finalizing.zip'))
+$release = [IO.Path]::GetFullPath((Join-Path $releaseRoot $ReleaseName))
+$archive = [IO.Path]::GetFullPath((Join-Path $releaseRoot "$ReleaseName-win-x64.zip"))
+$temporary = [IO.Path]::GetFullPath((Join-Path $releaseRoot "$ReleaseName-win-x64.finalizing.zip"))
 foreach ($target in @($release, $archive, $temporary)) {
     if (!$target.StartsWith($releaseRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '发布路径越界' }
 }
-if (!(Test-Path -LiteralPath (Join-Path $release 'BilibiliLiveAssistant.App.exe'))) { throw '请先发布 compact-overlay-obs' }
+if (!(Test-Path -LiteralPath (Join-Path $release 'BilibiliLiveAssistant.App.exe'))) { throw "请先发布 $ReleaseName" }
 if (Test-Path -LiteralPath $temporary) { throw '临时包已存在，拒绝覆盖' }
-foreach ($name in @('交付核对.md', '紧凑浮窗与OBS说明.md')) {
-    Copy-Item -LiteralPath (Join-Path $repository 'docs/compact-overlay-obs-delivery.md') -Destination (Join-Path $release $name)
-}
+Copy-Item -LiteralPath (Join-Path $repository "docs/$DeliveryDocument") -Destination (Join-Path $release '交付核对.md')
+Copy-Item -LiteralPath (Join-Path $repository 'docs/compact-overlay-obs-delivery.md') -Destination (Join-Path $release '紧凑浮窗与OBS说明.md')
 Add-Type -AssemblyName System.IO.Compression.ZipFile
 $output = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew)
 $zip = [IO.Compression.ZipArchive]::new($output, [IO.Compression.ZipArchiveMode]::Create)
