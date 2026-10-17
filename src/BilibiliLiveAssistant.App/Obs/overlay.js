@@ -3,6 +3,7 @@
   const panel = document.getElementById('panel');
   const list = document.getElementById('list');
   const sections = ['sc', 'gift', 'entry', 'follow'];
+  const preview = document.documentElement.dataset.preview === 'true';
   const rowNodes = new Map();
   const sectionKeys = new Map();
   const leavingNodes = new Map();
@@ -20,37 +21,29 @@
     const element = document.createElement('img');
     element.className = className;
     element.alt = '';
-    if (/^image\/[0-9a-f]{64}$/.test(path || '')) { element.dataset.image = path; observer.observe(element); }
+    if (/^image\/[0-9a-f]{64}$/.test(path || '') || preview && /^sample-(avatar|emote)\.svg$/.test(path || '')) { element.dataset.image = path; observer.observe(element); }
     return element;
   }
-  function badge(parent, text, background) {
+  function badge(parent, text, background, className = '') {
     if (!text) return;
-    const element = document.createElement('span'); element.className = 'badge'; element.textContent = text;
-    element.style.backgroundColor = color(background, '#47678e'); parent.append(element);
+    const element = document.createElement('span'); element.className = 'badge ' + className; element.textContent = text;
+    element.style.setProperty('--bla-event-badge', color(background, '#47678e')); parent.append(element); return element;
   }
   function message(m) {
-    const node = document.createElement('article'); node.className = 'message'; node.dataset.type = m.type;
-    node.style.color = color(m.color, '#f1f3f8');
-    const fx = m.effects || {};
-    node.style.setProperty('--large-emote', (fx.largeEmoteHeight || 100) + 'px');
-    node.style.fontFamily = fx.fontFamily || 'Microsoft YaHei UI';
-    node.style.fontWeight = fx.bold ? '700' : '400'; node.style.fontStyle = fx.italic ? 'italic' : 'normal';
-    const shadows = fx.outline ? ['-1px 0 0 #000','1px 0 0 #000','0 -1px 0 #000','0 1px 0 #000'] : [];
-    if (fx.shadow) {
-      const hex = color(fx.shadowColor, '#000000');
-      const rgba = `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${Math.max(0, Math.min(1, fx.shadowOpacity))})`;
-      shadows.push(`${fx.shadowOffset}px ${fx.shadowOffset}px ${fx.shadowSize}px ${rgba}`);
-    }
-    node.style.textShadow = shadows.length ? shadows.join(',') : 'none';
+    const node = document.createElement('article'); node.className = 'message bla-message'; node.dataset.type = m.type;
+    node.dataset.guardLevel = String(m.guardLevel || 0); node.dataset.priceTier = String(m.priceTier || 0);
+    node.dataset.amountKnown = String(m.amountMilliYuan != null);
+    const content = document.createElement('div'); content.className = 'bla-content'; node.append(content);
     if (m.avatar) {
       const wrap = document.createElement('span'); wrap.className = 'avatar-wrap'; wrap.append(image(m.avatar, 'avatar'));
-      if (m.frame) wrap.append(image(m.frame, 'avatar-frame')); node.append(wrap);
+      if (m.frame) wrap.append(image(m.frame, 'avatar-frame')); content.append(wrap);
     }
     const label = {SuperChat:'SC', Guard:'上舰', Gift:'礼物', Follow:'关注', Like:'点赞'}[m.type];
-    badge(node, label ? `${label}${m.type === 'SuperChat' && m.price ? ' ' + m.price : ''}` : '', m.color);
-    badge(node, m.medal, m.medalColor); badge(node, m.guard, '#458ac1'); if (m.admin) badge(node, '房管', '#358867');
-    const name = document.createElement('span'); name.className = 'name'; name.textContent = m.name + ' '; node.append(name);
-    const body = document.createElement('span'); body.className = 'body';
+    const typeBadge = badge(content, label, m.color, 'bla-type-badge');
+    if (m.type === 'SuperChat' && m.price && typeBadge) { const price = document.createElement('span'); price.className = 'bla-price'; price.textContent = ' ' + m.price; typeBadge.append(price); }
+    badge(content, m.medal, m.medalColor, 'bla-fan-medal'); badge(content, m.guard, '#458ac1', 'bla-identity bla-guard'); if (m.admin) badge(content, '房管', '#358867', 'bla-identity bla-admin');
+    const name = document.createElement('span'); name.className = 'name bla-name'; name.textContent = m.name + ' '; content.append(name);
+    const body = document.createElement('span'); body.className = 'body bla-body';
     for (const segment of m.segments || []) {
       if (!segment.image) { body.append(document.createTextNode(segment.text)); continue; }
       const emote = image(segment.image, 'emote' + (segment.large ? ' large' : ''));
@@ -58,9 +51,17 @@
       if (segment.width > 0 && segment.height > 0) emote.style.aspectRatio = `${segment.width}/${segment.height}`;
       body.append(emote);
     }
-    node.append(body); return node;
+    // Gift name and quantity remain separate optional metadata; do not duplicate the existing body text.
+    if (m.giftName && (m.type === 'Gift' || m.type === 'Guard')) {
+      const detail = document.createElement('span'); detail.className = 'bla-gift-details'; detail.hidden = true;
+      for (const [className, text] of [['bla-gift-name',m.giftName],['bla-quantity',m.quantity == null ? '' : ' ×' + m.quantity],['bla-price',m.price || '']]) {
+        const part = document.createElement('span'); part.className = className; part.textContent = text; detail.append(part);
+      }
+      content.append(detail);
+    }
+    content.append(body); return node;
   }
-  function release(node) { for (const img of node.querySelectorAll('img')) { observer.unobserve(img); img.removeAttribute('src'); } node.remove(); }
+  function release(node) { rowResize.unobserve(node); for (const img of node.querySelectorAll('img')) { observer.unobserve(img); img.removeAttribute('src'); } node.remove(); }
   function cancelMotion(node) { for (const animation of node.getAnimations()) { animation.onfinish = null; animation.cancel(); } }
   function stopListMotion() {
     for (const entry of rowNodes.values()) { cancelMotion(entry.node); entry.fadeUntil = 0; }
@@ -144,7 +145,7 @@
     const key = active ? JSON.stringify(active) : '';
     if (sectionKeys.get(id) === key) return;
     for (const node of Array.from(host.children)) release(node);
-    if (active) host.append(message(active)); sectionKeys.set(id, key);
+    if (active) { const node = message(active); host.append(node); rowResize.observe(node); } sectionKeys.set(id, key);
   }
   function fit() {
     if (!state) return;
@@ -159,12 +160,7 @@
     const sk = JSON.stringify([c, s]);
     const styleChanged = styleKey !== sk;
     if (styleKey !== sk) {
-      styleKey = sk; panel.style.fontFamily = s.fontFamily; panel.style.fontSize = c.fontSize + 'px'; panel.style.opacity = c.opacity;
-      panel.style.setProperty('--emote', c.emoteSize + 'px'); panel.style.setProperty('--avatar', Math.min(s.avatarSize, c.fontSize + 10) + 'px');
-      panel.style.setProperty('--sc-lines', c.superChatLines);
-      const hex = color(c.backgroundColor, '#242833');
-      panel.style.backgroundColor = `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${c.backgroundOpacity})`;
-      panel.style.textShadow = s.shadow ? `1px 1px ${s.shadowSize}px rgba(0,0,0,${s.shadowOpacity})` : 'none'; fit();
+      styleKey = sk; window.BlaTheme.update(next); fit();
     }
     const now = next.now;
     section('sc', next.sc, c.showSuperChat, now); section('gift', next.gift, c.showGift, now);
@@ -180,18 +176,19 @@
       const node = message(row);
       if (existing) { existing.node.replaceWith(node); cancelMotion(existing.node); release(existing.node); }
       else list.append(node);
-      rowNodes.set(row.id, {key, node, fadeUntil: existing?.fadeUntil || 0});
+      rowNodes.set(row.id, {key, node, fadeUntil: existing?.fadeUntil || 0}); rowResize.observe(node);
     }
     const rankKey = JSON.stringify([c.showStatus, next.status, next.ranks]);
     if (rankKey !== statusKey) {
       statusKey = rankKey; const header = document.getElementById('status'); for (const node of Array.from(header.children)) release(node); header.replaceChildren();
       if (c.showStatus) {
-        const counts = document.createElement('span'); counts.textContent = `◉ ${next.status?.[0] || '—'}${next.status?.[1] ? '  👁 ' + next.status[1] : ''}`; header.append(counts);
+        const counts = document.createElement('span'); counts.className = 'bla-counts';
+        for (const [className, text] of [['bla-audience',`◉ ${next.status?.[0] || '—'}`],['bla-watched',next.status?.[1] ? '  👁 ' + next.status[1] : '']]) { const part = document.createElement('span'); part.className = className; part.textContent = text; counts.append(part); } header.append(counts);
         for (const rank of next.ranks || []) {
-          const member = document.createElement('span'); member.className = 'member';
+          const member = document.createElement('span'); member.className = 'member bla-rank-member'; member.dataset.rank = String(rank.rank);
           const msg = rank.message; member.append(document.createTextNode('#' + rank.rank + ' '));
           if (msg.avatar) member.append(image(msg.avatar, 'avatar'));
-          badge(member, msg.medal, msg.medalColor); badge(member, msg.guard, '#458ac1');
+          badge(member, msg.medal, msg.medalColor, 'bla-fan-medal'); badge(member, msg.guard, '#458ac1', 'bla-identity');
           const name = document.createElement('span'); name.className = 'name'; name.textContent = msg.name; member.append(name); header.append(member);
         }
       }
@@ -206,18 +203,33 @@
   }
   function connect() {
     if (source || document.hidden) return;
-    source = new EventSource('events');
+    source = new EventSource(preview ? 'preview-events' : 'events');
     source.addEventListener('open', stopListMotion);
     source.addEventListener('error', stopListMotion);
     source.addEventListener('state', event => { try { render(JSON.parse(event.data)); } catch { /* wait for the next complete state */ } });
+    source.addEventListener('theme', event => { try { if (window.BlaTheme.set(JSON.parse(event.data))) { stopListMotion(); if (state) render(state); } } catch { /* Keep the last applied theme. */ } });
   }
   function disconnect() {
     stopListMotion(); latestListId = 0;
     source?.close(); source = undefined; clearTimeout(expiry);
     for (const node of panel.querySelectorAll('img')) { observer.unobserve(node); node.removeAttribute('src'); }
     for (const id of sections) document.getElementById(id).replaceChildren(); list.replaceChildren(); document.getElementById('status').replaceChildren();
-    rowNodes.clear(); sectionKeys.clear(); statusKey = ''; state = undefined;
+    rowResize.disconnect(); clearTimeout(resizePending); rowNodes.clear(); sectionKeys.clear(); statusKey = ''; styleKey = ''; state = undefined;
   }
+  // Event-driven only. Image/font/CSS layout changes are coalesced; there is no frame polling.
+  let resizePending;
+  const rowSizes = new WeakMap();
+  const rowResize = new ResizeObserver(entries => {
+    let changed = false;
+    for (const entry of entries) {
+      const size = `${entry.target.offsetWidth},${entry.target.offsetHeight}`;
+      if (rowSizes.has(entry.target) && rowSizes.get(entry.target) !== size) changed = true;
+      rowSizes.set(entry.target, size);
+    }
+    if (!changed || !state || document.hidden || resizePending) return;
+    resizePending = setTimeout(() => { resizePending = undefined; if (state && !document.hidden) { stopListMotion(); render(state); } }, 50);
+  });
+  if (preview) window.BlaPreviewRender = value => render(value);
   document.addEventListener('visibilitychange', () => document.hidden ? disconnect() : connect());
   addEventListener('pagehide', disconnect); addEventListener('resize', () => { stopListMotion(); fit(); }); connect();
 })();

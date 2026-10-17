@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using BilibiliLiveAssistant.Core;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -25,6 +27,8 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     private readonly HashSet<Task> _requests = new();
     private TaskCompletionSource<bool> _changed = Signal();
     private byte[] _snapshot = "{}"u8.ToArray();
+    private byte[] _theme = "{}"u8.ToArray();
+    private long _themeVersion;
     private long _version, _imagesServed;
     private int _consumers, _connections;
     private Task? _accept;
@@ -46,6 +50,15 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void Start() { _listener.Start(32); _accept = AcceptAsync(); }
     public void ClearSnapshot() => Publish(new("{}"u8.ToArray(), new Dictionary<string, ObsImageReference>()));
+    public void PublishTheme(ObsThemeSettings theme)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(theme, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        lock (_gate)
+        {
+            if (_stop.IsCancellationRequested || bytes.AsSpan().SequenceEqual(_theme)) return;
+            _theme = bytes; _themeVersion++; var signal = _changed; _changed = Signal(); signal.TrySetResult(true);
+        }
+    }
     internal object GetDiagnostics() => new { connections = Volatile.Read(ref _connections), clients = Volatile.Read(ref _consumers), imagesServed = Interlocked.Read(ref _imagesServed) };
     public void Publish(ObsOverlayDocument document)
     {
@@ -104,7 +117,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
                 var route = request[1][_prefix.Length..];
                 if (route == "events") { deadline.CancelAfter(Timeout.InfiniteTimeSpan); await Events(stream, deadline.Token); return; }
                 if (route.StartsWith("image/", StringComparison.Ordinal)) { deadline.CancelAfter(TimeSpan.FromSeconds(10)); await Image(stream, route[6..], deadline.Token); return; }
-                var resource = route switch { "" => ("index.html", "text/html; charset=utf-8"), "overlay.js" => ("overlay.js", "text/javascript; charset=utf-8"), "overlay.css" => ("overlay.css", "text/css; charset=utf-8"), _ => ("", "text/plain") };
+                var resource = route switch { "" => ("index.html", "text/html; charset=utf-8"), "overlay.js" => ("overlay.js", "text/javascript; charset=utf-8"), "theme.js" => ("theme.js", "text/javascript; charset=utf-8"), "overlay.css" => ("overlay.css", "text/css; charset=utf-8"), _ => ("", "text/plain") };
                 if (resource.Item1.Length == 0) { await Reply(stream, 404, "text/plain", [], deadline.Token); return; }
                 using var file = Assembly.GetExecutingAssembly().GetManifestResourceStream("BilibiliLiveAssistant.App.Obs." + resource.Item1) ?? throw new IOException("OBS resource missing");
                 using var buffer = new MemoryStream(); await file.CopyToAsync(buffer, deadline.Token);
@@ -132,12 +145,17 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
             // A reconnect must wait for a fresh UI snapshot, never replay a previous room.
             await initial.WaitAsync(TimeSpan.FromSeconds(5), cancellation);
             await Header(stream, 200, "text/event-stream", null, cancellation);
-            long seen = -1;
+            long seen = -1, themeSeen = -1;
             while (!cancellation.IsCancellationRequested)
             {
-                byte[] snapshot; long version; Task next;
-                lock (_gate) { snapshot = _snapshot; version = _version; next = _changed.Task; }
+                byte[] snapshot, theme; long version, themeVersion; Task next;
+                lock (_gate) { snapshot = _snapshot; version = _version; next = _changed.Task; theme = _theme; themeVersion = _themeVersion; }
                 using var write = CancellationTokenSource.CreateLinkedTokenSource(cancellation); write.CancelAfter(TimeSpan.FromSeconds(10));
+                if (themeSeen != themeVersion)
+                {
+                    await stream.WriteAsync("event: theme\ndata: "u8.ToArray(), write.Token);
+                    await stream.WriteAsync(theme, write.Token); await stream.WriteAsync("\n\n"u8.ToArray(), write.Token); themeSeen = themeVersion;
+                }
                 if (version != seen)
                 {
                     await stream.WriteAsync("event: state\ndata: "u8.ToArray(), write.Token);

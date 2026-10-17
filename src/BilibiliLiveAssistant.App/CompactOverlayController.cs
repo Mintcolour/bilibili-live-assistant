@@ -73,6 +73,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
         var restart = current.ObsEnabled != _configuration.ObsEnabled || current.ObsPort != _configuration.ObsPort;
         _configuration = current;
         if (restart) ConfigureServer();
+        _server?.PublishTheme(current.ObsTheme);
         Publish(); Schedule();
     }
     private void ConfigureServer()
@@ -88,7 +89,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
                 if (_disposed || !ReferenceEquals(server, _server)) return;
                 _obsConsumers = server.ConsumerCount; ConsumersChanged();
             });
-            _server = server; server.Start(); Publish();
+            _server = server; server.PublishTheme(_configuration.ObsTheme); server.Start(); Publish();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         { if (_server is { } failed) _ = failed.DisposeAsync(); _server = null; _vm.ReportSettingsError("OBS 网页源未能启动，请检查端口占用后重新启用。" ); }

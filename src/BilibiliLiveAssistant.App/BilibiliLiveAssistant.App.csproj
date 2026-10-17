@@ -46,5 +46,6 @@
     <EmbeddedResource Include="Obs\index.html" />
     <EmbeddedResource Include="Obs\overlay.js" />
     <EmbeddedResource Include="Obs\overlay.css" />
+    <EmbeddedResource Include="Obs\theme.js" />
   </ItemGroup>
 </Project>

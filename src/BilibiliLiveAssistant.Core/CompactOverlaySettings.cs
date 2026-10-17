@@ -61,6 +61,7 @@ public sealed record CompactOverlaySettings
     public bool ShowFollow { get; init; } = true;
     public int SuperChatLines { get; init; } = 6;
     public double FollowSeconds { get; init; } = 5;
+    public ObsThemeSettings ObsTheme { get; init; } = new();
     public CompactOverlaySettings Normalize() => this with
     {
         ObsPort = Math.Clamp(ObsPort, 1024, 65535), ObsWidth = Math.Clamp(ObsWidth, 240, 1920), ObsHeight = Math.Clamp(ObsHeight, 320, 2160),
@@ -69,5 +70,6 @@ public sealed record CompactOverlaySettings
         BackgroundColor = OverlayRegionSettings.IsColor(BackgroundColor) ? BackgroundColor : "#242833", SuperChatLines = Math.Clamp(SuperChatLines, 1, 12),
         FollowSeconds = OverlayPriceDurations.Finite(FollowSeconds, 5, 1, 300),
         ListAnimationDurationMs = Math.Clamp(ListAnimationDurationMs, 100, 500),
+        ObsTheme = (ObsTheme ?? new()).Normalize(),
     };
 }

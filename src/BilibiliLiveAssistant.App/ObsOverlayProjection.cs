@@ -8,7 +8,8 @@ namespace BilibiliLiveAssistant.App;
 internal sealed record ObsImageReference(string Url, long Uid, int Limit, BiliImageRole Role);
 internal sealed record ObsOverlayDocument(byte[] Json, IReadOnlyDictionary<string, ObsImageReference> Images);
 internal sealed record ObsMessage(long Id, string Type, string Name, string Body, string Color, string Avatar, string Frame,
-    string Medal, string MedalColor, string Guard, bool Admin, object[] Segments, double? Expires, string Price, object Effects);
+    string Medal, string MedalColor, string Guard, bool Admin, object[] Segments, double? Expires, string Price, object Effects,
+    int GuardLevel, long? AmountMilliYuan, string GiftName, long? Quantity, int PriceTier);
 
 internal sealed class ObsOverlayProjection
 {
@@ -61,7 +62,9 @@ internal sealed class ObsOverlayProjection
                 appearance?.MedalColor ?? "#527EBE", style.ShowIdentity ? appearance?.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" } : "",
                 style.ShowIdentity && appearance?.IsAdmin == true, segments, item.Expires?.ToUnixTimeMilliseconds(),
                 value.HistoryFields?.AmountMilliYuan is { } amount ? $"¥{amount / 1000m:0.###}" : "",
-                new { region.FontFamily, region.Bold, region.Italic, region.Outline, region.Shadow, region.ShadowOpacity, region.ShadowSize, region.ShadowOffset, region.ShadowColor, region.LargeEmoteHeight });
+                new { region.FontFamily, region.Bold, region.Italic, region.Outline, region.Shadow, region.ShadowOpacity, region.ShadowSize, region.ShadowOffset, region.ShadowColor, region.LargeEmoteHeight },
+                appearance?.GuardLevel ?? 0, value.HistoryFields?.AmountMilliYuan, value.HistoryFields?.GiftName ?? "",
+                value.HistoryFields?.Quantity, PriceTier(vm.Settings, value));
             collected = null; _messages[item.Id] = (value, result, messageImages); return result;
         }
         var status = OverlayBulletinRenderer.AudienceMetrics(vm.LatestRank, vm.LatestOnline, true).Select(m => m.Value).ToArray();
@@ -73,15 +76,28 @@ internal sealed class ObsOverlayProjection
         }
         var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow)) }).ToArray();
         var payload = new { revision, roomId = vm.RoomId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
-            config = compact, style = new { fontFamily = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).FontFamily,
+            // CSS is delivered separately on changes; never repeat up to 256 KiB per message batch.
+            config = new { compact.FontSize, compact.EmoteSize, compact.Opacity, compact.BackgroundColor, compact.BackgroundOpacity,
+                compact.SuperChatLines, compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow,
+                compact.ListAnimationEnabled, compact.ListAnimationDurationMs },
+            style = new { fontFamily = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).FontFamily,
                 style.ShowAvatars, style.AvatarSize, style.ShowMedals, style.ShowIdentity, style.UsernameColor,
                 shadow = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).Shadow,
                 shadowSize = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).ShadowSize,
-                shadowOpacity = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).ShadowOpacity },
+                shadowOpacity = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).ShadowOpacity,
+                regions = new[] { LiveEventType.Danmaku, LiveEventType.SuperChat, LiveEventType.Gift, LiveEventType.Guard, LiveEventType.Enter }
+                    .Select(type => { var r = Region(vm.Settings, new LiveEvent(type, "", "", "#FFFFFF")); return new
+                    { type = type.ToString(), r.FontFamily, r.Color, r.Bold, r.Italic, r.Outline, r.Shadow, r.ShadowColor, r.ShadowOffset, r.ShadowOpacity, r.ShadowSize, r.LargeEmoteHeight }; }).ToArray() },
             rows = timeline.Rows.Select(Message).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
             status, ranks };
         foreach (var key in _messages.Keys.Where(k => !used.Contains(k)).ToArray()) _messages.Remove(key);
         return new(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)), images);
+    }
+    private static int PriceTier(AppSettings settings, LiveEvent value)
+    {
+        if (value.HistoryFields?.AmountMilliYuan is not { } amount) return 0;
+        var tiers = value.Type == LiveEventType.SuperChat ? settings.PriceDurations.SuperChat : settings.PriceDurations.Gift;
+        return tiers.Count(t => t.FromYuan <= amount / 1000m);
     }
     internal static OverlayRegionSettings Region(AppSettings settings, LiveEvent value)
     {
