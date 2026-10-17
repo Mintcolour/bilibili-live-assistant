@@ -160,7 +160,7 @@
     const before = captureList(), previousRoom = state?.roomId;
     state = next;
     const c = next.config, s = next.style;
-    const sk = JSON.stringify([c, s]);
+    const sk = JSON.stringify([c, s, next.width, next.height]);
     const styleChanged = styleKey !== sk;
     if (styleKey !== sk) {
       styleKey = sk; window.BlaTheme.update(next); fit();

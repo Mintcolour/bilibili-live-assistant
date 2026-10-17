@@ -3,6 +3,10 @@
   let base, sequence = 20;
   const label = document.getElementById('bla-preview-status');
   const replay = document.getElementById('bla-replay');
+  const toolbar = document.getElementById('bla-workbench'), stage = document.querySelector('.bla-preview-stage');
+  const toolbarResize = new ResizeObserver(() => { stage.style.top = toolbar.offsetHeight + 'px'; window.dispatchEvent(new Event('resize')); });
+  toolbarResize.observe(toolbar);
+  window.addEventListener('pagehide', () => toolbarResize.disconnect());
   const sample = (id, type, body, extra = {}) => ({id,type,name:'示例观众',body,color:'#617ca8',avatar:'sample-avatar.svg',medal:'粉丝牌 12',medalColor:'#3d8599',guard:'舰长',guardLevel:3,
     segments:[{text:body}],...extra});
   let rows = [sample(1,'Danmaku','你好，欢迎来到直播间！'),sample(2,'Danmaku','透明表情示例 ',{segments:[{text:'透明表情示例 '},{text:'[开心]',image:'sample-emote.svg',width:64,height:64}]}),
