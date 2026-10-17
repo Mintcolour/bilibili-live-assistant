@@ -1,0 +1,7 @@
+/* 蓝色气泡。建议选择“聊天气泡”模板；可按需要继续修改。 */
+.bla-overlay { --bla-font-size: 20px; --bla-avatar-size: 30px; --bla-message-gap: 8px; --bla-panel-background: transparent; }
+.bla-content { padding: 8px 12px; background: rgba(22, 35, 56, .82); border: 1px solid rgba(135, 182, 240, .35); border-radius: 12px; text-shadow: 0 1px 2px #111; }
+.bla-name { color: #a7d8ff; }
+.bla-message[data-type="SuperChat"] .bla-content { background: rgba(75, 54, 19, .88); border-color: #e8bc68; }
+.bla-message[data-type="Guard"] .bla-content { border-color: #b99aff; }
+.bla-message[data-type="Follow"] .bla-content { border-left: 3px solid #ffb6d5; }

@@ -17,6 +17,14 @@ if (!(Test-Path -LiteralPath (Join-Path $release 'BilibiliLiveAssistant.App.exe'
 if (Test-Path -LiteralPath $temporary) { throw '临时包已存在，拒绝覆盖' }
 Copy-Item -LiteralPath (Join-Path $repository "docs/$DeliveryDocument") -Destination (Join-Path $release '交付核对.md')
 Copy-Item -LiteralPath (Join-Path $repository 'docs/compact-overlay-obs-delivery.md') -Destination (Join-Path $release '紧凑浮窗与OBS说明.md')
+if ($DeliveryDocument -eq 'obs-css-themes-delivery.md') {
+    Copy-Item -LiteralPath (Join-Path $repository 'docs/obs-css-themes.md') -Destination (Join-Path $release 'OBS样式定制说明.md')
+    $examples = Join-Path $release 'OBS样式示例'
+    New-Item -ItemType Directory -Path $examples -Force | Out-Null
+    foreach ($example in Get-ChildItem -LiteralPath (Join-Path $repository 'docs/obs-css-examples') -File -Filter '*.css') {
+        Copy-Item -LiteralPath $example.FullName -Destination (Join-Path $examples $example.Name)
+    }
+}
 Add-Type -AssemblyName System.IO.Compression.ZipFile
 $output = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew)
 $zip = [IO.Compression.ZipArchive]::new($output, [IO.Compression.ZipArchiveMode]::Create)

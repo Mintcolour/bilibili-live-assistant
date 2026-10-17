@@ -1,0 +1,7 @@
+/* 柔粉卡片。建议选择“简洁卡片”模板。 */
+.bla-overlay { --bla-font-size: 20px; --bla-message-gap: 7px; --bla-panel-background: transparent; }
+.bla-content { padding: 8px 11px; color: #423644; background: rgba(255, 238, 246, .94); border: 1px solid #d99ab7; border-radius: 9px; text-shadow: none; }
+.bla-name { color: #9a4b75; }
+.bla-message[data-type="SuperChat"] .bla-content { background: rgba(255, 240, 211, .96); border-color: #d9a34a; }
+.bla-message[data-type="Guard"] .bla-content { background: rgba(237, 230, 255, .96); border-color: #ad90d9; }
+.badge { color: #fff; text-shadow: none; }
