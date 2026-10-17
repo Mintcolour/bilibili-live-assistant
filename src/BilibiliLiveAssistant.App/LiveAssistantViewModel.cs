@@ -13,6 +13,10 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _eventTimer;
     private readonly DispatcherQueueTimer _authTimer;
+    private readonly DispatcherQueueTimer _hotTimer;
+    private readonly HotPhraseWindow _hotWindow = new();
+    internal IReadOnlyList<HotPhrase> HotPhrases { get; private set; } = Array.Empty<HotPhrase>();
+    internal event Action? HotPhrasesChanged;
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
     private CancellationTokenSource? _connectionRun;
     private CookieOptions _runtimeCookies = new(), _startedCookies = new();
@@ -24,7 +28,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     private readonly LiveEventBuffer _pendingEvents = new(256);
     private readonly object _roomEvents = new();
     private int _resourceResets, _lastResetReason;
-    private bool _roomOffline;
+    private bool _roomOffline, _liveEnded;
     private int _flushScheduled;
     private long _receivedEvents;
     private long _overlayDropped;
@@ -112,6 +116,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _settings = settings with { Compact = (settings.Compact ?? new()).Normalize(), PriceDurations = (settings.PriceDurations ?? new()).Normalize(), Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = historySettings };
         Dashboard.Cleared += CardBoard.Clear;
+        Dashboard.Cleared += ClearHotPhrases;
         _store = store;
         _client = client;
         _info = info;
@@ -119,6 +124,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _eventTimer = _dispatcher.CreateTimer();
         _authTimer = _dispatcher.CreateTimer(); _authTimer.IsRepeating = false; _authTimer.Interval = TimeSpan.FromSeconds(1);
+        _hotTimer = _dispatcher.CreateTimer(); _hotTimer.Interval = TimeSpan.FromSeconds(1);
+        _hotTimer.Tick += (_, _) => RefreshHotPhrases();
         _authTimer.Tick += async (_, _) => await ApplyAccountConnectionAsync();
         AccountSync = new(this, _dispatcher);
         if (store is JsonSettingsStore json && json.LoadWarning.Length > 0) ErrorText = json.LoadWarning;
@@ -164,6 +171,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (_client.IsRunning) return;
         if (newMonitoring)
         {
+            ClearHotPhrases();
             CloseHistorySegment();
             _historyContext = History.Begin(roomId);
         }
@@ -177,16 +185,28 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         try
         {
             _connectionRun?.Dispose(); _connectionRun = new(); _startedCookies = ConnectionCookies;
+            _roomOffline = _liveEnded = false;
             var run = _connectionRun; var context = _historyContext;
+            LiveRoomProfile? receivedProfile = null;
             _networkHandler = (sender, value) =>
             {
                 lock (_roomEvents)
                 {
                     if (_disposed || run.IsCancellationRequested || !ReferenceEquals(run, _connectionRun)) return;
+                    if (value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile observed) receivedProfile = observed;
+                    if (value.Extra.GetValueOrDefault("live_status") is 0 && receivedProfile is { } known)
+                    {
+                        receivedProfile = known with { LiveStatus = 0 };
+                        value = value with { Metadata = new Dictionary<string, object?>(value.Extra) { ["room_profile"] = receivedProfile } };
+                    }
                     // Captured session and room travel with the event before display overflow or merging.
                     if (context is not null && !(value.Extra.GetValueOrDefault("sample") is true))
                         History.Capture(context, value, DateTimeOffset.UtcNow);
                     if (value.Extra.ContainsKey("archive_analysis")) return;
+                    if (value.Extra.GetValueOrDefault("sample") is not true &&
+                        (value.Extra.GetValueOrDefault("live_status") is int state && state is 0 or 2 ||
+                         value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile { LiveStatus: 0 or 2 }))
+                        _dispatcher.TryEnqueue(() => _ = StopEndedRoomAsync(run));
                     OnEvent(sender, value);
                 }
             };
@@ -229,6 +249,29 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         await _info.StopAsync();
         await _client.StopAsync();
         OnPropertyChanged(nameof(IsListening));
+    }
+
+    private async Task StopEndedRoomAsync(CancellationTokenSource run)
+    {
+        await _connectionGate.WaitAsync();
+        try
+        {
+            // A late signal from the previous room/reconnect must not stop a new run.
+            if (_disposed || !_monitorRequested || !ReferenceEquals(run, _connectionRun) || run.IsCancellationRequested) return;
+            _roomOffline = _liveEnded = true; _monitorRequested = false; _authTimer.Stop();
+            if (RoomProfile is { } profile) { RoomProfile = profile with { LiveStatus = 0 }; OnPropertyChanged(nameof(RoomProfile)); }
+            try { await StopCoreAsync(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            { ErrorText = "直播已关闭，连接清理异常，请重新开启监视前检查网络。"; }
+            finally
+            {
+                CloseHistorySegment(); IsConnected = false;
+                Status = "直播已关闭"; RoomSummary = "直播已关闭";
+                if (!ErrorText.Contains("连接清理异常", StringComparison.Ordinal)) ErrorText = "直播已关闭，已自动停止监视。";
+                OnPropertyChanged(nameof(IsMonitoring)); OnPropertyChanged(nameof(ConnectionModeText));
+            }
+        }
+        finally { _connectionGate.Release(); }
     }
 
     // Resolve the current settings only after entering the gate: edits from separate
@@ -510,6 +553,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         void Update()
         {
             if (_disposed || !ReferenceEquals(run, _connectionRun) || run?.IsCancellationRequested == true && value == "已连接") return;
+            if (_roomOffline && run?.IsCancellationRequested == true) return;
             Status = value;
             IsConnected = value == "已连接";
             if (!available && previous == 1) AddAudienceSample(DateTimeOffset.UtcNow, null);
@@ -527,6 +571,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         if (value.Type is LiveEventType.Danmaku or LiveEventType.SuperChat && value.MediaReferences.Count == 0)
             value = value with { MediaReferences = MediaDetector.Detect(value.Content) };
         Interlocked.Increment(ref _receivedEvents);
+        _hotWindow.Add(value, DateTimeOffset.UtcNow);
         _pendingEvents.Enqueue(value);
         ScheduleFlush();
     }
@@ -551,6 +596,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
 
     private void FlushEvents(DispatcherQueueTimer sender, object args)
     {
+        if (_hotWindow.HasEntries && !_hotTimer.IsRunning) _hotTimer.Start();
         _resourceBudget.Observe();
         using var timing = PerformanceCounters.Measure(0);
         var batch = _pendingEvents.Drain();
@@ -565,6 +611,8 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
                 var value = batch[index];
                 if (index != lastLike && LiveInteractions.IsLike(value)) continue;
                 var example = value.Extra.GetValueOrDefault("sample") is true;
+                // Buffered live metrics may predate the reliable end signal.
+                if (!example && _liveEnded && value.Type is LiveEventType.Online or LiveEventType.Rank) continue;
                 if (!example && value.Type == LiveEventType.Online
                     && value.Extra.GetValueOrDefault("room_profile") is LiveRoomProfile liveProfile
                     && liveProfile.LiveStatus is { } liveState)
@@ -629,6 +677,19 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         OnPropertyChanged(nameof(AudienceHistory));
     }
 
+    private void RefreshHotPhrases()
+    {
+        var next = _hotWindow.Snapshot(DateTimeOffset.UtcNow);
+        if (!HotPhrases.SequenceEqual(next)) { HotPhrases = next; HotPhrasesChanged?.Invoke(); }
+        if (!_hotWindow.HasEntries) _hotTimer.Stop();
+    }
+    private void ClearHotPhrases()
+    {
+        _hotWindow.Clear(); _hotTimer.Stop();
+        if (HotPhrases.Count == 0) return;
+        HotPhrases = Array.Empty<HotPhrase>(); HotPhrasesChanged?.Invoke();
+    }
+
     private void ResetRoomHistory(int reason = 1)
     {
         // Serialize with ingress so an old callback cannot enqueue after clearing.
@@ -650,6 +711,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         await CompactOverlay.DisposeAsync();
         await Diagnostics.DisposeAsync(); WindowDiagnostics = null;
         _authTimer.Stop(); await AccountSync.DisposeAsync();
+        ClearHotPhrases();
         _eventTimer.Stop();
         _eventTimer.Tick -= FlushEvents;
         _client.StatusChanged -= OnStatus;
@@ -658,6 +720,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         _resourceBudget.Dispose();
         Images.Dispose();
         Media.Dispose(); Dashboard.Cleared -= CardBoard.Clear;
+        Dashboard.Cleared -= ClearHotPhrases; HotPhrasesChanged = null;
         History.StatusChanged -= OnHistoryStatus;
         await History.DisposeAsync();
         _connectionRun?.Dispose();

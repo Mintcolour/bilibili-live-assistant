@@ -14,6 +14,11 @@ internal static class BiliEventParser
         if (suffix >= 0) command = command[..suffix];
         switch (command)
         {
+            case "PREPARING":
+                // Explicit room lifecycle event; socket disconnection alone is not offline.
+                emit(new LiveEvent(LiveEventType.Online, "系统", "直播已关闭", "#D6B35A",
+                    Metadata: new Dictionary<string, object?> { ["live_status"] = 0, ["room_summary"] = "直播已关闭" }));
+                break;
             case "DANMU_MSG":
                 var info = root.GetProperty("info");
                 if (info.ValueKind != JsonValueKind.Array || info.GetArrayLength() < 3) break;

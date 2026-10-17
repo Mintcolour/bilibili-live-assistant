@@ -101,7 +101,7 @@ public sealed class DanmakuCardBoard
     public void ClearHidden() { _manual.Clear(); _temporary.Clear(); Notify(); }
     public void Clear() { Array.Clear(Slots); _manual.Clear(); _temporary.Clear(); Notify(); }
     private void Notify() { Version++; Changed?.Invoke(); }
-    private static string Key(LiveEvent message)
+    internal static string Key(LiveEvent message)
     {
         var content = message.Content;
         try { content = Whitespace.Replace(content.Trim(), " "); } catch (RegexMatchTimeoutException) { }
