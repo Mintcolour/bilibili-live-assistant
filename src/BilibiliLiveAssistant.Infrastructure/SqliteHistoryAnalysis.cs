@@ -43,6 +43,9 @@ public sealed partial class SqliteLocalHistory
             ("$s", session), ("$source", source), ("$uid", next.Uid));
         var previous = last.ExecuteScalar() as string;
         var before = previous is null ? null : JsonSerializer.Deserialize<HistoryMemberState>(previous, Json);
+        // Compare using the current format so upgrading sparse JSON cannot
+        // manufacture a member change solely because old fields were verbose.
+        if (before is not null) previous = JsonSerializer.Serialize(before, Json);
         if (before is not null)
         {
             var a = next.Appearance;

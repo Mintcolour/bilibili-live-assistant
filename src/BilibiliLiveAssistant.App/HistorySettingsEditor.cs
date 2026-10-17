@@ -48,7 +48,7 @@ internal sealed class HistorySettingsEditor : StackPanel
     }
     public HistorySettings Read() => new() { Enabled = _enabled.IsOn, Directory = _directory.Text, CapacityWarningGiB = DisplayPage.Value(_capacity, 10),
         Analysis = new() { CountsSeconds = DisplayPage.Value(_counts, 60), EnergySeconds = DisplayPage.Value(_energy, 60), GuardSeconds = DisplayPage.Value(_guards, 300), EnergyLimit = DisplayPage.Value(_energyLimit, 50), GuardLimit = DisplayPage.Value(_guardLimit, 200) } };
-    public void UpdateUsage(HistoryStatus status) => _usage.Text = $"当前存档占用：{status.Bytes / (1024d * 1024):N1} MiB（含 WAL）\n默认目录：{new HistorySettings().EffectiveDirectory}";
+    public void UpdateUsage(HistoryStatus status) => _usage.Text = $"当前存档占用：{status.Bytes / (1024d * 1024):N1} MiB（数据库与 WAL）\n只存文字、结构化资料和图片链接，不存图片文件；图片缓存独立且有容量上限。\n停止监视后可在历史页菜单中释放磁盘空间，精简旧记录。\n默认目录：{new HistorySettings().EffectiveDirectory}";
     public static string Preview(HistorySettings settings, HistoryStatus status) =>
         $"{(settings.Enabled ? "● 开启本地存档" : "○ 暂停本地存档")}\n\n主播 → 日期 → 监视记录 → 原始互动\n\n" +
         $"弹幕、进房、礼物、SC、上舰\n人数 {settings.Analysis.CountsSeconds} 秒 · 高能 {settings.Analysis.EnergySeconds} 秒/前 {settings.Analysis.EnergyLimit}\n大航海 {settings.Analysis.GuardSeconds} 秒/前 {settings.Analysis.GuardLimit}\n\n长期保留 · {settings.CapacityWarningGiB} GiB 时提醒\n" +

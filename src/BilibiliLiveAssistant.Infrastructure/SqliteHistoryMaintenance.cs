@@ -96,7 +96,14 @@ public sealed partial class SqliteLocalHistory
     public Task CompactAsync(CancellationToken token)
     {
         RequireStopped(); return MaintainAsync(connection =>
-        { RequireStopped(); Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);"); Execute(connection, "VACUUM;"); }, token);
+        {
+            RequireStopped();
+            CompactStoredJson(connection, token);
+            token.ThrowIfCancellationRequested();
+            Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+            Execute(connection, "VACUUM;");
+            Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+        }, token);
     }
     public async Task MoveAsync(string directory, CancellationToken token)
     {

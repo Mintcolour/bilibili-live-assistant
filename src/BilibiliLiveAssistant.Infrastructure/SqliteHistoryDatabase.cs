@@ -8,7 +8,7 @@ namespace BilibiliLiveAssistant.Infrastructure;
 
 public sealed partial class SqliteLocalHistory : ILocalHistory
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = HistoryJson.Options;
     private static long Millis(DateTimeOffset value) => value.ToUnixTimeMilliseconds();
     private static DateTimeOffset Time(long value) => DateTimeOffset.FromUnixTimeMilliseconds(value);
     private static string Day(DateTimeOffset value) => value.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);

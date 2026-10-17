@@ -424,7 +424,7 @@ internal sealed class HistoryPage : Page
         if (_vm.IsMonitoring) { _status.Text = "释放磁盘空间前请先停止监视"; return; }
         _dialogOpen = true;
         ContentDialogResult answer;
-        try { answer = await new ContentDialog { Title = "释放磁盘空间", Content = "重新整理数据库，将删除后空闲页归还磁盘。此操作可能耗时且需要临时磁盘空间；原有历史会保留。", PrimaryButtonText = "开始整理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot }.ShowAsync(); }
+        try { answer = await new ContentDialog { Title = "释放磁盘空间", Content = "精简旧记录中的空字段与默认外观值，再整理数据库、归还空闲页。保留全部事件、统计、图片链接及表情信息；历史原本就不保存图片文件。此操作可能耗时且需要临时磁盘空间。取消后已精简的记录仍可正常读取，可再次整理。", PrimaryButtonText = "开始整理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot }.ShowAsync(); }
         finally { _dialogOpen = false; }
         if (answer != ContentDialogResult.Primary || _disposed) return;
         _managing = true; _query?.Cancel(); _maintenance = new();
