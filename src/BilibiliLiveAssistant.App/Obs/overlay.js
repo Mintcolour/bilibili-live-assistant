@@ -5,6 +5,8 @@
   const sections = ['sc', 'gift', 'entry', 'follow'];
   const rowNodes = new Map();
   const sectionKeys = new Map();
+  const leavingNodes = new Map();
+  let listReady = false, latestListId = 0;
   let source, state, expiry, statusKey = '', styleKey = '';
   const color = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
   const observer = new IntersectionObserver(entries => {
@@ -59,6 +61,81 @@
     node.append(body); return node;
   }
   function release(node) { for (const img of node.querySelectorAll('img')) { observer.unobserve(img); img.removeAttribute('src'); } node.remove(); }
+  function cancelMotion(node) { for (const animation of node.getAnimations()) { animation.onfinish = null; animation.cancel(); } }
+  function stopListMotion() {
+    for (const entry of rowNodes.values()) { cancelMotion(entry.node); entry.fadeUntil = 0; }
+    for (const node of leavingNodes.keys()) { cancelMotion(node); release(node); }
+    leavingNodes.clear(); listReady = false;
+  }
+  function listGeometry() {
+    const rect = list.getBoundingClientRect();
+    return {rect, scale: list.clientWidth > 0 ? rect.width / list.clientWidth : 1};
+  }
+  function captureList() {
+    const geometry = listGeometry(), entries = new Map();
+    if (!(geometry.scale > 0)) return {geometry, entries};
+    for (const [id, entry] of rowNodes) {
+      const rect = entry.node.getBoundingClientRect();
+      entries.set(id, {top: (rect.top - geometry.rect.top) / geometry.scale,
+        height: rect.height / geometry.scale, width: rect.width / geometry.scale,
+        alpha: Number(getComputedStyle(entry.node).opacity), fadeUntil: entry.fadeUntil || 0});
+    }
+    return {geometry, entries};
+  }
+  function tween(node, frames, duration) {
+    if (duration <= 0) return;
+    const animation = node.animate(frames, {duration, easing: 'cubic-bezier(0.215,0.61,0.355,1)'});
+    // No fill mode: completed effects release their compositor resources.
+    animation.onfinish = () => animation.cancel();
+    return animation;
+  }
+  function animateList(before, removed, enabled, duration, changed) {
+    const geometry = listGeometry(), now = performance.now(), height = list.clientHeight;
+    const animate = enabled && listReady && !document.hidden && geometry.scale > 0 &&
+      Math.abs(before.geometry.rect.width - geometry.rect.width) < .5 &&
+      Math.abs(before.geometry.rect.height - geometry.rect.height) < .5;
+    if (!animate) {
+      stopListMotion();
+      for (const item of removed) release(item.node);
+    } else if (changed) {
+      // Sample before DOM changes, then retarget straight from the visual
+      // position to the latest layout. There is no animation playback queue.
+      for (const entry of rowNodes.values()) cancelMotion(entry.node);
+      for (const [id, entry] of rowNodes) {
+        const rect = entry.node.getBoundingClientRect();
+        const top = (rect.top - geometry.rect.top) / geometry.scale;
+        const rowHeight = rect.height / geometry.scale, previous = before.entries.get(id);
+        const wasVisible = previous && previous.top < height && previous.top + previous.height > 0;
+        const visible = top < height && top + rowHeight > 0;
+        if (!visible && !wasVisible) continue;
+        const entering = !previous && id > latestListId && visible;
+        const delta = previous ? previous.top - top : entering ? 14 : 0;
+        if (Math.abs(delta) > .1) tween(entry.node, [{transform: `translateY(${delta}px)`}, {transform: 'translateY(0)'}], duration);
+        if (entering) entry.fadeUntil = now + duration;
+        else entry.fadeUntil = previous?.fadeUntil || 0;
+        if (!visible && wasVisible) tween(entry.node, [{opacity: previous.alpha}, {opacity: 0}], duration);
+        else if (entry.fadeUntil > now) tween(entry.node, [{opacity: entering ? 0 : previous?.alpha ?? 1}, {opacity: 1}], entry.fadeUntil - now);
+      }
+      for (const item of removed) {
+        cancelMotion(item.node);
+        const previous = before.entries.get(item.id);
+        if (!previous || previous.top >= height || previous.top + previous.height <= 0 || previous.width * previous.height * 4 > 4 * 1024 * 1024) { release(item.node); continue; }
+        let bytes = previous.width * previous.height * 4;
+        for (const info of leavingNodes.values()) bytes += info.bytes;
+        while (leavingNodes.size && (leavingNodes.size >= 4 || bytes > 4 * 1024 * 1024)) {
+          const [node, info] = leavingNodes.entries().next().value;
+          bytes -= info.bytes; cancelMotion(node); leavingNodes.delete(node); release(node);
+        }
+        Object.assign(item.node.style, {position: 'absolute', top: previous.top + 'px', left: '0', width: previous.width + 'px', height: previous.height + 'px', pointerEvents: 'none'});
+        list.append(item.node);
+        const destination = Math.min(-14, -previous.height - previous.top - 4);
+        const animation = tween(item.node, [{transform: 'translateY(0)', opacity: previous.alpha}, {transform: `translateY(${destination}px)`, opacity: 0}], duration);
+        leavingNodes.set(item.node, {bytes: previous.width * previous.height * 4});
+        animation.onfinish = () => { animation.cancel(); leavingNodes.delete(item.node); release(item.node); };
+      }
+    }
+    latestListId = Math.max(0, ...rowNodes.keys()); listReady = rowNodes.size > 0;
+  }
   function section(id, item, show, now) {
     const host = document.getElementById(id);
     const active = show && item && (!item.expires || item.expires > now) ? item : null;
@@ -73,9 +150,12 @@
     panel.style.transform = `scale(${Math.min(innerWidth / state.width, innerHeight / state.height)})`;
   }
   function render(next) {
-    state = next; if (!next.config) return;
+    if (!next.config) { stopListMotion(); return; }
+    const before = captureList(), previousRoom = state?.roomId;
+    state = next;
     const c = next.config, s = next.style;
     const sk = JSON.stringify([c, s]);
+    const styleChanged = styleKey !== sk;
     if (styleKey !== sk) {
       styleKey = sk; panel.style.fontFamily = s.fontFamily; panel.style.fontSize = c.fontSize + 'px'; panel.style.opacity = c.opacity;
       panel.style.setProperty('--emote', c.emoteSize + 'px'); panel.style.setProperty('--avatar', Math.min(s.avatarSize, c.fontSize + 10) + 'px');
@@ -89,14 +169,16 @@
     section('entry', next.entry, c.showEntry, now); section('follow', next.follow, c.showFollow, now);
     const rows = c.showList ? (next.rows || []).slice(-32) : [];
     const ids = new Set(rows.map(m => m.id));
-    for (const [id, entry] of rowNodes) if (!ids.has(id)) { release(entry.node); rowNodes.delete(id); }
+    const removed = []; let listChanged = false;
+    for (const [id, entry] of rowNodes) if (!ids.has(id)) { entry.node.remove(); removed.push({id, node: entry.node}); rowNodes.delete(id); listChanged = true; }
     for (const row of rows) {
       const key = JSON.stringify(row); const existing = rowNodes.get(row.id);
       if (existing && existing.key === key) continue;
+      listChanged = true;
       const node = message(row);
-      if (existing) { existing.node.replaceWith(node); release(existing.node); }
+      if (existing) { existing.node.replaceWith(node); cancelMotion(existing.node); release(existing.node); }
       else list.append(node);
-      rowNodes.set(row.id, {key, node});
+      rowNodes.set(row.id, {key, node, fadeUntil: existing?.fadeUntil || 0});
     }
     const rankKey = JSON.stringify([c.showStatus, next.status, next.ranks]);
     if (rankKey !== statusKey) {
@@ -112,6 +194,9 @@
         }
       }
     }
+    const geometryChanged = Math.abs(before.geometry.rect.height - list.getBoundingClientRect().height) >= .5;
+    animateList(before, removed, c.listAnimationEnabled !== false && !styleChanged && previousRoom === next.roomId,
+      Math.max(100, Math.min(500, c.listAnimationDurationMs || 200)), listChanged || geometryChanged);
     clearTimeout(expiry);
     const expires = sections.map(id => next[id]?.expires).filter(t => t && t > now);
     if (expires.length) expiry = setTimeout(() => render({...state, now: now + Math.max(1, Math.min(...expires) - now + 10)}), Math.max(1, Math.min(...expires) - now + 10));
@@ -119,14 +204,17 @@
   function connect() {
     if (source || document.hidden) return;
     source = new EventSource('events');
+    source.addEventListener('open', stopListMotion);
+    source.addEventListener('error', stopListMotion);
     source.addEventListener('state', event => { try { render(JSON.parse(event.data)); } catch { /* wait for the next complete state */ } });
   }
   function disconnect() {
+    stopListMotion(); latestListId = 0;
     source?.close(); source = undefined; clearTimeout(expiry);
     for (const node of panel.querySelectorAll('img')) { observer.unobserve(node); node.removeAttribute('src'); }
     for (const id of sections) document.getElementById(id).replaceChildren(); list.replaceChildren(); document.getElementById('status').replaceChildren();
     rowNodes.clear(); sectionKeys.clear(); statusKey = ''; state = undefined;
   }
   document.addEventListener('visibilitychange', () => document.hidden ? disconnect() : connect());
-  addEventListener('pagehide', disconnect); addEventListener('resize', fit); connect();
+  addEventListener('pagehide', disconnect); addEventListener('resize', () => { stopListMotion(); fit(); }); connect();
 })();

@@ -72,7 +72,7 @@ internal sealed class ObsOverlayProjection
                 .Select(m => (m.Rank, OverlayBulletinRenderer.MemberEvent(m, "#B998FF"))).ToArray() : [];
         }
         var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow)) }).ToArray();
-        var payload = new { revision, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
+        var payload = new { revision, roomId = vm.RoomId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
             config = compact, style = new { fontFamily = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).FontFamily,
                 style.ShowAvatars, style.AvatarSize, style.ShowMedals, style.ShowIdentity, style.UsernameColor,
                 shadow = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).Shadow,
