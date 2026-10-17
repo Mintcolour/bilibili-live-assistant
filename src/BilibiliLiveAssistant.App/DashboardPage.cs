@@ -178,7 +178,11 @@ internal sealed class DashboardPage : Page
             catch (Exception ex) { vm.ReportSettingsError($"保存列宽失败：{ex.Message}"); }
         };
         flyout.Items.Add(balance); flyout.Items.Add(clear); flyout.Items.Add(new MenuFlyoutSeparator());
-        flyout.Items.Add(single); flyout.Items.Add(_stressItem); more.Flyout = flyout; toolbar.Children.Add(more);
+        var samples = new MenuFlyoutSubItem { Text = "本地调试示例" };
+        var allSamples = new MenuFlyoutItem { Text = "显示图文与 SC 分档示例" };
+        allSamples.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.SendDisplayExamples(); };
+        samples.Items.Add(single); samples.Items.Add(allSamples); samples.Items.Add(_stressItem);
+        flyout.Items.Add(samples); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
         var navigation = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         _anchor.MinWidth = 150; _anchor.MaxWidth = 360;

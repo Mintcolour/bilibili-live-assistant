@@ -288,19 +288,22 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
         if (pair.Value is not { } view)
         {
             if (GridMode && e.Button == Forms.MouseButtons.Right)
-            { _board.ClearHidden(); RequestRender(); }
+            {
+                var clear = new Forms.ContextMenuStrip();
+                clear.Items.Add("清空本次隐藏清单", null, (_, _) => { _board.ClearHidden(); RequestRender(); });
+                clear.Closed += (_, _) => BeginInvoke((Action)clear.Dispose); clear.Show(this, e.Location);
+            }
             return;
         }
+        if (e.Button != Forms.MouseButtons.Right) return;
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("查看这条消息…", null, (_, _) => ShowText(view.Value.Username, view.Value.Content));
         if (GridMode && _board.Slots[pair.Key] is { } entry)
         {
-            if (e.Button == Forms.MouseButtons.Right)
-            {
-                if (!_board.Hide(entry)) ShowText("隐藏清单已满", "最多隐藏 512 项。右键空白处可清空隐藏清单。");
-                Rebuild(); return;
-            }
-            ShowText($"重复 {entry.Count} 次", $"{view.Value.Content}\r\n\r\n" + string.Join("\r\n", entry.Senders.Values.Select(s => $"{s.Name} · UID {s.Uid} · {s.Count} 次 · {s.LastSeen.ToLocalTime():HH:mm:ss}")) + $"\r\n身份未知 {entry.UnknownCount} 次 · 未展开 {entry.UnlistedCount} 次");
+            menu.Items.Add($"查看重复 {entry.Count} 次的发言者…", null, (_, _) => ShowText("重复发言", string.Join("\r\n", entry.Senders.Values.Select(s => $"{s.Name} · UID {s.Uid} · {s.Count} 次 · {s.LastSeen.ToLocalTime():HH:mm:ss}")) + $"\r\n身份未知 {entry.UnknownCount} 次 · 未展开 {entry.UnlistedCount} 次"));
+            menu.Items.Add("隐藏这条卡片", null, (_, _) => { if (!_board.Hide(entry)) ShowText("隐藏清单已满", "最多隐藏 512 项。请清理后再隐藏。"); Rebuild(); });
         }
-        else ShowText(view.Value.Username, view.Value.Content);
+        menu.Closed += (_, _) => BeginInvoke((Action)menu.Dispose); menu.Show(this, e.Location);
     }
     protected override void AddEditorMenuItems(Forms.ContextMenuStrip menu)
     {
@@ -313,10 +316,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     private void ShowText(string title, string text)
     {
         _detail?.Close();
-        _detail = new Forms.Form { Text = title, Width = 540, Height = 420, StartPosition = Forms.FormStartPosition.CenterScreen, TopMost = true, ShowInTaskbar = false };
-        var font = new Font("Microsoft YaHei UI", 12);
-        _detail.Controls.Add(new Forms.TextBox { Dock = Forms.DockStyle.Fill, Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = Forms.ScrollBars.Vertical, Text = text, Font = font });
-        _detail.FormClosed += (_, _) => font.Dispose();
+        _detail = OverlayEditorTheme.Details(title, text);
         _detail.Show(this);
     }
     protected override void OnResize(EventArgs e) { base.OnResize(e); if (_views is null) return; ClearViews(); _dirty = true; if (Visible) Process(); }

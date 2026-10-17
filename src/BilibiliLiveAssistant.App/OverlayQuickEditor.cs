@@ -63,6 +63,7 @@ internal sealed class OverlayQuickEditor : Forms.Form
         if (initial.Mode is OverlayDisplayMode.List or OverlayDisplayMode.Grid or OverlayDisplayMode.Panel)
             Heading(initial.Mode == OverlayDisplayMode.Panel ? "固定榜单收到新数据时更新，不定时隐藏。" : "列表和网格沿用记录上限，不定时隐藏。", false);
         Heading("调整实时显示在浮窗中；保存后保留，取消恢复原设置。", false);
+        OverlayEditorTheme.Apply(this);
         _loading = false;
         FormClosing += (_, args) => { if (_saving) args.Cancel = true; };
     }

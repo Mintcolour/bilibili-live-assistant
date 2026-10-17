@@ -44,6 +44,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private double _statusStarted;
     private bool _statusVisible, _listMoving, _hotMoving;
     private Forms.Form? _detail;
+    private LiveEvent? _detailValue;
+    private readonly Forms.ToolStripMenuItem _viewMessage = new("查看这条消息…");
     private readonly Forms.ContextMenuStrip _menu = new();
     private readonly HotPhraseSprite _hotSprite;
     private readonly CompactTimeline _samples = new();
@@ -60,6 +62,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _vm = vm; _frames = frames; _hotSprite = new(vm.Images, RequestRender); Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
         StartPosition = Forms.FormStartPosition.Manual; AutoScaleMode = Forms.AutoScaleMode.None;
         ShowInTaskbar = false; TopMost = true; MinimumSize = new(240, 320);
+        _viewMessage.Click += (_, _) => ShowMessageDetails(); _menu.Items.Add(_viewMessage);
         _menu.Items.Add("调整样式…", null, (_, _) => ShowStyleEditor());
         _menu.Items.Add("阅读实时列表", null, (_, _) => StartReading());
         _menu.Items.Add("回到最新", null, (_, _) => { _anchor = null; _listReady = false; RequestRender(); });
@@ -401,7 +404,11 @@ internal sealed class CompactOverlayWindow : Forms.Form
     protected override void OnMouseUp(Forms.MouseEventArgs e)
     {
         base.OnMouseUp(e); if (!Interactive) return;
-        if (e.Button == Forms.MouseButtons.Right) { _menu.Show(this, e.Location); return; }
+        if (e.Button == Forms.MouseButtons.Right)
+        {
+            _detailValue = _rows.Values.FirstOrDefault(r => r.Bounds.Contains(e.Location))?.Value;
+            _viewMessage.Enabled = _detailValue is not null; _menu.Show(this, e.Location); return;
+        }
         if (e.Y < 34)
         {
             if (e.X >= ClientSize.Width - 48) _ = FinishInteractionAsync();
@@ -409,14 +416,16 @@ internal sealed class CompactOverlayWindow : Forms.Form
             else if (e.X >= ClientSize.Width - 140) ShowStyleEditor();
             return;
         }
-        var row = _rows.Values.FirstOrDefault(r => r.Bounds.Contains(e.Location));
-        if (row is null) return;
+        // The body is a reading surface. Details require the explicit context
+        // menu command; clicking a row must not unexpectedly create a window.
+    }
+    private void ShowMessageDetails()
+    {
+        if (_detailValue is not { } value || _disposed) return;
         _detail?.Close();
-        var detail = _detail = new Forms.Form { Text = row.Value.Username, Width = 520, Height = 420, StartPosition = Forms.FormStartPosition.CenterScreen, TopMost = true };
-        var detailFont = new Font("Microsoft YaHei UI", 12);
-        detail.FormClosed += (_, _) => { detailFont.Dispose(); if (ReferenceEquals(_detail, detail)) _detail = null; };
-        detail.Controls.Add(new Forms.TextBox { Multiline = true, ReadOnly = true, Dock = Forms.DockStyle.Fill, ScrollBars = Forms.ScrollBars.Vertical,
-            Text = row.Value.Content, Font = detailFont, WordWrap = true }); detail.Show(this);
+        var detail = _detail = OverlayEditorTheme.Details(value.Username, value.Content);
+        detail.FormClosed += (_, _) => { if (ReferenceEquals(_detail, detail)) _detail = null; };
+        detail.Show(this);
     }
     private void ShowStyleEditor()
     {
@@ -495,7 +504,7 @@ internal static class CompactExamples
 
     public static LiveEvent[] Messages() =>
     [
-        new LiveEvent(LiveEventType.SuperChat, "示例观众", "谢谢陪伴，今天的直播很精彩！这是固定区中的醒目留言。", "#FFD700", Appearance: new() { MedalName = "粉丝牌", MedalLevel = 12, GuardLevel = 3 }) { HistoryFields = new(AmountMilliYuan: 100000) },
+        new LiveEvent(LiveEventType.SuperChat, "示例观众", "谢谢陪伴 😊 👍🏽 🇨🇳 👨‍👩‍👧‍👦 这是固定区中的醒目留言。", "#FFD700", Appearance: new() { MedalName = "粉丝牌", MedalLevel = 12, GuardLevel = 3 }) { HistoryFields = new(AmountMilliYuan: 100000) },
         new LiveEvent(LiveEventType.Gift, "示例舰长", "小电视飞船 × 2", "#FF8ACA", Appearance: new() { GuardLevel = 3 }) { HistoryFields = new(AmountMilliYuan: 200000) },
         new(LiveEventType.Danmaku, "示例观众", "这里是聊天列表，新消息从底部出现。", "#FFFFFF"),
         new LiveEvent(LiveEventType.Enter, "刚到的朋友", "进入直播间", "#71C6A6") { HistoryFields = new(InteractionKind: 1) },

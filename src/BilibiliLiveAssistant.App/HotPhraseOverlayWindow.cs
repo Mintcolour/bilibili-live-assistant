@@ -94,9 +94,9 @@ internal sealed class HotPhraseOverlayWindow : Forms.Form
     }
     private async Task Save(Func<HotPhraseSettings, HotPhraseSettings> update)
     { try { await _vm.UpdateHotPhrasesAsync(update); } catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("高频提示设置保存失败，请重试。"); } }
-    private async void EditStyle()
+    private void EditStyle()
     {
-        using var editor = new Forms.Form { Text = "高频气泡", Width = 340, Height = 400, StartPosition = Forms.FormStartPosition.CenterParent, TopMost = true };
+        using var editor = new Forms.Form { Text = "高频气泡", Width = 380, Height = 490, StartPosition = Forms.FormStartPosition.CenterParent, TopMost = true };
         var panel = new Forms.FlowLayoutPanel { Dock = Forms.DockStyle.Fill, FlowDirection = Forms.FlowDirection.TopDown, AutoScroll = true, WrapContents = false };
         editor.Controls.Add(panel); var current = _vm.Settings.HotPhrases; _stylePreview = current;
         void Slider(string label, int value, int min, int max, Func<HotPhraseSettings, int, HotPhraseSettings> update)
@@ -110,9 +110,24 @@ internal sealed class HotPhraseOverlayWindow : Forms.Form
         Slider("表情大小", current.EmoteSize, 16, 80, (s, n) => s with { EmoteSize = n });
         Slider("内容不透明度 %", (int)(current.Opacity * 100), 10, 100, (s, n) => s with { Opacity = n / 100d });
         Slider("背景不透明度 %", (int)(current.BackgroundOpacity * 100), 0, 100, (s, n) => s with { BackgroundOpacity = n / 100d });
+        var actions = new Forms.FlowLayoutPanel { Dock = Forms.DockStyle.Bottom, Height = 52, Padding = new(8), FlowDirection = Forms.FlowDirection.RightToLeft };
+        var apply = new Forms.Button { Text = "保存并应用", AutoSize = true };
+        var cancel = new Forms.Button { Text = "取消", AutoSize = true }; cancel.Click += (_, _) => editor.Close();
+        var saving = false; editor.FormClosing += (_, args) => { if (saving) args.Cancel = true; };
+        apply.Click += async (_, _) =>
+        {
+            if (saving || _disposed) return; saving = true; actions.Enabled = panel.Enabled = false;
+            try
+            {
+                await _vm.UpdateHotPhrasesAsync(s => s with { FontSize = current.FontSize, EmoteSize = current.EmoteSize, Opacity = current.Opacity, BackgroundOpacity = current.BackgroundOpacity });
+                saving = false; editor.Close();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("高频气泡样式保存失败，请重试。"); }
+            finally { saving = false; if (!editor.IsDisposed) actions.Enabled = panel.Enabled = true; }
+        };
+        actions.Controls.Add(apply); actions.Controls.Add(cancel); editor.Controls.Add(actions); OverlayEditorTheme.Apply(editor);
         try { editor.ShowDialog(this); }
         finally { _stylePreview = null; RequestRender(); }
-        if (!_disposed) await Save(s => s with { FontSize = current.FontSize, EmoteSize = current.EmoteSize, Opacity = current.Opacity, BackgroundOpacity = current.BackgroundOpacity });
     }
     private void Release() { _queued = false; _frames.Stop(Frame); _sprite.Dispose(); _canvas?.Dispose(); _canvas = null; }
     protected override void OnResize(EventArgs e) { base.OnResize(e); if (_sprite is not null) RequestRender(); }

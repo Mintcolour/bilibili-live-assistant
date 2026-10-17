@@ -517,6 +517,9 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         Example(new LiveEvent(LiveEventType.SuperChat, "示例留言", "¥30 这是一条醒目留言示例，可以单独调整滚动速度、字号和表情尺寸。", "#FFD700", 3));
         Example(new LiveEvent(LiveEventType.SuperChat, "长留言示例", "¥50 BV1xx411c7mD " + string.Concat(Enumerable.Repeat("长 SC 会连续分段滚动，同一条的各段不会插入其他留言 [热] 😊。", 8)), "#FFD700", 10,
             Appearance: appearance));
+        foreach (var amount in new[] { 30, 50, 100, 500, 1000, 2000 })
+            Example(new LiveEvent(LiveEventType.SuperChat, "本地分档示例", $"¥{amount} 感谢陪伴 😊 👍🏽 🇨🇳 👨‍👩‍👧‍👦", "#FFFFFF")
+            { HistoryFields = new(AmountMilliYuan: amount * 1000L, RawBody: "感谢陪伴 😊 👍🏽 🇨🇳 👨‍👩‍👧‍👦") });
         var entryAvatar = "https://i0.hdslb.com/bfs/face/109b787c5f113c4a3c7415bb9bf6b82bc33bc4e2.jpg";
         Example(new LiveEvent(LiveEventType.Enter, "普通进房示例", "进入了直播间", "#4CAF50", 4,
             Appearance: new LiveMessageAppearance { AvatarUrl = entryAvatar }));
