@@ -31,7 +31,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private readonly Dictionary<long, Row> _rows = new();
     private readonly Dictionary<LiveEventType, int> _cardHeights = new();
     private LayeredOverlayCanvas? _canvas;
-    private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported;
+    private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported, _styleEditorOpen;
     private long? _anchor;
     private Rectangle _listBounds;
     private bool _listReady;
@@ -420,18 +420,35 @@ internal sealed class CompactOverlayWindow : Forms.Form
     }
     private void ShowStyleEditor()
     {
-        var wasReading = _reading; _reading = false; _vm.CompactOverlay.SetDesktopVisible(!Editing); MakeSamples(); ReleaseRows(); RequestRender();
+        if (_disposed || !Visible || _styleEditorOpen) return;
+        _styleEditorOpen = true;
+        var wasReading = _reading;
         try
         {
-            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; _cardHeights.Clear(); ReleaseRows(); RequestRender(); }, () =>
+            _reading = false; _vm.CompactOverlay.SetDesktopVisible(!Editing); MakeSamples(); ReleaseRows(); RequestRender();
+            using var editor = new CompactQuickEditor(_vm, value =>
             {
-                if (!Editing) return;
+                if (_disposed) return;
+                _preview = value; _cardHeights.Clear(); ReleaseRows(); RequestRender();
+            }, () =>
+            {
+                if (_disposed || !Editing) return;
                 _samples.AddBatch([new LiveEvent(LiveEventType.Danmaku, "示例观众", "新弹幕滑入，已有消息平滑上移。", "#FFFFFF")], DateTimeOffset.UtcNow, EffectiveSettings);
                 RequestRender();
             });
             editor.ShowDialog(this);
         }
-        finally { _preview = null; _cardHeights.Clear(); _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            RuntimeErrorLog.Record("compact-style-open", ex);
+            _vm.ReportSettingsError("紧凑面板样式窗口打开失败；错误已记入 runtime-errors.log，请重试。");
+        }
+        finally
+        {
+            _styleEditorOpen = false; _preview = null;
+            if (!_disposed)
+            { _cardHeights.Clear(); _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }
+        }
     }
     private async Task FinishInteractionAsync()
     {

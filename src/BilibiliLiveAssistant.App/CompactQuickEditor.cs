@@ -5,18 +5,22 @@ namespace BilibiliLiveAssistant.App;
 
 internal sealed class CompactQuickEditor : Forms.Form
 {
+    private bool _saving;
     public CompactQuickEditor(LiveAssistantViewModel vm, Action<CompactOverlaySettings?>? preview = null, Action? replay = null)
     {
         Text = "紧凑面板样式"; Width = 330; Height = 540; TopMost = true; ShowInTaskbar = false;
         StartPosition = Forms.FormStartPosition.CenterParent; FormBorderStyle = Forms.FormBorderStyle.FixedToolWindow;
-        var draft = vm.Settings.Compact;
+        var draft = vm.Settings.Compact.Normalize();
         var panel = new Forms.FlowLayoutPanel { Dock = Forms.DockStyle.Fill, FlowDirection = Forms.FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new(12) };
         Controls.Add(panel);
         void Refresh() => preview?.Invoke(draft.Normalize());
         void Number(string title, decimal value, decimal min, decimal max, Action<decimal> change)
         {
             panel.Controls.Add(new Forms.Label { Text = title, AutoSize = true });
-            var input = new Forms.NumericUpDown { Value = Math.Clamp(value, min, max), Minimum = min, Maximum = max, Width = 260 };
+            // Value validates against the current range immediately. Configure
+            // the range first: animation duration defaults to 200, above the
+            // control's initial Maximum (100), and emotes can reach 128.
+            var input = new Forms.NumericUpDown { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), Width = 260 };
             input.ValueChanged += (_, _) => { change(input.Value); Refresh(); }; panel.Controls.Add(input);
         }
         Number("文字大小", draft.FontSize, 12, 48, v => draft = draft with { FontSize = (int)v });
@@ -38,15 +42,21 @@ internal sealed class CompactQuickEditor : Forms.Form
             play.Click += (_, _) => replay(); panel.Controls.Add(play);
         }
         var save = new Forms.Button { Text = "保存并应用", AutoSize = true }; panel.Controls.Add(save);
+        FormClosing += (_, args) => { if (_saving) args.Cancel = true; };
         save.Click += async (_, _) =>
         {
-            save.Enabled = false;
+            if (_saving) return;
+            _saving = true; panel.Enabled = false;
+            var saved = draft;
             try
             {
-                await vm.UpdateCompactAsync(current => draft with { X = current.X, Y = current.Y, Width = current.Width, Height = current.Height });
-                DialogResult = Forms.DialogResult.OK; Close();
+                await vm.UpdateCompactAsync(current => saved with { X = current.X, Y = current.Y, Width = current.Width, Height = current.Height });
+                _saving = false;
+                if (!IsDisposed && !Disposing) { DialogResult = Forms.DialogResult.OK; Close(); }
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { vm.ReportSettingsError("紧凑面板样式保存失败，请重试。"); save.Enabled = true; }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            { RuntimeErrorLog.Record("compact-style-save", ex); vm.ReportSettingsError("紧凑面板样式保存失败，请重试；错误已记入 runtime-errors.log。"); }
+            finally { _saving = false; if (!IsDisposed && !Disposing) panel.Enabled = true; }
         };
         FormClosed += (_, _) => preview?.Invoke(null);
     }
