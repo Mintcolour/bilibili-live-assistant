@@ -22,7 +22,10 @@ internal sealed class ObsThemeEditor : StackPanel
     private readonly ComboBox _assets = new() { Header = "本机素材", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _assetCode = new() { IsReadOnly = true, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true, MaxHeight = 150 };
     private ObsThemeSettings _current = new();
+    private bool _loading, _restoringCss;
+    private string _lastCss = "";
     public event Action? PreviewRequested;
+    public event Action? Changed;
 
     public ObsThemeEditor()
     {
@@ -47,7 +50,8 @@ internal sealed class ObsThemeEditor : StackPanel
         css.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Children = { import, export, copy } }); css.Children.Add(example);
         css.Children.Add(new TextBlock { Text = "CSS 上限 256 KiB。修改 .bla-content 定制外观；外层 .bla-message 保留给出入动画。只支持本机素材，不加载远程 @import。", FontSize = 12, TextWrapping = TextWrapping.Wrap });
         Children.Add(new Expander { Header = "高级 CSS", Content = css, HorizontalAlignment = HorizontalAlignment.Stretch });
-        var assetImport = UiFactory.Button("导入图片／字体"); assetImport.Click += async (_, _) => await ImportAssetAsync();
+        var assetImport = UiFactory.Button("导入图片／字体"); assetImport.Click += async (_, _) =>
+        { assetImport.IsEnabled = false; try { await ImportAssetAsync(); } finally { assetImport.IsEnabled = true; } };
         var assetCopy = UiFactory.Button("复制素材代码"); assetCopy.Click += (_, _) => Copy(_assetCode.Text);
         var assetFolder = UiFactory.Button("打开素材目录"); assetFolder.Click += async (_, _) =>
         { try { await Windows.System.Launcher.LaunchFolderPathAsync(ObsThemeAssets.DirectoryPath); } catch { _feedback.Text = "无法打开素材目录。"; } };
@@ -56,19 +60,35 @@ internal sealed class ObsThemeEditor : StackPanel
         _assets.SelectionChanged += (_, _) => UpdateAssetCode();
         Children.Add(new Expander { Header = "本地素材", Content = assets, HorizontalAlignment = HorizontalAlignment.Stretch });
         var reset = UiFactory.Button("恢复默认网页样式");
-        reset.Click += (_, _) => { Load(new()); _feedback.Text = "网页样式已恢复为默认草稿；保存后应用。"; };
+        reset.Click += (_, _) => { Load(new()); Changed?.Invoke(); _feedback.Text = "网页样式已恢复为默认草稿；保存后应用。"; };
         Children.Add(reset); Children.Add(_feedback);
+        foreach (var control in new DependencyObject[] { _template, _shared, appearance, show }) SettingEvents.Watch(control, () => { if (!_loading) Changed?.Invoke(); });
+        _css.TextChanged += (_, _) =>
+        {
+            if (_loading || _restoringCss) return;
+            if (Encoding.UTF8.GetByteCount(_css.Text) > ObsThemeSettings.MaxCssBytes)
+            {
+                _restoringCss = true; _css.Text = _lastCss; _restoringCss = false;
+                _feedback.Text = "CSS 超过 256 KiB，本次输入已撤回，原代码保留。"; return;
+            }
+            _lastCss = _css.Text; Changed?.Invoke();
+        };
     }
     public void Load(ObsThemeSettings value)
     {
-        _current = value; _template.SelectedItem = _template.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == value.Template) ?? _template.Items[0];
-        _shared.IsOn = value.UseSharedAppearance; _font.Text = value.FontFamily;
-        _size.Value = value.FontSize; _avatar.Value = value.AvatarSize; _emote.Value = value.EmoteSize; _gap.Value = value.Gap; _padding.Value = value.Padding; _radius.Value = value.Radius; _border.Value = value.BorderWidth;
-        _textColor.Text = value.TextColor; _nameColor.Text = value.NameColor; _background.Text = value.BackgroundColor; _borderColor.Text = value.BorderColor;
-        _backgroundOpacity.Value = value.BackgroundOpacity * 100; _opacity.Value = value.Opacity * 100; _shadow.IsOn = value.Shadow; _css.Text = value.CustomCss;
-        var show = new[] { value.ShowAvatars, value.ShowMedals, value.ShowIdentity, value.ShowStatus, value.ShowSuperChat, value.ShowGift, value.ShowList, value.ShowEntry, value.ShowFollow };
-        for (var i = 0; i < show.Length; i++) _show[i].IsChecked = show[i];
-        ReloadAssets();
+        _loading = true;
+        try
+        {
+            _current = value; _template.SelectedItem = _template.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == value.Template) ?? _template.Items[0];
+            _shared.IsOn = value.UseSharedAppearance; _font.Text = value.FontFamily;
+            _size.Value = value.FontSize; _avatar.Value = value.AvatarSize; _emote.Value = value.EmoteSize; _gap.Value = value.Gap; _padding.Value = value.Padding; _radius.Value = value.Radius; _border.Value = value.BorderWidth;
+            _textColor.Text = value.TextColor; _nameColor.Text = value.NameColor; _background.Text = value.BackgroundColor; _borderColor.Text = value.BorderColor;
+            _backgroundOpacity.Value = value.BackgroundOpacity * 100; _opacity.Value = value.Opacity * 100; _shadow.IsOn = value.Shadow; _css.Text = value.CustomCss; _lastCss = _css.Text;
+            var show = new[] { value.ShowAvatars, value.ShowMedals, value.ShowIdentity, value.ShowStatus, value.ShowSuperChat, value.ShowGift, value.ShowList, value.ShowEntry, value.ShowFollow };
+            for (var i = 0; i < show.Length; i++) _show[i].IsChecked = show[i];
+            ReloadAssets();
+        }
+        finally { _loading = false; }
     }
     public ObsThemeSettings Read() => (_current with
     {
@@ -90,8 +110,10 @@ internal sealed class ObsThemeEditor : StackPanel
         {
             using var dialog = new System.Windows.Forms.OpenFileDialog { Filter = "CSS 样式 (*.css)|*.css", CheckFileExists = true };
             if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
-            if (new FileInfo(dialog.FileName).Length > ObsThemeSettings.MaxCssBytes) throw new IOException("CSS 超过 256 KiB。");
-            var text = await File.ReadAllTextAsync(dialog.FileName, new UTF8Encoding(false, true));
+            await using var file = new FileStream(dialog.FileName, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, true);
+            if (file.Length > ObsThemeSettings.MaxCssBytes) throw new IOException("CSS 超过 256 KiB。");
+            var bytes = new byte[(int)file.Length]; await file.ReadExactlyAsync(bytes);
+            var text = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
             if (Encoding.UTF8.GetByteCount(text) > ObsThemeSettings.MaxCssBytes) throw new IOException("CSS 超过 256 KiB。");
             _css.Text = text; _feedback.Text = "CSS 已导入草稿。LAPLACE 模板需要按本软件的样式接口调整。";
         }

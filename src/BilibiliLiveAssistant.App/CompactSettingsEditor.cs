@@ -20,7 +20,7 @@ internal sealed class CompactSettingsEditor : StackPanel
     private readonly PriceTiersEditor _sc = new("SC · 金额下限（元）／停留（秒）", 10, 50), _gift = new("礼物 · 合并总金额下限／停留（秒）", 3, 30);
     private readonly SettingSlider _guardUnknown = new("上舰缺失金额时停留", 30, 3, 300, " 秒");
     private CompactOverlaySettings _current = new();
-    private readonly ObsThemeEditor _theme = new();
+    private ObsThemeEditor? _theme;
     public event Action? Changed;
     public event Action? ObsPreviewRequested;
     public CompactSettingsEditor(Func<string> address)
@@ -38,8 +38,15 @@ internal sealed class CompactSettingsEditor : StackPanel
         var sections = new StackPanel { Spacing = 8 }; foreach (var section in _sections) sections.Children.Add(section); sections.Children.Add(_lines); sections.Children.Add(_follow);
         var prices = new StackPanel { Spacing = 12, Children = { _sc, _gift, _guardUnknown } };
         Children.Add(new Expander { Header = "OBS 网页源", Content = obs, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch });
-        Children.Add(new Expander { Header = "OBS 网页样式 · 模板与 CSS", Content = _theme, HorizontalAlignment = HorizontalAlignment.Stretch });
-        _theme.PreviewRequested += () => ObsPreviewRequested?.Invoke();
+        var themeExpander = new Expander { Header = "OBS 网页样式 · 模板与 CSS", HorizontalAlignment = HorizontalAlignment.Stretch };
+        themeExpander.Expanding += (_, _) =>
+        {
+            if (_theme is not null) return;
+            _theme = new(); _theme.Load(_current.ObsTheme);
+            _theme.PreviewRequested += () => ObsPreviewRequested?.Invoke(); _theme.Changed += () => Changed?.Invoke();
+            themeExpander.Content = _theme;
+        };
+        Children.Add(themeExpander);
         Children.Add(new Expander { Header = "共享外观", Content = style, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new Expander { Header = "列表动画", IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch,
             Content = new StackPanel { Spacing = 10, Children = { _listAnimation, _animationDuration,
@@ -62,7 +69,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         _lines.Value = compact.SuperChatLines; _follow.Value = compact.FollowSeconds;
         _listAnimation.IsOn = compact.ListAnimationEnabled; _animationDuration.Value = compact.ListAnimationDurationMs;
         _sc.Load(prices.SuperChat); _gift.Load(prices.Gift); _guardUnknown.Value = prices.UnknownGuardSeconds;
-        _theme.Load(compact.ObsTheme);
+        _theme?.Load(compact.ObsTheme);
     }
     public CompactOverlaySettings Read() => (_current with { DesktopEnabled = _desktop.IsOn, ObsEnabled = _obs.IsOn,
         ObsPort = DisplayPage.Value(_port, 17865), ObsWidth = DisplayPage.Value(_width, 480), ObsHeight = DisplayPage.Value(_height, 800),
@@ -70,9 +77,9 @@ internal sealed class CompactSettingsEditor : StackPanel
         BackgroundColor = _color.Text, ShowStatus = _sections[0].IsChecked == true, ShowSuperChat = _sections[1].IsChecked == true,
         ShowGift = _sections[2].IsChecked == true, ShowList = _sections[3].IsChecked == true, ShowEntry = _sections[4].IsChecked == true, ShowFollow = _sections[5].IsChecked == true,
         SuperChatLines = (int)_lines.Value, FollowSeconds = _follow.Value,
-        ListAnimationEnabled = _listAnimation.IsOn, ListAnimationDurationMs = (int)_animationDuration.Value, ObsTheme = _theme.Read() }).Normalize();
+        ListAnimationEnabled = _listAnimation.IsOn, ListAnimationDurationMs = (int)_animationDuration.Value, ObsTheme = _theme?.Read() ?? _current.ObsTheme }).Normalize();
     public OverlayPriceDurations ReadPrices() => new OverlayPriceDurations { SuperChat = _sc.Read(), Gift = _gift.Read(), UnknownGuardSeconds = _guardUnknown.Value }.Normalize();
-    public void Validate() { _sc.Validate(); _gift.Validate(); _theme.Validate(); }
+    public void Validate() { _sc.Validate(); _gift.Validate(); _theme?.Validate(); }
 }
 
 internal sealed class PriceTiersEditor : StackPanel

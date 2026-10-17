@@ -8,6 +8,11 @@ $releaseRoot = [IO.Path]::GetFullPath((Join-Path $repository 'artifacts/releases
 $release = [IO.Path]::GetFullPath((Join-Path $releaseRoot $ReleaseName))
 if (!$release.StartsWith($releaseRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '发布路径越界' }
 $resources = @()
+$expectedObs = @('index.html', 'overlay.js', 'overlay.css')
+if (Test-Path -LiteralPath (Join-Path $repository 'src/BilibiliLiveAssistant.App/Obs/theme.js')) { $expectedObs += 'theme.js' }
+if (Test-Path -LiteralPath (Join-Path $repository 'src/BilibiliLiveAssistant.App/Obs/preview.html')) {
+    $expectedObs += @('preview.html', 'preview.js', 'preview.css', 'sample-avatar.svg', 'sample-emote.svg')
+}
 $stream = [IO.File]::OpenRead((Join-Path $release 'BilibiliLiveAssistant.App.dll'))
 $reader = [System.Reflection.PortableExecutable.PEReader]::new($stream)
 try {
@@ -23,12 +28,12 @@ try {
         $dataReader = $block.GetReader(([int]$resource.Offset + 4), $length)
         $content = $dataReader.ReadBytes($length)
         $relative = $name.Substring('BilibiliLiveAssistant.App.Obs.'.Length)
-        if ($relative -notin @('index.html', 'overlay.js', 'overlay.css')) { throw "意外 OBS 资源：$name" }
+        if ($relative -notin $expectedObs) { throw "意外 OBS 资源：$name" }
         $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($content))
         if ($hash -ne (Get-FileHash -LiteralPath (Join-Path $repository "src/BilibiliLiveAssistant.App/Obs/$relative")).Hash) { throw "OBS 内嵌内容与源码不一致：$name" }
         $resources += @{ name = $name; sha256 = $hash }
     }
-    if ($resources.Count -ne 3) { throw 'OBS 内嵌资源数量不符' }
+    if ($resources.Count -ne $expectedObs.Count) { throw 'OBS 内嵌资源数量不符' }
 } finally { $reader.Dispose(); $stream.Dispose() }
 
 Add-Type -AssemblyName System.IO.Compression.ZipFile
@@ -46,8 +51,10 @@ try {
         $nativeMatched += $name
     }
 } finally { $sdk.Dispose() }
-& node --check (Join-Path $repository 'src/BilibiliLiveAssistant.App/Obs/overlay.js')
-if ($LASTEXITCODE -ne 0) { throw 'OBS JavaScript 语法检查失败' }
+foreach ($script in $expectedObs | Where-Object { $_.EndsWith('.js') }) {
+    & node --check (Join-Path $repository "src/BilibiliLiveAssistant.App/Obs/$script")
+    if ($LASTEXITCODE -ne 0) { throw "OBS JavaScript 语法检查失败：$script" }
+}
 $report = @{
     release = $ReleaseName; obsEmbeddedResourcesMatched = $resources; winUiSdk = $sdkVersion; sdkNativeMatched = $nativeMatched
     obsJavaScriptSyntax = $true; startedApplication = $false; ranAutomatedTests = $false

@@ -20,6 +20,7 @@ internal sealed class DisplayPage : Page
     private readonly HistorySettingsEditor _historyEditor = new();
     private readonly CompactSettingsEditor _compactEditor;
     private readonly CompactPreview _compactPreview;
+    private readonly ObsThemePreviewSession _obsPreview;
     private CompactOverlaySettings _compactDraft = new();
     private OverlayPriceDurations _pricesDraft = new();
     private bool _compactDirty;
@@ -50,6 +51,18 @@ internal sealed class DisplayPage : Page
     {
         _vm = vm; _visible = isVisible; _dashboardDraft = vm.Settings.Dashboard; _displayDraft = vm.Settings.Display;
         _compactEditor = new(() => vm.CompactOverlay.ObsAddress); _compactPreview = new(vm);
+        _obsPreview = new(vm.Images, DispatcherQueue);
+        _compactEditor.ObsPreviewRequested += async () =>
+        {
+            try
+            {
+                Capture(); _compactEditor.Validate();
+                var uri = _obsPreview.Open(CompactPreviewSettings());
+                if (!await Windows.System.Launcher.LaunchUriAsync(uri)) { _obsPreview.Close(); _feedback.Text = "无法打开浏览器，请检查默认浏览器设置。"; }
+                else _feedback.Text = "网页预览使用本地示例；修改即时预览，保存后应用到 OBS。只保留一个预览页。";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { _obsPreview.Close(); _feedback.Text = "预览未能打开：" + ex.Message; }
+        };
         _dashboard = new(_dashboardDraft); _preview = new(vm, isVisible); _featurePreview = new(vm, isVisible);
         var root = new Grid { Padding = new Thickness(20, 12, 20, 12), RowSpacing = 12 };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -137,7 +150,7 @@ internal sealed class DisplayPage : Page
             _columns.RowDefinitions[1].Height = new(narrow ? 1 : 0, GridUnitType.Star); Grid.SetColumn(propertiesScroll, narrow ? 0 : 1); Grid.SetRow(propertiesScroll, narrow ? 1 : 0);
         };
         vm.PropertyChanged += OnSettingsChanged;
-        Loaded += (_, _) => ResumeVisuals(); Unloaded += (_, _) => { _disposed = true; vm.PropertyChanged -= OnSettingsChanged; _preview.Dispose(); _featurePreview.Dispose(); _compactPreview.Dispose(); };
+        Loaded += (_, _) => ResumeVisuals(); Unloaded += (_, _) => { _disposed = true; vm.PropertyChanged -= OnSettingsChanged; _preview.Dispose(); _featurePreview.Dispose(); _compactPreview.Dispose(); _obsPreview.Dispose(); };
         LoadStored();
     }
     private void LoadStored()
@@ -206,10 +219,10 @@ internal sealed class DisplayPage : Page
         _compactPreview.SetActive(_feature == "compact" && _visible());
         if (_feature == "compact")
         {
-            var compactDisplay = _displayDraft;
-            foreach (var (previewKind, region) in _drafts) compactDisplay = OverlayRegions.With(compactDisplay, previewKind, region);
-            _compactPreview.Update(_vm.Settings with { Compact = _compactDraft, PriceDurations = _pricesDraft, Dashboard = _dashboardDraft, Display = compactDisplay });
+            var settings = CompactPreviewSettings(); _compactPreview.Update(settings);
+            if (_visible()) _obsPreview.Update(settings); else _obsPreview.Close();
         }
+        else _obsPreview.Close();
         if (_feature is "media" or "cards") _featurePreview.Update(_feature, _mediaDraft, _cardDraft, _dashboardDraft);
         _featurePreview.SetActive(_feature is "media" or "cards" && _visible());
         if (_feature == "history")
@@ -221,6 +234,12 @@ internal sealed class DisplayPage : Page
         _preview.Update(_selected, _selected is { } kind ? _drafts[kind] : new(), _dashboardDraft, _displayDraft.AnimationFrameRate,
             _selected is not { } selected || OverlayRegions.Enabled(_displayDraft, selected), _displayDraft.MaxTracks);
         _layout.Update(_displayDraft, _drafts, _selected);
+    }
+    private AppSettings CompactPreviewSettings()
+    {
+        var display = _displayDraft;
+        foreach (var (kind, region) in _drafts) display = OverlayRegions.With(display, kind, region);
+        return _vm.Settings with { Compact = _compactDraft, PriceDurations = _pricesDraft, Dashboard = _dashboardDraft, Display = display };
     }
     private async Task<bool> SaveAsync()
     {
@@ -275,7 +294,7 @@ internal sealed class DisplayPage : Page
         }
         RefreshPreview();
     }
-    internal void SuspendVisuals() { _preview.SetActive(false); _featurePreview.SetActive(false); _compactPreview.SetActive(false); }
+    internal void SuspendVisuals() { _preview.SetActive(false); _featurePreview.SetActive(false); _compactPreview.SetActive(false); _obsPreview.Close(); }
     internal void ResumeVisuals() { if (!_disposed) RefreshPreview(); }
     internal static NumberBox Number(string label, double value, double min, double max) => new()
     { Header = label, Value = value, Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };

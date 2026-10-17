@@ -27,7 +27,7 @@ window.BlaTheme = (() => {
       let css = `.bla-overlay{--bla-font-family:${quoted(s.fontFamily)};--bla-font-size:${number(c.fontSize,18,12,64)}px;--bla-opacity:${number(c.opacity,1,0,1)};--bla-avatar-size:${number(Math.min(s.avatarSize || 28,(c.fontSize || 18)+10),28,12,96)}px;--bla-emote-size:${number(c.emoteSize,28,16,128)}px;--bla-sc-lines:${number(c.superChatLines,6,1,12)};--bla-panel-background:${rgba(c.backgroundColor,c.backgroundOpacity)};--bla-name-color:${color(s.usernameColor,'#c7d2f0')};--bla-text-shadow:${shadow(s)};}`;
       for (const r of s.regions || []) {
         if (!/^(Danmaku|SuperChat|Gift|Guard|Enter)$/.test(r.type)) continue;
-        const types = r.type === 'Danmaku' ? ':is([data-type="Danmaku"],[data-type="Follow"],[data-type="Like"])' : `[data-type="${r.type}"]`;
+        const types = r.type === 'Enter' ? ':is([data-type="Enter"],[data-type="Follow"],[data-type="Like"])' : `[data-type="${r.type}"]`;
         css += `.bla-message${types}{--bla-message-color:${color(r.color,'#f1f3f8')};--bla-message-font:${quoted(r.fontFamily)};--bla-message-weight:${r.bold ? 700 : 400};--bla-message-style:${r.italic ? 'italic' : 'normal'};--bla-message-shadow:${shadow(r)};--bla-large-emote-size:${number(r.largeEmoteHeight,100,16,512)}px;}`;
       }
       defaults.textContent = '@layer bla-defaults{' + css + '}';
@@ -48,5 +48,6 @@ window.BlaTheme = (() => {
     custom.textContent = '@layer bla-custom{' + (typeof theme.customCss === 'string' ? theme.customCss : '') + '\n}';
     applyAppearance(); return true;
   }
-  return {update,set,get:() => theme};
+  function clear() { defaults.textContent = ''; appearance.textContent = ''; custom.textContent = ''; theme = {}; lastDefaults = ''; lastTheme = ''; }
+  return {update,set,clear,get:() => theme};
 })();

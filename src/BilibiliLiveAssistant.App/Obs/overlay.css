@@ -44,6 +44,7 @@
   :where(.fixed .bla-content) { padding: 0; }
   :where(.member .avatar-wrap) { margin: 0; }
   :where(.bla-gift-name, .bla-quantity, .bla-price) { font-weight: 600; }
+  :where(.bla-gift-details) { display: none; }
   :where([data-hide-avatar=true] .avatar-wrap, [data-hide-avatar=true] #status .avatar,
     [data-hide-medal=true] .bla-fan-medal, [data-hide-identity=true] .bla-identity) { display: none; }
   :where([data-hide-status=true] #status, [data-hide-sc=true] #sc, [data-hide-gift=true] #gift,

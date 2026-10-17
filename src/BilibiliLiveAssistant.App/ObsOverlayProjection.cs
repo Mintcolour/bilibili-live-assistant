@@ -77,21 +77,29 @@ internal sealed class ObsOverlayProjection
         var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow)) }).ToArray();
         var payload = new { revision, roomId = vm.RoomId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
             // CSS is delivered separately on changes; never repeat up to 256 KiB per message batch.
-            config = new { compact.FontSize, compact.EmoteSize, compact.Opacity, compact.BackgroundColor, compact.BackgroundOpacity,
-                compact.SuperChatLines, compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow,
-                compact.ListAnimationEnabled, compact.ListAnimationDurationMs },
-            style = new { fontFamily = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).FontFamily,
-                style.ShowAvatars, style.AvatarSize, style.ShowMedals, style.ShowIdentity, style.UsernameColor,
-                shadow = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).Shadow,
-                shadowSize = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).ShadowSize,
-                shadowOpacity = OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Danmaku).ShadowOpacity,
-                regions = new[] { LiveEventType.Danmaku, LiveEventType.SuperChat, LiveEventType.Gift, LiveEventType.Guard, LiveEventType.Enter }
-                    .Select(type => { var r = Region(vm.Settings, new LiveEvent(type, "", "", "#FFFFFF")); return new
-                    { type = type.ToString(), r.FontFamily, r.Color, r.Bold, r.Italic, r.Outline, r.Shadow, r.ShadowColor, r.ShadowOffset, r.ShadowOpacity, r.ShadowSize, r.LargeEmoteHeight }; }).ToArray() },
+            config = Configuration(compact), style = Style(vm.Settings),
             rows = timeline.Rows.Select(Message).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
             status, ranks };
         foreach (var key in _messages.Keys.Where(k => !used.Contains(k)).ToArray()) _messages.Remove(key);
         return new(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)), images);
+    }
+    internal static object Configuration(CompactOverlaySettings compact) => new
+    {
+        compact.FontSize, compact.EmoteSize, compact.Opacity, compact.BackgroundColor, compact.BackgroundOpacity,
+        compact.SuperChatLines, compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow,
+        compact.ListAnimationEnabled, compact.ListAnimationDurationMs,
+    };
+    internal static object Style(AppSettings settings)
+    {
+        var s = settings.Dashboard; var danmaku = OverlayRegions.Get(settings.Display, OverlayRegionKind.Danmaku);
+        return new
+        {
+            fontFamily = danmaku.FontFamily, s.ShowAvatars, s.ShowEntryAvatars, s.AvatarSize, s.ShowMedals, s.ShowIdentity, s.UsernameColor,
+            danmaku.Shadow, danmaku.ShadowSize, danmaku.ShadowOpacity,
+            regions = new[] { LiveEventType.Danmaku, LiveEventType.SuperChat, LiveEventType.Gift, LiveEventType.Guard, LiveEventType.Enter }
+                .Select(type => { var r = Region(settings, new LiveEvent(type, "", "", "#FFFFFF")); return new
+                { type = type.ToString(), r.FontFamily, r.Color, r.Bold, r.Italic, r.Outline, r.Shadow, r.ShadowColor, r.ShadowOffset, r.ShadowOpacity, r.ShadowSize, r.LargeEmoteHeight }; }).ToArray(),
+        };
     }
     private static int PriceTier(AppSettings settings, LiveEvent value)
     {

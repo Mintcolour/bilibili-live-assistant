@@ -47,5 +47,10 @@
     <EmbeddedResource Include="Obs\overlay.js" />
     <EmbeddedResource Include="Obs\overlay.css" />
     <EmbeddedResource Include="Obs\theme.js" />
+    <EmbeddedResource Include="Obs\preview.html" />
+    <EmbeddedResource Include="Obs\preview.js" />
+    <EmbeddedResource Include="Obs\preview.css" />
+    <EmbeddedResource Include="Obs\sample-avatar.svg" />
+    <EmbeddedResource Include="Obs\sample-emote.svg" />
   </ItemGroup>
 </Project>

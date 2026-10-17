@@ -56,6 +56,7 @@ internal static class SettingEvents
     {
         switch (node)
         {
+            case ObsThemeEditor theme: theme.Changed += changed; return;
             case SettingSlider slider: slider.Changed += changed; return;
             case SettingColor color: color.Changed += changed; return;
             case Slider slider: slider.ValueChanged += (_, _) => changed(); break;

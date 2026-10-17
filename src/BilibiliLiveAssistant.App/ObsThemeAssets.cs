@@ -12,13 +12,17 @@ internal static partial class ObsThemeAssets
     [GeneratedRegex("^[0-9a-f]{64}\\.(png|ttf|otf|woff2)$", RegexOptions.CultureInvariant)]
     private static partial Regex AssetName();
     internal static IReadOnlyList<string> List() => Directory.Exists(Root)
-        ? Directory.EnumerateFiles(Root).Select(Path.GetFileName).OfType<string>().Where(n => AssetName().IsMatch(n)).Order().Take(64).ToArray() : [];
+        ? Directory.EnumerateFiles(Root).Select(Path.GetFileName).OfType<string>().Where(n => AssetName().IsMatch(n)).Take(64).Order().ToArray() : [];
     internal static async Task<string> ImportAsync(string source)
     {
         var info = new FileInfo(source);
         if (info.Length is <= 0 or > 4 * 1024 * 1024) throw new IOException("素材需要小于 4 MiB。");
-        var bytes = await File.ReadAllBytesAsync(source);
-        if (bytes.Length > 4 * 1024 * 1024) throw new IOException("素材超出大小限制。");
+        byte[] bytes;
+        await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, true))
+        {
+            if (input.Length is <= 0 or > 4 * 1024 * 1024) throw new IOException("素材超出大小限制。");
+            bytes = new byte[(int)input.Length]; await input.ReadExactlyAsync(bytes);
+        }
         var extension = Path.GetExtension(source).ToLowerInvariant();
         if (extension is ".png" or ".jpg" or ".jpeg")
         {
@@ -48,7 +52,7 @@ internal static partial class ObsThemeAssets
         var name = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() + extension;
         var target = Path.Combine(Root, name);
         if (File.Exists(target)) return name;
-        var files = new DirectoryInfo(Root).EnumerateFiles().ToArray();
+        var files = new DirectoryInfo(Root).EnumerateFiles().Take(65).ToArray();
         if (files.Length >= 64 || files.Sum(f => f.Length) + bytes.Length > MaxTotalBytes)
             throw new IOException("素材已达到 64 项或 32 MiB 上限，请先在素材目录中清理不用的文件。");
         await using var file = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 8192, true);

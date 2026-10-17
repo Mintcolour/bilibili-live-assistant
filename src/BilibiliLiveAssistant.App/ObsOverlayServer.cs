@@ -29,26 +29,52 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     private byte[] _snapshot = "{}"u8.ToArray();
     private byte[] _theme = "{}"u8.ToArray();
     private long _themeVersion;
+    private TaskCompletionSource<bool> _previewChanged = Signal();
+    private byte[] _previewSnapshot = "{}"u8.ToArray(), _previewTheme = "{}"u8.ToArray();
+    private long _previewVersion;
+    private int _previewConsumers;
+    private readonly bool _previewOnly;
     private long _version, _imagesServed;
     private int _consumers, _connections;
     private Task? _accept;
-    private readonly string _prefix, _host;
-    public string Address { get; }
+    private readonly string _prefix;
+    private string _host;
+    public string Address => "http://" + _host + _prefix;
     public int ConsumerCount => Volatile.Read(ref _consumers);
+    public int PreviewConsumerCount => Volatile.Read(ref _previewConsumers);
     public event Action<int>? ConsumersChanged;
-    public ObsOverlayServer(int port, BiliImageCache cache)
+    public event Action<int>? PreviewConsumersChanged;
+    public ObsOverlayServer(int port, BiliImageCache cache, bool previewOnly = false)
     {
-        _cache = cache; _listener = new(IPAddress.Loopback, port); _host = $"127.0.0.1:{port}";
+        _previewOnly = previewOnly; _cache = cache; _listener = new(IPAddress.Loopback, port); _host = $"127.0.0.1:{port}";
+        if (previewOnly) { _prefix = "/" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant() + "/"; return; }
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BilibiliLiveAssistant");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "obs-source.key");
         var key = File.Exists(path) ? File.ReadAllText(path).Trim() : "";
         if (key.Length != 48 || key.Any(c => !Uri.IsHexDigit(c)))
         { key = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant(); File.WriteAllText(path, key); }
-        _prefix = "/" + key + "/"; Address = "http://" + _host + _prefix;
+        _prefix = "/" + key + "/";
     }
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public void Start() { _listener.Start(32); _accept = AcceptAsync(); }
+    public void Start() { _listener.Start(32); _host = $"127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}"; _accept = AcceptAsync(); }
+    public void PublishPreview(AppSettings settings)
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var snapshot = JsonSerializer.SerializeToUtf8Bytes(new { width = settings.Compact.ObsWidth, height = settings.Compact.ObsHeight,
+            config = ObsOverlayProjection.Configuration(settings.Compact), style = ObsOverlayProjection.Style(settings) }, options);
+        var theme = JsonSerializer.SerializeToUtf8Bytes(settings.Compact.ObsTheme, options);
+        lock (_gate)
+        {
+            if (_stop.IsCancellationRequested) return;
+            _previewSnapshot = snapshot; _previewTheme = theme; _previewVersion++;
+            var signal = _previewChanged; _previewChanged = Signal(); signal.TrySetResult(true);
+        }
+    }
+    public void ClearPreview()
+    {
+        lock (_gate) { _previewSnapshot = "{}"u8.ToArray(); _previewTheme = "{}"u8.ToArray(); }
+    }
     public void ClearSnapshot() => Publish(new("{}"u8.ToArray(), new Dictionary<string, ObsImageReference>()));
     public void PublishTheme(ObsThemeSettings theme)
     {
@@ -59,7 +85,8 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
             _theme = bytes; _themeVersion++; var signal = _changed; _changed = Signal(); signal.TrySetResult(true);
         }
     }
-    internal object GetDiagnostics() => new { connections = Volatile.Read(ref _connections), clients = Volatile.Read(ref _consumers), imagesServed = Interlocked.Read(ref _imagesServed) };
+    internal object GetDiagnostics() => new { connections = Volatile.Read(ref _connections), clients = Volatile.Read(ref _consumers), previewClients = PreviewConsumerCount,
+        themeBytes = _theme.Length, themeRevision = Interlocked.Read(ref _themeVersion), imagesServed = Interlocked.Read(ref _imagesServed) };
     public void Publish(ObsOverlayDocument document)
     {
         lock (_gate)
@@ -115,8 +142,9 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
                     || !request[1].StartsWith(_prefix, StringComparison.Ordinal))
                 { await Reply(stream, 403, "text/plain", "Forbidden"u8.ToArray(), deadline.Token); return; }
                 var route = request[1][_prefix.Length..];
-                if (route == "events") { deadline.CancelAfter(Timeout.InfiniteTimeSpan); await Events(stream, deadline.Token); return; }
-                if (route.StartsWith("image/", StringComparison.Ordinal)) { deadline.CancelAfter(TimeSpan.FromSeconds(10)); await Image(stream, route[6..], deadline.Token); return; }
+                if (route == "preview-events" && _previewOnly) { deadline.CancelAfter(Timeout.InfiniteTimeSpan); await PreviewEvents(stream, deadline.Token); return; }
+                if (route == "events" && !_previewOnly) { deadline.CancelAfter(Timeout.InfiniteTimeSpan); await Events(stream, deadline.Token); return; }
+                if (route.StartsWith("image/", StringComparison.Ordinal) && !_previewOnly) { deadline.CancelAfter(TimeSpan.FromSeconds(10)); await Image(stream, route[6..], deadline.Token); return; }
                 if (route.StartsWith("assets/", StringComparison.Ordinal))
                 {
                     await _imageSlots.WaitAsync(deadline.Token);
@@ -128,7 +156,17 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
                     finally { _imageSlots.Release(); }
                     return;
                 }
-                var resource = route switch { "" => ("index.html", "text/html; charset=utf-8"), "overlay.js" => ("overlay.js", "text/javascript; charset=utf-8"), "theme.js" => ("theme.js", "text/javascript; charset=utf-8"), "overlay.css" => ("overlay.css", "text/css; charset=utf-8"), _ => ("", "text/plain") };
+                var resource = route switch
+                {
+                    "" when !_previewOnly => ("index.html", "text/html; charset=utf-8"),
+                    "preview.html" when _previewOnly => ("preview.html", "text/html; charset=utf-8"),
+                    "preview.js" when _previewOnly => ("preview.js", "text/javascript; charset=utf-8"),
+                    "preview.css" when _previewOnly => ("preview.css", "text/css; charset=utf-8"),
+                    "sample-avatar.svg" when _previewOnly => ("sample-avatar.svg", "image/svg+xml"),
+                    "sample-emote.svg" when _previewOnly => ("sample-emote.svg", "image/svg+xml"),
+                    "overlay.js" => ("overlay.js", "text/javascript; charset=utf-8"), "theme.js" => ("theme.js", "text/javascript; charset=utf-8"),
+                    "overlay.css" => ("overlay.css", "text/css; charset=utf-8"), _ => ("", "text/plain"),
+                };
                 if (resource.Item1.Length == 0) { await Reply(stream, 404, "text/plain", [], deadline.Token); return; }
                 using var file = Assembly.GetExecutingAssembly().GetManifestResourceStream("BilibiliLiveAssistant.App.Obs." + resource.Item1) ?? throw new IOException("OBS resource missing");
                 using var buffer = new MemoryStream(); await file.CopyToAsync(buffer, deadline.Token);
@@ -137,6 +175,35 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
             catch (Exception ex) when (ex is not OutOfMemoryException) { }
             finally { Interlocked.Decrement(ref _connections); }
         }
+    }
+    private async Task PreviewEvents(Stream stream, CancellationToken cancellation)
+    {
+        if (Interlocked.Increment(ref _previewConsumers) > 1)
+        { Interlocked.Decrement(ref _previewConsumers); await Reply(stream, 503, "text/plain", [], cancellation); return; }
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var disconnected = WatchDisconnect(stream, lifetime); cancellation = lifetime.Token;
+        try
+        {
+            PreviewConsumersChanged?.Invoke(1);
+            await Header(stream, 200, "text/event-stream", null, cancellation);
+            long seen = -1;
+            while (!cancellation.IsCancellationRequested)
+            {
+                byte[] snapshot, theme; long version; Task next;
+                lock (_gate) { snapshot = _previewSnapshot; theme = _previewTheme; version = _previewVersion; next = _previewChanged.Task; }
+                using var write = CancellationTokenSource.CreateLinkedTokenSource(cancellation); write.CancelAfter(TimeSpan.FromSeconds(10));
+                if (seen != version)
+                {
+                    await stream.WriteAsync("event: theme\ndata: "u8.ToArray(), write.Token); await stream.WriteAsync(theme, write.Token);
+                    await stream.WriteAsync("\n\nevent: state\ndata: "u8.ToArray(), write.Token); await stream.WriteAsync(snapshot, write.Token);
+                    await stream.WriteAsync("\n\n"u8.ToArray(), write.Token); seen = version;
+                }
+                else await stream.WriteAsync(": alive\n\n"u8.ToArray(), write.Token);
+                await stream.FlushAsync(write.Token);
+                try { await next.WaitAsync(TimeSpan.FromSeconds(15), cancellation); } catch (TimeoutException) { }
+            }
+        }
+        finally { lifetime.Cancel(); await disconnected.ConfigureAwait(false); PreviewConsumersChanged?.Invoke(Interlocked.Decrement(ref _previewConsumers)); }
     }
     private static int FindHeaderEnd(byte[] bytes, int count)
     {
@@ -224,12 +291,12 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_stop.IsCancellationRequested) return;
-        _stop.Cancel(); _listener.Stop(); lock (_gate) { foreach (var entry in _images.Values) entry.Dispose(); _images.Clear(); _snapshot = []; _changed.TrySetCanceled(); }
+        _stop.Cancel(); _listener.Stop(); lock (_gate) { foreach (var entry in _images.Values) entry.Dispose(); _images.Clear(); _snapshot = []; _theme = []; _previewSnapshot = []; _previewTheme = []; _changed.TrySetCanceled(); _previewChanged.TrySetCanceled(); }
         if (_accept is not null) await _accept.ConfigureAwait(false);
         Task[] requests; lock (_gate) requests = _requests.ToArray();
         try { await Task.WhenAll(requests).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) { }
-        ConsumersChanged = null;
+        ConsumersChanged = null; PreviewConsumersChanged = null;
         _imageSlots.Dispose(); _stop.Dispose();
     }
 }

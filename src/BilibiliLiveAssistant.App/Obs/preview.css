@@ -1,0 +1,8 @@
+html, body { width: 100%; height: 100%; }
+body.checker { background: conic-gradient(#313743 25%,#252a34 0 50%,#313743 0 75%,#252a34 0) 0 0/24px 24px; }
+body.dark { background: #11151c; }
+body.light { background: #e9edf2; }
+#bla-workbench { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 14px; position: relative; z-index: 2; color: #dce5f7; background: #171d28; font: 13px/1.5 "Microsoft YaHei UI",sans-serif; }
+#bla-workbench button { color: #e2ecff; border: 1px solid #526482; border-radius: 6px; background: #29374f; cursor: pointer; padding: 4px 9px; }
+#bla-workbench button:disabled { opacity: .45; cursor: default; }
+.bla-preview-stage { position: absolute; overflow: hidden; inset: 78px 0 0; }

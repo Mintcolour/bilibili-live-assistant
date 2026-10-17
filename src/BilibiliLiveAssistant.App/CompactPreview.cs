@@ -36,7 +36,15 @@ internal sealed class CompactPreview : StackPanel, IDisposable
         _timer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _timer.IsRepeating = false; _timer.Interval = TimeSpan.FromMilliseconds(100);
         _timer.Tick += (_, _) => Render();
     }
-    public void Update(AppSettings settings) { _settings = settings; if (_active) { _timer.Stop(); _timer.Start(); } }
+    public void Update(AppSettings settings)
+    {
+        // Editing OBS-only CSS must not repeatedly render or upload native preview bitmaps.
+        var native = settings.Compact with { ObsTheme = _settings.Compact.ObsTheme };
+        var unchanged = native == _settings.Compact && settings.Dashboard == _settings.Dashboard && settings.Display == _settings.Display
+            && settings.PriceDurations.UnknownGuardSeconds == _settings.PriceDurations.UnknownGuardSeconds
+            && settings.PriceDurations.SuperChat.SequenceEqual(_settings.PriceDurations.SuperChat) && settings.PriceDurations.Gift.SequenceEqual(_settings.PriceDurations.Gift);
+        _settings = settings; if (_active && !unchanged) { _timer.Stop(); _timer.Start(); }
+    }
     public void SetActive(bool active)
     {
         if (_disposed || _active == active) return; _active = active;
@@ -150,7 +158,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                     i == 0, i == preparedRows.Length - 1)); y -= 4;
             }
             PlaySample();
-            _summary.Text = $"本地示例 · OBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥100：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
+            _summary.Text = $"桌面原生示例 · OBS CSS 请使用“打开真实网页预览”\nOBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥100：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (generation == _generation) { Clear(); _summary.Text = "本地预览暂不可用。"; } }
