@@ -195,14 +195,17 @@
           const count = document.createElement('span'); count.className = 'bla-metric-value'; count.textContent = value;
           part.append(mark,count,document.createTextNode(' ')); counts.append(part);
         } header.append(counts);
-        for (const rank of next.ranks || []) {
+        const ranks = document.createElement('span'); ranks.className = 'bla-ranks';
+        const rankIcon = document.createElement('span'); rankIcon.className = 'bla-rank-icon'; rankIcon.textContent = '🏆'; rankIcon.setAttribute('aria-label','高能榜');
+        const rankList = document.createElement('span'); rankList.className = 'bla-rank-list';
+        for (const rank of (next.ranks || []).slice(0, 3)) {
           const member = document.createElement('span'); member.className = 'member bla-rank-member'; member.dataset.rank = String(rank.rank);
           const msg = rank.message; member.dataset.guardLevel = String(msg.guardLevel || 0);
           const index = document.createElement('span'); index.className = 'bla-rank-index'; index.textContent = '#' + rank.rank + ' '; member.append(index);
-          if (msg.avatar) member.append(image(msg.avatar, 'avatar'));
           badge(member, msg.medal, msg.medalColor, 'bla-fan-medal'); badge(member, msg.guard, '#458ac1', 'bla-identity');
-          const name = document.createElement('span'); name.className = 'name bla-name'; name.textContent = msg.name; member.append(name); header.append(member);
+          const name = document.createElement('span'); name.className = 'name bla-name'; name.textContent = msg.name; member.append(name); rankList.append(member);
         }
+        if (rankList.childElementCount) { ranks.append(rankIcon, rankList); header.append(ranks); }
       }
     }
     const currentBounds = list.getBoundingClientRect();

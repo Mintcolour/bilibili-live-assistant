@@ -22,7 +22,10 @@
       sc:decorate(sample(100,'SuperChat','固定 SC 示例：感谢陪伴！这是一段用于检查正文行数、字号和换行的长文字。'.repeat(5),{price:'¥100',amountMilliYuan:100000,priceTier:3})),
       gift:decorate(sample(101,'Gift','星星 × 3',{giftName:'星星',quantity:3,price:'¥15',amountMilliYuan:15000,priceTier:3})),
       entry:decorate(sample(102,'Enter','进入直播间',{avatar:s.showEntryAvatars === false ? '' : 'sample-avatar.svg'})),
-      follow:decorate(sample(103,'Follow','关注了主播')),status:['1234','1.2 万'],ranks:[{rank:1,message:decorate(sample(-1,'Danmaku',''))}]};
+      follow:decorate(sample(103,'Follow','关注了主播')),status:['1234','1.2 万'],
+      ranks:[{rank:1,message:decorate(sample(-1,'Danmaku','',{name:'示例舰长',avatar:''}))},
+        {rank:2,message:decorate(sample(-2,'Danmaku','',{name:'示例观众',avatar:'',guard:'',guardLevel:0}))},
+        {rank:3,message:decorate(sample(-3,'Danmaku','',{name:'另一位观众',avatar:'',medal:''}))}]};
   }
   window.BlaPreviewState = value => {
     if (!value.config) return value;

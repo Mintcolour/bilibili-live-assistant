@@ -92,6 +92,62 @@ internal static class OverlayBulletinRenderer
         finally { foreach (var image in images) image.Dispose(); }
     }
 
+    // Compact panels have a bounded width, unlike the horizontal scrolling bulletin.
+    // Keep the two metrics and the top three members in separate vertical columns.
+    internal static Bitmap RenderCompact(LiveRoomBulletin bulletin, OverlayRegionSettings region, DashboardSettings style,
+        BiliImageCache cache, int width)
+    {
+        region = region with { FontSize = Math.Max(12, (int)Math.Round(region.FontSize * .85)), BackgroundOpacity = 0 };
+        style = style with { ShowAvatars = false };
+        using var font = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold, region.Italic);
+        using var measureImage = new Bitmap(1, 1);
+        using var measure = Graphics.FromImage(measureImage);
+        var pad = region.Shadow ? Math.Max(4, region.ShadowOffset + region.ShadowSize + 2) : 4;
+        var icon = Math.Clamp(region.FontSize + 4, 18, 36);
+        var metrics = bulletin.Metrics.Take(2).ToArray();
+        var metricWidth = metrics.Length == 0 ? 0 : Math.Min((int)Math.Ceiling(metrics.Max(m =>
+            OverlayTextRenderer.Measure(measure, m.Value, font).Width)) + icon + pad * 2 + 6, Math.Max(64, width * 2 / 5));
+        var rankWidth = Math.Max(24, width - metricWidth - icon - 6);
+        var rows = new List<Bitmap>(3);
+        try
+        {
+            foreach (var member in bulletin.Members.Take(3))
+                rows.Add(OverlayMessageRenderer.Render(MemberEvent(member, region.Color), region, style, cache, rankWidth,
+                    Math.Max(36, (int)Math.Ceiling(font.GetHeight(measure)) + pad * 2 + 10), background: false));
+            var lineHeight = Math.Max(icon + pad * 2, rows.Count > 0 ? rows.Max(row => row.Height) : 0);
+            var height = Math.Max(36, Math.Max(metrics.Length, rows.Count) * lineHeight);
+            var result = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            try
+            {
+                using var graphics = Graphics.FromImage(result);
+                for (var i = 0; i < metrics.Length; i++)
+                {
+                    var metric = metrics[i]; var text = metric.Value;
+                    var textWidth = Math.Max(0, metricWidth - icon - pad * 2 - 6);
+                    if (OverlayTextRenderer.Measure(measure, text, font).Width > textWidth)
+                    {
+                        while (text.Length > 0 && OverlayTextRenderer.Measure(measure, text + "…", font).Width > textWidth)
+                            text = text[..^1];
+                        text += "…";
+                    }
+                    var color = OverlayTextRenderer.Color(region.Color, style.TextOpacity);
+                    DrawIcon(graphics, metric.Kind == LiveAudienceMetricKind.Watched ? 0 : 3,
+                        new(pad, i * lineHeight + (lineHeight - icon) / 2f, icon, icon), color, region.Outline);
+                    OverlayTextRenderer.Draw(graphics, text, font, new(pad + icon + 6,
+                        i * lineHeight + (lineHeight - font.GetHeight(graphics)) / 2), color, region.Outline, region);
+                }
+                if (rows.Count > 0)
+                    DrawIcon(graphics, 2, new(metricWidth, (lineHeight - icon) / 2f, icon, icon),
+                        OverlayTextRenderer.Color("#B998FF", style.TextOpacity), region.Outline);
+                for (var i = 0; i < rows.Count; i++)
+                    graphics.DrawImageUnscaled(rows[i], metricWidth + icon + 6, i * lineHeight + (lineHeight - rows[i].Height) / 2);
+                return result;
+            }
+            catch { result.Dispose(); throw; }
+        }
+        finally { foreach (var row in rows) row.Dispose(); }
+    }
+
     private static Bitmap Prefix(LiveRoomBulletin bulletin, OverlayRegionSettings region, int maxHeight, bool noMembers)
     {
         using var font = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold, region.Italic);

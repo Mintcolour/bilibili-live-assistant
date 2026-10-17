@@ -108,12 +108,19 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                 g.Clear(System.Drawing.Color.Transparent);
                 if (c.BackgroundOpacity > 0) { using var brush = new SolidBrush(OverlayTextRenderer.Color(c.BackgroundColor, c.BackgroundOpacity)); g.FillRectangle(brush, 0, 0, width, height); }
                 var top = 8;
-                if (c.ShowStatus) { using var font = OverlayTextRenderer.CreateFont("Microsoft YaHei UI", 15); OverlayTextRenderer.Draw(g, "◉ 1,234     👁 2.4万     #1 示例舰长", font, new(8, top), System.Drawing.Color.LightSteelBlue, false); top += 32; }
+                if (c.ShowStatus)
+                {
+                    var region = ObsOverlayProjection.Region(settings, new(LiveEventType.Rank, "", "", "#B998FF"));
+                    using var status = OverlayBulletinRenderer.RenderCompact(CompactExamples.Bulletin(), region, settings.Dashboard, _vm.Images, width - 16);
+                    g.DrawImageUnscaled(status, 8, top); top += status.Height + 4;
+                }
                 var messages = CompactExamples.Messages();
                 void Draw(LiveEvent value, int maxHeight, bool card = true, bool inline = false)
                 {
                     if (top + 40 >= height) return;
                     var region = ObsOverlayProjection.Region(settings, value);
+                    if (card) maxHeight = Math.Max(maxHeight, OverlayMessageRenderer.MinimumCardHeight(region, settings.Dashboard,
+                        value.Type is LiveEventType.Gift or LiveEventType.Guard ? 2 : 1));
                     using var row = OverlayMessageRenderer.Render(value, region, settings.Dashboard, _vm.Images, width - 16, Math.Min(maxHeight, height - top), card, background: false, inlineHeader: inline);
                     g.DrawImageUnscaled(row, 8, top); top += row.Height + 6;
                 }

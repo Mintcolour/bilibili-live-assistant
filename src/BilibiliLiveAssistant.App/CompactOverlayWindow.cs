@@ -29,6 +29,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private readonly ImageAttributes _fadeAttributes = new();
     private readonly ColorMatrix _fadeMatrix = new();
     private readonly Dictionary<long, Row> _rows = new();
+    private readonly Dictionary<LiveEventType, int> _cardHeights = new();
     private LayeredOverlayCanvas? _canvas;
     private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported;
     private long? _anchor;
@@ -89,7 +90,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (!_vm.OverlayInteractive) _reading = false;
         if (args.PropertyName == nameof(LiveAssistantViewModel.Settings)) ApplyBounds();
         if (Visible) _vm.CompactOverlay.SetDesktopVisible(!Editing);
-        ApplyInteraction(); MakeSamples(); _statusValue = null; ReleaseRows(); RequestRender();
+        ApplyInteraction(); MakeSamples(); _statusValue = null; _cardHeights.Clear(); ReleaseRows(); RequestRender();
     }
     private void ApplyBounds()
     {
@@ -189,19 +190,21 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 if (_statusValue is null || !ReferenceEquals(_statusRank, _vm.LatestRank) || !ReferenceEquals(_statusOnline, _vm.LatestOnline))
                 {
                     _statusRank = _vm.LatestRank; _statusOnline = _vm.LatestOnline;
-                    IReadOnlyList<LiveAudienceMetric> metrics = Editing ? [new(LiveAudienceMetricKind.EnergyMembers, "1,234"), new(LiveAudienceMetricKind.Watched, "2.4万")]
+                    IReadOnlyList<LiveAudienceMetric> metrics = Editing ? CompactExamples.Bulletin().Metrics
                         : OverlayBulletinRenderer.AudienceMetrics(_statusRank, _statusOnline, true);
-                    IReadOnlyList<LiveRankMember> members = Editing ? [new(1, 0, "示例舰长", new() { GuardLevel = 3, MedalName = "粉丝牌", MedalLevel = 12 })]
-                        : _statusRank is { } latest ? _vm.GetRankMembers(latest, OverlayRegions.Get(_vm.Settings.Display, OverlayRegionKind.Status).RankCount) : [];
+                    IReadOnlyList<LiveRankMember> members = Editing ? CompactExamples.Bulletin().Members
+                        : _statusRank is { } latest ? _vm.GetRankMembers(latest, 3) : [];
                     _statusValue = new(LiveEventType.Rank, "", "", "#B998FF", Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, members, members.Count > 0) });
                 }
-                var status = GetRow(-5, _statusValue, 42, false); keep.Add(-5);
+                var status = GetRow(-5, _statusValue, Math.Max(36, bottom - top), false); keep.Add(-5);
                 status.Bounds = new(6, top, status.Image.Width, status.Image.Height); DrawRow(g, status); top += status.Image.Height + 4;
             }
             void AtTop(CompactMessage? item, int maxHeight, bool show, long key)
             {
                 if (!show || item is null || bottom - top < 60) return;
-                var row = GetRow(key, item.Value, Math.Min(maxHeight, Math.Max(40, (bottom - top) / 2)), true); keep.Add(key);
+                var minimum = MinimumCardHeight(item.Value);
+                if (bottom - top < minimum) return;
+                var row = GetRow(key, item.Value, Math.Min(Math.Max(maxHeight, minimum), Math.Max(minimum, (bottom - top) / 2)), true); keep.Add(key);
                 row.Bounds = new(6, top, row.Image.Width, row.Image.Height); DrawRow(g, row); top += row.Image.Height + 4;
             }
             AtTop(timeline.SuperChat, config.FontSize * (config.SuperChatLines + 2) + 24, config.ShowSuperChat && OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.SuperChat), -1);
@@ -225,7 +228,9 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 var y = bottom; var state = g.Save(); g.SetClip(_listBounds);
                 for (var i = end; i >= 0 && y > top && keep.Count < 36; i--)
                 {
-                    var item = rows[i]; var row = GetRow(item.Id, item.Value, Math.Max(100, _listBounds.Height), true); keep.Add(item.Id);
+                    var item = rows[i];
+                    var minimum = MinimumCardHeight(item.Value);
+                    var row = GetRow(item.Id, item.Value, Math.Max(minimum, Math.Max(100, _listBounds.Height)), true); keep.Add(item.Id);
                     y -= row.Image.Height;
                     row.Motion.Place(y, now, seconds, animate, item.Id > _latestListId);
                     DrawMovingRow(g, row, now); moving |= row.Motion.Running(now); y -= 4;
@@ -280,6 +285,13 @@ internal sealed class CompactOverlayWindow : Forms.Form
         RuntimeErrorLog.Record("compact-render", exception);
         _vm.ReportSettingsError("紧凑面板绘制失败，请重新打开浮窗；错误已记入 runtime-errors.log。");
     }
+    private int MinimumCardHeight(LiveEvent value)
+    {
+        if (_cardHeights.TryGetValue(value.Type, out var height)) return height;
+        var region = ObsOverlayProjection.Region(EffectiveSettings, value); var style = _vm.Settings.Dashboard;
+        height = OverlayMessageRenderer.MinimumCardHeight(region, style, value.Type is LiveEventType.Gift or LiveEventType.Guard ? 2 : 1);
+        _cardHeights[value.Type] = height; return height;
+    }
     private Row GetRow(long key, LiveEvent value, int maxHeight, bool card)
     {
         var width = Math.Max(120, ClientSize.Width - 12);
@@ -290,11 +302,13 @@ internal sealed class CompactOverlayWindow : Forms.Form
         row = new(key, value, bitmap, width, maxHeight, card);
         if (motion is not null) row.Motion = motion;
         _rows.Add(key, row);
-        if (!Editing) _ = LoadImagesAsync(row); return row;
+        if (!Editing && !value.Extra.ContainsKey("room_bulletin")) _ = LoadImagesAsync(row); return row;
     }
     private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline)
     {
         var region = ObsOverlayProjection.Region(EffectiveSettings, value);
+        if (value.Extra.GetValueOrDefault("room_bulletin") is LiveRoomBulletin bulletin)
+            return OverlayBulletinRenderer.RenderCompact(bulletin, region, _vm.Settings.Dashboard, _vm.Images, width);
         return OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false, inlineHeader: inline);
     }
     private void DrawRow(Graphics graphics, Row row) => graphics.DrawImageUnscaled(row.Image, row.Bounds.Location);
@@ -364,7 +378,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         var wasReading = _reading; _reading = false; _vm.CompactOverlay.SetDesktopVisible(!Editing); MakeSamples(); ReleaseRows(); RequestRender();
         try
         {
-            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; ReleaseRows(); RequestRender(); }, () =>
+            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; _cardHeights.Clear(); ReleaseRows(); RequestRender(); }, () =>
             {
                 if (!Editing) return;
                 _samples.AddBatch([new LiveEvent(LiveEventType.Danmaku, "示例观众", "新弹幕滑入，已有消息平滑上移。", "#FFFFFF")], DateTimeOffset.UtcNow, EffectiveSettings);
@@ -372,7 +386,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
             });
             editor.ShowDialog(this);
         }
-        finally { _preview = null; _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }
+        finally { _preview = null; _cardHeights.Clear(); _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }
     }
     private async Task FinishInteractionAsync()
     {
@@ -409,6 +423,12 @@ internal sealed class CompactOverlayWindow : Forms.Form
 
 internal static class CompactExamples
 {
+    public static LiveRoomBulletin Bulletin() => new(
+        [new(LiveAudienceMetricKind.EnergyMembers, "1,234"), new(LiveAudienceMetricKind.Watched, "2.4万")],
+        [new(1, 0, "示例舰长", new() { GuardLevel = 3, MedalName = "粉丝牌", MedalLevel = 12 }),
+         new(2, 0, "示例观众", new() { MedalName = "粉丝牌", MedalLevel = 8 }),
+         new(3, 0, "另一位观众", new() { GuardLevel = 3 })], true);
+
     public static LiveEvent[] Messages() =>
     [
         new LiveEvent(LiveEventType.SuperChat, "示例观众", "谢谢陪伴，今天的直播很精彩！这是固定区中的醒目留言。", "#FFD700", Appearance: new() { MedalName = "粉丝牌", MedalLevel = 12, GuardLevel = 3 }) { HistoryFields = new(AmountMilliYuan: 100000) },

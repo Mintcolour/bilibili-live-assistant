@@ -10,6 +10,22 @@ namespace BilibiliLiveAssistant.App;
 /// <summary>All overlay regions share one cached alpha renderer, including interactions and room metrics.</summary>
 internal static class OverlayMessageRenderer
 {
+    // Reserve a complete header and at least one body line, including the
+    // configured avatar, padding and shadow. FontSize * N is not a pixel height.
+    internal static int MinimumCardHeight(OverlayRegionSettings region, DashboardSettings style, int bodyLines = 1)
+    {
+        using var name = OverlayTextRenderer.CreateFont(region.FontFamily, Math.Max(12, region.FontSize * .8f), true);
+        using var body = OverlayTextRenderer.CreateFont(region.FontFamily, region.FontSize, region.Bold, region.Italic);
+        using var image = new Bitmap(1, 1);
+        using var graphics = Graphics.FromImage(image);
+        var avatar = style.ShowAvatars ? Math.Min((int)Math.Round(style.AvatarSize * region.ContentScale), region.FontSize + 12) : 0;
+        var header = Math.Max(name.GetHeight(graphics) + 8, avatar);
+        var lineAvatar = style.ShowAvatars ? Math.Min((int)Math.Round(style.AvatarSize * region.ContentScale), region.FontSize + 10) + (style.ShowIdentity ? 6 : 0) : 0;
+        var line = Math.Max(body.GetHeight(graphics) + Math.Clamp(style.LineSpacing, 3, 10), lineAvatar);
+        var pad = Math.Max((int)(Math.Clamp(style.Padding, 10, 24) * region.ContentScale), region.Shadow ? region.ShadowOffset + region.ShadowSize + 2 : 4);
+        return (int)Math.Ceiling(header + line * bodyLines + 3 * bodyLines) + pad * 2;
+    }
+
     // Split only at grapheme or complete emote boundaries. Queued messages have no bitmaps.
     public static IReadOnlyList<LiveEvent> ScrollParts(LiveEvent value, OverlayRegionSettings region, DashboardSettings style, BiliImageCache cache)
     {
@@ -196,6 +212,8 @@ internal static class OverlayMessageRenderer
             if (card && value.Type is LiveEventType.Gift or LiveEventType.Guard)
             {
                 var size = Math.Min(28, rowHeight); var iconUrl = value.HistoryFields?.GiftIconUrl ?? value.Extra.GetValueOrDefault("gift_icon") as string ?? "";
+                // Inline headers may fill the row; move icon and text together.
+                if (x + size + 6 + region.FontSize * 2 > right && x > startX) NewLine();
                 pieces.Add(new Piece { Image = Load(iconUrl) ?? MakeGiftIcon(value.Type == LiveEventType.Guard), Bounds = new(x, y + (rowHeight - size) / 2, size, size) });
                 x += size + 6;
             }
@@ -343,7 +361,8 @@ internal static class OverlayMessageRenderer
                 var line = remaining.Split('\n', 2)[0].TrimEnd('\r');
                 if (line.Length == 0) { remaining = remaining[1..]; continue; }
                 if (y + font.GetHeight(measure) > maxHeight - pad) { Ellipsis(font); return; }
-                var lastLine = !card || y + lineHeight * 2 + 3 > maxHeight - pad;
+                // A long nickname must not wrap over the body allocation.
+                var lastLine = header || !card || y + lineHeight * 2 + 3 > maxHeight - pad;
                 var part = Fit(line, font, right - x, lastLine);
                 if (part.Length == 0)
                 {
@@ -357,7 +376,7 @@ internal static class OverlayMessageRenderer
                 if (part.EndsWith('…') && part != line) { stop = true; return; }
                 remaining = remaining[part.Length..];
                 if (part.Length < line.Length) NewLine();
-                if (!card && header) return;
+                if (header) return;
             }
         }
         string Fit(string text, Font font, float available, bool ellipsis)

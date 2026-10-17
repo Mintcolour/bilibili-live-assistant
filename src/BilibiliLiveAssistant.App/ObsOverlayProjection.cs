@@ -39,7 +39,7 @@ internal sealed class ObsOverlayProjection
             if (collected is { Count: >= 16 } && !collected.ContainsKey(key)) return "";
             images.TryAdd(key, reference); collected?.TryAdd(key, reference); return "image/" + key;
         }
-        ObsMessage? Message(CompactMessage? item)
+        ObsMessage? Message(CompactMessage? item, bool includeAvatar = true)
         {
             if (item is null) return null;
             used.Add(item.Id);
@@ -50,7 +50,7 @@ internal sealed class ObsOverlayProjection
             }
             var messageImages = collected = new Dictionary<string, ObsImageReference>();
             var value = item.Value; var appearance = value.Appearance; var region = Region(vm.Settings, value);
-            var avatar = style.ShowsAvatar(value) ? Image(appearance?.AvatarUrl, value.Uid, BiliImageRole.Avatar, style.AvatarSize) : "";
+            var avatar = includeAvatar && style.ShowsAvatar(value) ? Image(appearance?.AvatarUrl, value.Uid, BiliImageRole.Avatar, style.AvatarSize) : "";
             var frame = avatar.Length > 0 && style.ShowIdentity ? Image(appearance?.AvatarFrameUrl) : "";
             var body = value.Type == LiveEventType.SuperChat ? value.HistoryFields?.RawBody ?? value.Content : value.Content;
             var segments = RichMessageSegments.Split(body, appearance).Take(128).Select(segment => (object)new
@@ -71,14 +71,14 @@ internal sealed class ObsOverlayProjection
         if (!ReferenceEquals(_rank, vm.LatestRank))
         {
             _rank = vm.LatestRank;
-            _ranking = _rank is { } rank ? vm.GetRankMembers(rank, OverlayRegions.Get(vm.Settings.Display, OverlayRegionKind.Status).RankCount)
+            _ranking = _rank is { } rank ? vm.GetRankMembers(rank, 3)
                 .Select(m => (m.Rank, OverlayBulletinRenderer.MemberEvent(m, "#B998FF"))).ToArray() : [];
         }
-        var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow)) }).ToArray();
+        var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow), includeAvatar: false) }).ToArray();
         var payload = new { revision, roomId = vm.RoomId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
             // CSS is delivered separately on changes; never repeat up to 256 KiB per message batch.
             config = Configuration(compact), style = Style(vm.Settings),
-            rows = timeline.Rows.Select(Message).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
+            rows = timeline.Rows.Select(item => Message(item)).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
             status, ranks };
         foreach (var key in _messages.Keys.Where(k => !used.Contains(k)).ToArray()) _messages.Remove(key);
         return new(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)), images);
