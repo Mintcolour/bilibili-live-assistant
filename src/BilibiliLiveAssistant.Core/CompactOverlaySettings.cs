@@ -37,7 +37,7 @@ public sealed record OverlayPriceDurations
 
 public sealed record CompactOverlaySettings
 {
-    public bool DesktopEnabled { get; init; }
+    public bool DesktopEnabled { get; init; } = true;
     public bool ObsEnabled { get; init; }
     public int ObsPort { get; init; } = 17865;
     public int ObsWidth { get; init; } = 480;

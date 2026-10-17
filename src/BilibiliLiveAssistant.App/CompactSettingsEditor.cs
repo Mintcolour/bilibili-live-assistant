@@ -57,6 +57,17 @@ internal sealed class CompactSettingsEditor : StackPanel
         foreach (var child in Children) SettingEvents.Watch(child, () => Changed?.Invoke());
         _sc.Changed += () => Changed?.Invoke(); _gift.Changed += () => Changed?.Invoke();
     }
+    internal void SelectSection(string? section)
+    {
+        _desktop.Visibility = section == "compact" ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in Children.OfType<Expander>())
+        {
+            var title = item.Header?.ToString() ?? "";
+            var visible = section == "obs" ? title.StartsWith("OBS") : section == "prices" ? title.StartsWith("金额停留") : !title.StartsWith("OBS") && !title.StartsWith("金额停留");
+            item.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible && (title == "OBS 网页源" || title.StartsWith("金额停留"))) item.IsExpanded = true;
+        }
+    }
     public void UpdateAddress(string value) { _address.Text = value; _address.PlaceholderText = "保存启用后生成；启动失败时请换用其他端口。"; }
     public void Load(CompactOverlaySettings compact, OverlayPriceDurations prices, string address)
     {

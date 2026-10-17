@@ -49,7 +49,7 @@ internal sealed class AnchorSummary : Button, IDisposable
             _avatarHost.Children.Add(_avatar);
         }
         if (_visible()) _avatar.Activate(XamlRoot?.RasterizationScale ?? 1);
-        _summary.Text = p is null ? "主播统计" : $"⚓ {Number(p.Guards)}   {(!string.IsNullOrEmpty(p.MedalName) ? p.MedalName : "粉丝团")} {Number(p.FansClub)}   ★ {Number(p.EnergyMembers)}";
+        _summary.Text = p is null ? "信息 ▾" : $"信息 · ⚓ {Number(p.Guards)}   {(!string.IsNullOrEmpty(p.MedalName) ? p.MedalName : "粉丝团")} {Number(p.FansClub)}   ★ {Number(p.EnergyMembers)}";
         var latestSample = _vm.AudienceHistory.LastOrDefault()?.Time ?? default;
         if (_open && _visible() && (_detailProfile != p || _detailOnline != _vm.OnlineText || _detailSample != latestSample)) RefreshDetails();
     }

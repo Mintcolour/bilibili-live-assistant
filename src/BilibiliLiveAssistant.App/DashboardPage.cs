@@ -39,6 +39,10 @@ internal sealed class DashboardPage : Page
     private readonly Grid _left = new();
     private readonly HotPhrasePanel _hotPhrases;
     private readonly Grid _middle = new();
+    private readonly Flyout _rankFlyout = new() { Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
+    private readonly DashboardChangesPanel _changes;
+    private bool _rankOpen;
+    private readonly Button _overlayMode = new() { MinWidth = 110 };
     private readonly DashboardRankPanel _rankPanel;
     private readonly AnchorSummary _anchor;
     private readonly HistoryAnchorPicker _historyAnchor;
@@ -47,7 +51,7 @@ internal sealed class DashboardPage : Page
     private readonly Button _monitor = new() { Content = "开启监视", Padding = new Thickness(10, 5, 10, 5), MinWidth = 92 };
     private readonly ToggleButton _interact = DashboardUi.Toggle("\uE7C9", "调整浮窗位置、大小与显示类型 / 完成调整");
     private readonly ToggleSwitch _anonymous = new() { Header = "匿名读取", OnContent = "无需登录", OffContent = "使用账号", MinWidth = 160 };
-    private bool _connectionBusy, _loadingLayout;
+    private bool _connectionBusy;
     private readonly DashboardList _danmaku;
     private readonly DanmakuCardPanel _cardPanel;
     private readonly Button _cardMode = new() { Content = "卡片", Padding = new(7, 3, 7, 3), MinHeight = 28 };
@@ -81,6 +85,7 @@ internal sealed class DashboardPage : Page
         _animations = new MessageAnimationClock(isWindowVisible);
         _hotPhrases = new(vm, _visible, clock: _animations) { Margin = new(5, 3, 5, 3) };
         _rankPanel = new(vm, _animations, _visible);
+        _changes = new(vm);
         _anchor = new(vm, _animations, _visible);
         _historyAnchor = new(vm, _visible);
         _danmaku = new("弹幕", "\uE8BD", vm, _animations, () => _visible() && !_vm.Settings.Cards.Enabled, false, _cardMode);
@@ -110,17 +115,15 @@ internal sealed class DashboardPage : Page
         top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         _anonymous.IsOn = vm.Settings.AnonymousReading;
-        var reading = DashboardUi.Button("\uE713", "读取模式", 28);
-        reading.Flyout = new Flyout { Content = new StackPanel { Spacing = 8, MaxWidth = 270, Children = { _anonymous,
-            new TextBlock { Text = "匿名读取不发送已保存的登录 Cookie。未填写账号时也以匿名方式读取。", FontSize = 12, TextWrapping = TextWrapping.Wrap } } } };
-        _roomInfo.Children.Add(_headingTitle); _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_monitor); _roomInfo.Children.Add(reading);
+        _anonymous.Header = null; _anonymous.OnContent = "匿名读取"; _anonymous.OffContent = "账号读取"; _anonymous.MinWidth = 110;
+        DashboardUi.Describe(_anonymous, "开启监视前选择读取方式；匿名读取不发送登录 Cookie");
+        _roomInfo.Children.Add(_headingTitle); _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_monitor);
         _monitor.Click += async (_, _) => await ToggleMonitorAsync();
         _durationInfo.Children.Add(DashboardUi.Icon("\uE823")); _durationInfo.Children.Add(_duration);
         _audienceInfo.Children.Add(DashboardUi.Icon("\uE890")); _audienceInfo.Children.Add(_audience);
         top.Children.Add(_roomInfo);
         _ranking.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        _ranking.Children.Add(_anchor);
-        Grid.SetColumn(_ranking, 1); top.Children.Add(_ranking);
+
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         toolbar.Children.Add(_durationInfo); toolbar.Children.Add(_audienceInfo);
         var overlay = DashboardUi.Toggle("\uE740", "桌面悬浮区");
@@ -134,31 +137,32 @@ internal sealed class DashboardPage : Page
             if (overlay.IsChecked == true) vm.ToggleOverlayInteraction();
             _interact.IsChecked = vm.OverlayInteractive;
         };
+        _interact.Content = "编辑浮窗"; _interact.MinWidth = 82;
+        DashboardUi.Describe(_interact, "进入示例编辑：拖动、缩放或调整样式；再次点击结束编辑");
         toolbar.Children.Add(_interact);
-        var examples = DashboardUi.Button("\uE899", "显示示例消息");
-        examples.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; if (overlay.IsChecked == true) vm.SendDisplayExamples(); };
         var clear = new MenuFlyoutItem { Text = "清空本次记录", Icon = new SymbolIcon(Symbol.Delete) };
         clear.Click += async (_, _) =>
         {
             var dialog = new ContentDialog { XamlRoot = XamlRoot, Title = "清空概览记录？", Content = "将清空本次运行的所有记录，包括未读礼物和 SC。", PrimaryButtonText = "清空", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
             if (await dialog.ShowAsync() == ContentDialogResult.Primary) vm.Dashboard.Clear();
         };
-        toolbar.Children.Add(overlay); toolbar.Children.Add(examples);
-        var info = DashboardUi.Button("\uE946", "房间详情与本次统计");
-        var detailsFlyout = new Flyout { Content = _details };
-        detailsFlyout.Opening += (_, _) => RefreshDetails();
-        info.Flyout = detailsFlyout;
-        toolbar.Children.Add(info);
+        overlay.Content = "显示浮窗"; overlay.MinWidth = 82; toolbar.Children.Add(overlay);
+        var modeFlyout = new MenuFlyout();
+        foreach (var compact in new[] { true, false })
+        {
+            var choice = new RadioMenuFlyoutItem { Text = compact ? "紧凑 · 合并面板" : "滚动 · 独立区域", GroupName = "desktop-overlay-mode" };
+            choice.Click += async (_, _) =>
+            {
+                try { await vm.UpdateCompactAsync(c => c with { DesktopEnabled = compact }); }
+                catch (Exception ex) when (ex is not OutOfMemoryException) { vm.ReportSettingsError("浮窗模式保存失败，请重试。"); }
+            };
+            modeFlyout.Opening += (_, _) => choice.IsChecked = vm.Settings.Compact.DesktopEnabled == compact;
+            modeFlyout.Items.Add(choice);
+        }
+        _overlayMode.Content = vm.Settings.Compact.DesktopEnabled ? "紧凑 ▾" : "滚动 ▾";
+        _overlayMode.Flyout = modeFlyout; toolbar.Children.Add(_overlayMode);
         var more = DashboardUi.Button("\uE712", "更多操作");
         var flyout = new MenuFlyout();
-        var compactMode = new ToggleMenuFlyoutItem { Text = "桌面紧凑面板", IsChecked = vm.Settings.Compact.DesktopEnabled };
-        compactMode.Click += async (_, _) =>
-        {
-            try { await vm.UpdateCompactAsync(s => s with { DesktopEnabled = compactMode.IsChecked }); if (overlay.IsChecked != true) overlay.IsChecked = true; }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { compactMode.IsChecked = vm.Settings.Compact.DesktopEnabled; vm.ReportSettingsError("浮窗模式保存失败，请重试。"); }
-        };
-        flyout.Opening += (_, _) => compactMode.IsChecked = vm.Settings.Compact.DesktopEnabled;
-        flyout.Items.Add(compactMode);
         var single = new MenuFlyoutItem { Text = "发送单条测试弹幕" };
         single.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.SendTestDanmaku(); };
         _stressItem.Click += (_, _) =>
@@ -176,7 +180,21 @@ internal sealed class DashboardPage : Page
         flyout.Items.Add(balance); flyout.Items.Add(clear); flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(single); flyout.Items.Add(_stressItem); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
-        heading.Children.Add(top); heading.Children.Add(_error); heading.Children.Add(_overlayOmissions); root.Children.Add(heading);
+        var navigation = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        _anchor.MinWidth = 150; _anchor.MaxWidth = 360;
+        navigation.Children.Add(_anchor);
+        _rankExpanded.Content = "榜单 ▾"; _rankExpanded.IsChecked = false;
+        var rankHost = new Grid { Width = 560, Height = 440 }; rankHost.Children.Add(_rankPanel); _rankFlyout.Content = rankHost;
+        _rankExpanded.Click += (_, _) => { if (_rankOpen) _rankFlyout.Hide(); else _rankFlyout.ShowAt(_rankExpanded); };
+        _rankFlyout.Opened += (_, _) => { _rankOpen = true; _rankExpanded.IsChecked = true; ApplyRankLayout(); };
+        _rankFlyout.Closed += (_, _) => { _rankOpen = false; _rankExpanded.IsChecked = false; ApplyRankLayout(); };
+        navigation.Children.Add(_rankExpanded);
+        var changesButton = new Button { Content = "变化动态 ▾", Padding = new(9, 4, 9, 4) };
+        var changesFlyout = new Flyout { Content = _changes, Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
+        changesFlyout.Opened += async (_, _) => await _changes.OpenAsync(); changesFlyout.Closed += (_, _) => _changes.Suspend();
+        changesButton.Flyout = changesFlyout; navigation.Children.Add(changesButton); navigation.Children.Add(_anonymous);
+        _ranking.Children.Clear(); _ranking.Children.Add(navigation);
+        heading.Children.Add(top); heading.Children.Add(_ranking); heading.Children.Add(_error); heading.Children.Add(_overlayOmissions); root.Children.Add(heading);
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.DanmakuColumnWidth, GridUnitType.Star), MinWidth = 150 });
         _columns.ColumnDefinitions.Add(new() { Width = new(6) });
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.SuperChatColumnWidth, GridUnitType.Star), MinWidth = 150 });
@@ -190,37 +208,7 @@ internal sealed class DashboardPage : Page
         Grid.SetRow(_hotPhrases, 1); chatArea.Children.Add(_hotPhrases);
         chatArea.Children.Add(_danmaku); chatArea.Children.Add(_cardPanel); _left.Children.Add(chatArea); Grid.SetRow(_interactions, 2); _left.Children.Add(_interactions);
         AddInteractionSplitter(); _columns.Children.Add(_left);
-        _middle.RowDefinitions.Add(new() { Height = new(1 - _style.RankPanelRatio, GridUnitType.Star), MinHeight = 100 });
-        _middle.RowDefinitions.Add(new() { Height = new(6) });
-        _middle.RowDefinitions.Add(new() { Height = new(_style.RankPanelRatio, GridUnitType.Star) });
         _middle.Children.Add(_sc);
-        var rankArea = new Grid { RowSpacing = 3 }; rankArea.RowDefinitions.Add(new() { Height = GridLength.Auto }); rankArea.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        _rankExpanded.IsChecked = !_style.RankPanelCollapsed;
-        DashboardUi.Describe(_rankExpanded, "展开 / 折叠榜单"); rankArea.Children.Add(_rankExpanded);
-        Grid.SetRow(_rankPanel, 1); rankArea.Children.Add(_rankPanel); Grid.SetRow(rankArea, 2); _middle.Children.Add(rankArea);
-        var rankSplitter = new Thumb { Background = Brush("#303744"), Height = 4, VerticalAlignment = VerticalAlignment.Center };
-        rankSplitter.DragDelta += (_, e) =>
-        {
-            if (_rankExpanded.IsChecked != true) return;
-            var height = Math.Max(1, _middle.RowDefinitions[0].ActualHeight + _middle.RowDefinitions[2].ActualHeight);
-            var ratio = Math.Clamp(_middle.RowDefinitions[2].Height.Value - e.VerticalChange / height, 0.2, 0.8);
-            _middle.RowDefinitions[0].Height = new(1 - ratio, GridUnitType.Star); _middle.RowDefinitions[2].Height = new(ratio, GridUnitType.Star);
-        };
-        rankSplitter.DragCompleted += async (_, _) =>
-        {
-            if (_rankExpanded.IsChecked != true) return;
-            try { await vm.SaveAsync(vm.Settings with { Dashboard = vm.Settings.Dashboard with { RankPanelRatio = _middle.RowDefinitions[2].Height.Value } }); }
-            catch (Exception ex) { vm.ReportSettingsError($"保存榜单高度失败：{ex.Message}"); }
-        };
-        DashboardUi.Describe(rankSplitter, "拖动调整 SC 与榜单高度"); Grid.SetRow(rankSplitter, 1); _middle.Children.Add(rankSplitter);
-        _rankExpanded.Click += async (_, _) =>
-        {
-            if (_loadingLayout) return;
-            ApplyRankLayout();
-            try { await vm.SaveAsync(vm.Settings with { Dashboard = vm.Settings.Dashboard with { RankPanelCollapsed = _rankExpanded.IsChecked != true } }); }
-            catch (Exception ex) { vm.ReportSettingsError($"保存榜单布局失败：{ex.Message}"); }
-        };
-        ApplyRankLayout();
         Grid.SetColumn(_middle, 2); _columns.Children.Add(_middle);
         Grid.SetColumn(_gifts, 4); _columns.Children.Add(_gifts);
         AddSplitter(1, 0, 2); AddSplitter(3, 2, 4);
@@ -228,7 +216,7 @@ internal sealed class DashboardPage : Page
         Content = root;
         SizeChanged += (_, e) =>
         {
-            _ranking.Visibility = e.NewSize.Width < 1100 ? Visibility.Collapsed : Visibility.Visible;
+            _ranking.Visibility = Visibility.Visible;
             _durationInfo.Visibility = e.NewSize.Width < 1300 ? Visibility.Collapsed : Visibility.Visible;
             _audienceInfo.Visibility = e.NewSize.Width < 1200 ? Visibility.Collapsed : Visibility.Visible;
             _headingTitle.Visibility = e.NewSize.Width < 800 ? Visibility.Collapsed : Visibility.Visible;
@@ -245,12 +233,7 @@ internal sealed class DashboardPage : Page
     private static SolidColorBrush Brush(string color) => MessageCard.Brush(color);
     private void ApplyRankLayout()
     {
-        var expanded = _rankExpanded.IsChecked == true;
-        _rankPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
-        _middle.RowDefinitions[0].Height = new(expanded ? 1 - _style.RankPanelRatio : 1, GridUnitType.Star);
-        _middle.RowDefinitions[1].Height = new(expanded ? 6 : 0);
-        _middle.RowDefinitions[2].Height = expanded ? new(_style.RankPanelRatio, GridUnitType.Star) : GridLength.Auto;
-        _rankPanel.SetActive(expanded && !_unloaded && _visible());
+        _rankPanel.SetActive(_rankOpen && !_unloaded && _visible());
     }
     private void ResetRank()
     {
@@ -258,7 +241,7 @@ internal sealed class DashboardPage : Page
         // events or image completions can be delivered on the dispatcher.
         _danmaku.Sync(_vm.Dashboard.Danmaku, false); _gifts.Sync(_vm.Dashboard.Gifts, false);
         _sc.Sync(_vm.Dashboard.SuperChats, false); _interactions.Sync(_vm.Dashboard.Interactions, false);
-        _hotPhrases.RoomReset(); _cardPanel.Sync(); _rankPanel.RoomReset(); _anchor.Refresh(); Dirty();
+        _rankFlyout.Hide(); _changes.Suspend(); _hotPhrases.RoomReset(); _cardPanel.Sync(); _rankPanel.RoomReset(); _anchor.Refresh(); Dirty();
     }
     private async Task ToggleMonitorAsync()
     {
@@ -325,7 +308,9 @@ internal sealed class DashboardPage : Page
     {
         _monitor.Content = _vm.IsMonitoring ? "停止监视" : "开启监视";
         _monitor.IsEnabled = !_connectionBusy; _anonymous.IsEnabled = _historyAnchor.IsEnabled = !_vm.IsMonitoring && !_connectionBusy;
-        _anchor.Refresh(); _rankPanel.SetActive(_rankExpanded.IsChecked == true && !_unloaded && _visible());
+        _anchor.Refresh(); ApplyRankLayout();
+        _overlayMode.Content = _vm.Settings.Compact.DesktopEnabled ? "紧凑 ▾" : "滚动 ▾";
+        _interact.Content = _vm.OverlayInteractive ? "完成编辑" : "编辑浮窗";
         _room.Text = _vm.RoomId > 0 ? _vm.RoomId.ToString() : "—";
         var roomInfo = $"{_vm.Status} · 房间 {_room.Text}\n{_vm.ConnectionModeText}\n{_vm.RoomSummary}";
         if (_lastRoomInfo != roomInfo)
@@ -397,7 +382,6 @@ internal sealed class DashboardPage : Page
             _columns.ColumnDefinitions[4].Width = new(_style.GiftColumnWidth, GridUnitType.Star);
             _left.RowDefinitions[0].Height = new(1 - _style.InteractionPanelRatio, GridUnitType.Star);
             _left.RowDefinitions[2].Height = new(_style.InteractionPanelRatio, GridUnitType.Star);
-            _loadingLayout = true; _rankExpanded.IsChecked = !_style.RankPanelCollapsed; _loadingLayout = false;
             ApplyRankLayout(); _rankPanel.SettingsChanged();
         }
         var cards = _vm.Settings.Cards.Enabled;
@@ -410,7 +394,7 @@ internal sealed class DashboardPage : Page
         _sc.Sync(history.SuperChats, _settingsDirty); _interactions.Sync(history.Interactions, _settingsDirty);
         _dirty = false; _settingsDirty = false;
     }
-    internal void SuspendVisuals() { _hotPhrases.SetActive(false); _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); _historyAnchor.Suspend(); _cardPanel.SetActive(false); _danmaku.Suspend(); _gifts.Suspend(); _sc.Suspend(); _interactions.Suspend(); }
+    internal void SuspendVisuals() { _rankFlyout.Hide(); _changes.Suspend(); _hotPhrases.SetActive(false); _refresh.Stop(); _animations.Suspend(); StopStress(); _rankPanel.SetActive(false); _anchor.Suspend(); _historyAnchor.Suspend(); _cardPanel.SetActive(false); _danmaku.Suspend(); _gifts.Suspend(); _sc.Suspend(); _interactions.Suspend(); }
     internal void ResumeVisuals() { if (!_unloaded) { _historyAnchor.Resume(); _dirty = true; RefreshIfNeeded(); if (!_vm.Settings.Cards.Enabled) _danmaku.Resume(); _gifts.Resume(); _sc.Resume(); _interactions.Resume(); } }
     private void StopStress() { _stress.Stop(); _stressClock.Stop(); _stressItem.Text = "手动高流量示例：100 条/秒，30 秒"; }
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -420,7 +404,7 @@ internal sealed class DashboardPage : Page
         _vm.HotPhrasesChanged -= Dirty;
         _hotPhrases.Dispose();
         _vm.AuthenticationChanged -= _rankPanel.AuthenticationChanged;
-        _vm.RoomHistoryReset -= ResetRank; _rankPanel.Dispose(); _anchor.Dispose(); _historyAnchor.Dispose();
+        _vm.RoomHistoryReset -= ResetRank; _rankFlyout.Hide(); _changes.Dispose(); _rankPanel.Dispose(); _anchor.Dispose(); _historyAnchor.Dispose();
         _danmaku.Dispose(); _sc.Dispose(); _gifts.Dispose(); _interactions.Dispose(); _cardPanel.Dispose();
         Unloaded -= OnUnloaded;
     }
