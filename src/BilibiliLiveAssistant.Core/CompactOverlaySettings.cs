@@ -55,6 +55,8 @@ public sealed record CompactOverlaySettings
     public bool ShowSuperChat { get; init; } = true;
     public bool ShowGift { get; init; } = true;
     public bool ShowList { get; init; } = true;
+    public bool ListAnimationEnabled { get; init; } = true;
+    public int ListAnimationDurationMs { get; init; } = 200;
     public bool ShowEntry { get; init; } = true;
     public bool ShowFollow { get; init; } = true;
     public int SuperChatLines { get; init; } = 6;
@@ -66,5 +68,6 @@ public sealed record CompactOverlaySettings
         Opacity = OverlayPriceDurations.Finite(Opacity, 1, 0.1, 1), BackgroundOpacity = OverlayPriceDurations.Finite(BackgroundOpacity, 0, 0, 1),
         BackgroundColor = OverlayRegionSettings.IsColor(BackgroundColor) ? BackgroundColor : "#242833", SuperChatLines = Math.Clamp(SuperChatLines, 1, 12),
         FollowSeconds = OverlayPriceDurations.Finite(FollowSeconds, 5, 1, 300),
+        ListAnimationDurationMs = Math.Clamp(ListAnimationDurationMs, 100, 500),
     };
 }

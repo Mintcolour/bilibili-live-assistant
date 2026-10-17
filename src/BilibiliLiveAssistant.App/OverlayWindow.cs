@@ -87,7 +87,7 @@ public sealed class OverlayWindow : OverlaySurface
             ResetContent(); Hide();
             foreach (var region in _fixedRegions) region.HideRegion();
             foreach (var region in _stationary) region.HideRegion();
-            (_compact ??= new(_vm)).ShowPanel(); return;
+            (_compact ??= new(_vm, _frames)).ShowPanel(); return;
         }
         _compact?.HidePanel();
         if ((!Editing && !OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku)) || OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
@@ -243,7 +243,8 @@ public sealed class OverlayWindow : OverlaySurface
         _frames.Start(OnFrame);
     }
 
-    private void ConfigureFrameRate() => _frames.Configure(_vm.Settings.Display.AnimationFrameRate, Forms.Screen.FromRectangle(Bounds).DeviceName);
+    private void ConfigureFrameRate() => _frames.Configure(_vm.Settings.Display.AnimationFrameRate,
+        Forms.Screen.FromRectangle(_compact is { Visible: true } ? _compact.Bounds : Bounds).DeviceName);
 
     protected override void OnResize(EventArgs e)
     {

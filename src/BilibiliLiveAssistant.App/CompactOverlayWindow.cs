@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using BilibiliLiveAssistant.Core;
 using Forms = System.Windows.Forms;
@@ -18,15 +20,22 @@ internal sealed class CompactOverlayWindow : Forms.Form
         public int Width = width, MaxHeight = maxHeight;
         public bool Card = card, RefreshQueued;
         public Rectangle Bounds;
+        public CompactRowMotion Motion = new();
         public CancellationTokenSource Cancellation = new();
         public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); }
     }
     private readonly LiveAssistantViewModel _vm;
+    private readonly OverlayFrameClock _frames;
+    private readonly ImageAttributes _fadeAttributes = new();
+    private readonly ColorMatrix _fadeMatrix = new();
     private readonly Dictionary<long, Row> _rows = new();
     private LayeredOverlayCanvas? _canvas;
     private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported;
     private long? _anchor;
     private Rectangle _listBounds;
+    private bool _listReady;
+    private long _latestListId;
+    private static double MotionNow => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
     private LiveEvent? _statusRank, _statusOnline, _statusValue;
     private Forms.Form? _detail;
     private readonly Forms.ContextMenuStrip _menu = new();
@@ -36,16 +45,17 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private bool Editing => (_vm.OverlayInteractive || !_vm.Settings.Display.LayoutLocked) && !_reading;
     private bool Interactive => _reading || Editing;
     internal object GetDiagnostics() => new { visible = Visible, editing = Editing, reading = _reading, rows = _rows.Count,
-        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4), readingOlder = _anchor is not null };
+        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4), readingOlder = _anchor is not null,
+        animationActive = _frames.IsRunning(OnAnimationFrame), leavingRows = _rows.Values.Count(row => row.Motion.Leaving) };
     private CompactTimeline Timeline => Editing ? _samples : _vm.CompactOverlay.Timeline;
-    public CompactOverlayWindow(LiveAssistantViewModel vm)
+    public CompactOverlayWindow(LiveAssistantViewModel vm, OverlayFrameClock frames)
     {
-        _vm = vm; Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
+        _vm = vm; _frames = frames; Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
         StartPosition = Forms.FormStartPosition.Manual; AutoScaleMode = Forms.AutoScaleMode.None;
         ShowInTaskbar = false; TopMost = true; MinimumSize = new(240, 320);
         _menu.Items.Add("调整样式…", null, (_, _) => ShowStyleEditor());
         _menu.Items.Add("阅读实时列表", null, (_, _) => StartReading());
-        _menu.Items.Add("回到最新", null, (_, _) => { _anchor = null; RequestRender(); });
+        _menu.Items.Add("回到最新", null, (_, _) => { _anchor = null; _listReady = false; RequestRender(); });
         _menu.Items.Add("完成调整／阅读", null, async (_, _) => await FinishInteractionAsync());
         try
         {
@@ -61,6 +71,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (!Visible) _errorReported = false;
         ApplyInteraction();
         if (!Visible) Show();
+        _frames.Configure(_vm.Settings.Display.AnimationFrameRate, Forms.Screen.FromRectangle(Bounds).DeviceName);
         _vm.CompactOverlay.SetDesktopVisible(!Editing); RequestRender();
     }
     public void HidePanel()
@@ -95,6 +106,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private async Task SaveBoundsAsync()
     {
         if (_loadingBounds || _disposed || !Interactive) return;
+        _frames.Configure(_vm.Settings.Display.AnimationFrameRate, Forms.Screen.FromRectangle(Bounds).DeviceName);
         try { await _vm.UpdateCompactAsync(s => s with { X = Left, Y = Top, Width = Width, Height = Height }); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { _vm.ReportSettingsError("紧凑面板位置保存失败，请重试。"); }
     }
@@ -125,7 +137,12 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (!_disposed && e.CloseReason == Forms.CloseReason.UserClosing) { e.Cancel = true; HidePanel(); return; }
         base.OnFormClosing(e);
     }
-    protected override void OnResize(EventArgs e) { base.OnResize(e); RequestRender(); }
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_frames is not null) { _frames.Stop(OnAnimationFrame); _listReady = false; }
+        RequestRender();
+    }
     protected override void OnHandleDestroyed(EventArgs e)
     {
         _renderQueued = false; ReleaseRows(); _canvas?.Dispose(); _canvas = null;
@@ -156,6 +173,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
             if (_canvas?.Width != ClientSize.Width || _canvas.Height != ClientSize.Height) { _canvas?.Dispose(); _canvas = new(ClientSize.Width, ClientSize.Height); }
             var g = _canvas.Graphics; g.ResetClip(); g.CompositingMode = CompositingMode.SourceCopy; g.Clear(Color.Transparent); g.CompositingMode = CompositingMode.SourceOver;
             var config = EffectiveSettings.Compact; var timeline = Timeline; var keep = new HashSet<long>();
+            var now = MotionNow; var seconds = config.ListAnimationDurationMs / 1000d;
             var top = Interactive ? 36 : 4; var bottom = ClientSize.Height - 4;
             if (config.BackgroundOpacity > 0)
             { using var brush = new SolidBrush(OverlayTextRenderer.Color(config.BackgroundColor, config.BackgroundOpacity)); g.FillRectangle(brush, ClientRectangle); }
@@ -196,7 +214,10 @@ internal sealed class CompactOverlayWindow : Forms.Form
             }
             var interactions = OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Interaction);
             AtBottom(timeline.Follow, config.ShowFollow && interactions, -4); AtBottom(timeline.Entry, config.ShowEntry && interactions, -3);
-            _listBounds = new(6, top, Math.Max(1, ClientSize.Width - 12), Math.Max(0, bottom - top));
+            var nextBounds = new Rectangle(6, top, Math.Max(1, ClientSize.Width - 12), Math.Max(0, bottom - top));
+            var animate = config.ListAnimationEnabled && _listReady && _anchor is null && nextBounds == _listBounds;
+            _listBounds = nextBounds;
+            var moving = false;
             if (config.ShowList && _listBounds.Height > 0)
             {
                 var rows = timeline.Rows; var end = rows.Count - 1;
@@ -205,15 +226,52 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 for (var i = end; i >= 0 && y > top && keep.Count < 36; i--)
                 {
                     var item = rows[i]; var row = GetRow(item.Id, item.Value, Math.Max(100, _listBounds.Height), true); keep.Add(item.Id);
-                    y -= row.Image.Height; row.Bounds = new(6, y, row.Image.Width, row.Image.Height); DrawRow(g, row); y -= 4;
+                    y -= row.Image.Height;
+                    row.Motion.Place(y, now, seconds, animate, item.Id > _latestListId);
+                    DrawMovingRow(g, row, now); moving |= row.Motion.Running(now); y -= 4;
+                }
+                var leaving = 0; long leavingBytes = 0;
+                foreach (var row in _rows.Values)
+                {
+                    if (row.Id <= 0 || keep.Contains(row.Id) || !animate || !row.Motion.Positioned) continue;
+                    var bytes = (long)row.Image.Width * row.Image.Height * 4;
+                    if (leaving >= 4 || leavingBytes + bytes > 4 * 1024 * 1024) continue;
+                    var current = row.Motion.Sample(now);
+                    if (!row.Motion.Leaving && (current.Y + row.Image.Height <= top || current.Y >= bottom)) continue;
+                    row.Motion.Leave(top, row.Image.Height, now, seconds);
+                    row.Cancellation.Cancel();
+                    if (!row.Motion.Running(now)) continue;
+                    keep.Add(row.Id); leaving++; leavingBytes += bytes;
+                    DrawMovingRow(g, row, now); moving = true;
                 }
                 g.Restore(state);
             }
+            _latestListId = timeline.Rows.Count > 0 ? timeline.Rows[^1].Id : 0;
+            _listReady = config.ShowList && _listBounds.Height > 0 && timeline.Rows.Count > 0;
             foreach (var key in _rows.Keys.Where(k => !keep.Contains(k)).ToArray()) { _rows[key].Dispose(); _rows.Remove(key); }
             _canvas.Present(Handle, Location, config.Opacity, ClientRectangle);
+            if (moving) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
-        { ReportRenderError(ex); }
+        { _frames.Stop(OnAnimationFrame); ReportRenderError(ex); }
+    }
+    private void OnAnimationFrame(double elapsed)
+    {
+        if (_disposed || !Visible || _anchor is not null) { _frames.Stop(OnAnimationFrame); return; }
+        if (!_renderQueued) Render();
+    }
+    private void DrawMovingRow(Graphics graphics, Row row, double now)
+    {
+        var (y, alpha) = row.Motion.Sample(now);
+        row.Bounds = new(6, (int)Math.Round(y), row.Image.Width, row.Image.Height);
+        if (alpha >= .999f) { OverlayBitmapBlitter.Draw(graphics, row.Image, 6, y, _listBounds); return; }
+        if (alpha <= .001f) return;
+        var sourceTop = Math.Clamp(_listBounds.Top - row.Bounds.Top, 0, row.Image.Height);
+        var sourceBottom = Math.Clamp(_listBounds.Bottom - row.Bounds.Top, 0, row.Image.Height);
+        if (sourceBottom <= sourceTop) return;
+        _fadeMatrix.Matrix33 = alpha; _fadeAttributes.SetColorMatrix(_fadeMatrix);
+        graphics.DrawImage(row.Image, new Rectangle(6, row.Bounds.Top + sourceTop, row.Image.Width, sourceBottom - sourceTop),
+            0, sourceTop, row.Image.Width, sourceBottom - sourceTop, GraphicsUnit.Pixel, _fadeAttributes);
     }
     private void ReportRenderError(Exception exception)
     {
@@ -226,8 +284,12 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         var width = Math.Max(120, ClientSize.Width - 12);
         if (_rows.TryGetValue(key, out var row) && ReferenceEquals(row.Source, value) && row.Width == width && row.MaxHeight == maxHeight && row.Card == card) return row;
+        var bitmap = CreateBitmap(value, width, maxHeight, card, key > 0);
+        var motion = row?.Motion;
         if (row is not null) { row.Dispose(); _rows.Remove(key); }
-        row = new(key, value, CreateBitmap(value, width, maxHeight, card, key > 0), width, maxHeight, card); _rows.Add(key, row);
+        row = new(key, value, bitmap, width, maxHeight, card);
+        if (motion is not null) row.Motion = motion;
+        _rows.Add(key, row);
         if (!Editing) _ = LoadImagesAsync(row); return row;
     }
     private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline)
@@ -238,7 +300,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private void DrawRow(Graphics graphics, Row row) => graphics.DrawImageUnscaled(row.Image, row.Bounds.Location);
     private async Task LoadImagesAsync(Row row)
     {
-        bool Current() => !_disposed && Visible && _rows.GetValueOrDefault(row.Id) == row;
+        bool Current() => !_disposed && Visible && !row.Motion.Leaving && _rows.GetValueOrDefault(row.Id) == row;
         try
         {
             var token = row.Cancellation.Token;
@@ -274,7 +336,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
         base.OnMouseWheel(e); if (!Interactive || !_listBounds.Contains(e.Location)) return;
         var rows = Timeline.Rows; if (rows.Count == 0) return;
         var index = _anchor is { } anchor ? rows.ToList().FindIndex(r => r.Id == anchor) : rows.Count - 1;
-        index = Math.Clamp(index + (e.Delta > 0 ? -1 : 1), 0, rows.Count - 1); _anchor = index == rows.Count - 1 ? null : rows[index].Id; RequestRender();
+        index = Math.Clamp(index + (e.Delta > 0 ? -1 : 1), 0, rows.Count - 1); _anchor = index == rows.Count - 1 ? null : rows[index].Id;
+        _listReady = false; _frames.Stop(OnAnimationFrame); RequestRender();
     }
     protected override void OnMouseUp(Forms.MouseEventArgs e)
     {
@@ -283,7 +346,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (e.Y < 34)
         {
             if (e.X >= ClientSize.Width - 48) _ = FinishInteractionAsync();
-            else if (e.X >= ClientSize.Width - 93) { _anchor = null; RequestRender(); }
+            else if (e.X >= ClientSize.Width - 93) { _anchor = null; _listReady = false; RequestRender(); }
             else if (e.X >= ClientSize.Width - 140) ShowStyleEditor();
             return;
         }
@@ -319,14 +382,18 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _samples.AddBatch(values, now, _vm.Settings with { Display = OverlayRegions.With(_vm.Settings.Display, OverlayRegionKind.Gift,
             OverlayRegions.Get(_vm.Settings.Display, OverlayRegionKind.Gift) with { MergeSeconds = 0 }) });
     }
-    private void ReleaseRows() { foreach (var row in _rows.Values) row.Dispose(); _rows.Clear(); }
+    private void ReleaseRows()
+    {
+        _frames.Stop(OnAnimationFrame); _listReady = false; _latestListId = 0;
+        foreach (var row in _rows.Values) row.Dispose(); _rows.Clear();
+    }
     protected override void Dispose(bool disposing)
     {
         if (disposing && !_disposed)
         {
             _disposed = true; _vm.CompactOverlay.SetDesktopVisible(false);
             _vm.CompactOverlay.Changed -= RequestRender; _vm.RoomHistoryReset -= Reset; _vm.PropertyChanged -= SettingsChanged;
-            _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; _menu.Dispose();
+            _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; _menu.Dispose(); _fadeAttributes.Dispose();
         }
         base.Dispose(disposing);
     }
