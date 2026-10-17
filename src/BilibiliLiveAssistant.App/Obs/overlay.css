@@ -60,6 +60,19 @@
   :where(.fixed .bla-content) { padding: 0; }
   :where(.member .avatar-wrap) { margin: 0; }
   :where(.bla-gift-name, .bla-quantity, .bla-price) { font-weight: 600; }
+  :where([data-type=SuperChat]) { --bla-sc-accent: #a6b5cf; --bla-sc-fill: #293447; --bla-sc-badge: #4a5871; }
+  :where([data-type=SuperChat][data-price-tier="1"]) { --bla-sc-accent: #77b8ff; --bla-sc-fill: #193e66; --bla-sc-badge: #235f9a; }
+  :where([data-type=SuperChat][data-price-tier="2"]) { --bla-sc-accent: #6de1de; --bla-sc-fill: #164c50; --bla-sc-badge: #246c70; }
+  :where([data-type=SuperChat][data-price-tier="3"]) { --bla-sc-accent: #ffd970; --bla-sc-fill: #59421d; --bla-sc-badge: #826018; }
+  :where([data-type=SuperChat][data-price-tier="4"]) { --bla-sc-accent: #ffb278; --bla-sc-fill: #64371e; --bla-sc-badge: #975026; }
+  :where([data-type=SuperChat][data-price-tier="5"]) { --bla-sc-accent: #ff9fcb; --bla-sc-fill: #632d4a; --bla-sc-badge: #963e70; }
+  :where([data-type=SuperChat][data-price-tier="6"]) { --bla-sc-accent: #ff929b; --bla-sc-fill: #682b35; --bla-sc-badge: #a43d4c; }
+  :where([data-type=SuperChat] .bla-content) {
+    background: var(--bla-sc-fill); color: #fff; border: 1px solid var(--bla-sc-accent); border-left-width: 4px;
+    padding: 8px 10px; border-radius: 7px;
+  }
+  :where([data-type=SuperChat] .bla-name) { color: #fff; }
+  :where([data-type=SuperChat] .bla-type-badge) { background: var(--bla-sc-badge); color: #fff; font-size: .8em; }
   :where(.bla-gift-details) { display: none; }
   :where([data-hide-avatar=true] .avatar-wrap, [data-hide-avatar=true] #status .avatar,
     [data-hide-medal=true] .bla-fan-medal, [data-hide-identity=true] .bla-identity) { display: none; }

@@ -141,6 +141,12 @@ internal static class OverlayMessageRenderer
     {
         using var timing = PerformanceCounters.Measure(2);
         var imageStyle = style;
+        var scPalette = value.Type == LiveEventType.SuperChat ? SuperChatVisual.For(value) : null;
+        if (scPalette is not null)
+        {
+            region = region with { Color = scPalette.Accent, BackgroundColor = scPalette.Fill };
+            style = style with { TextColor = scPalette.Text, UsernameColor = scPalette.Text };
+        }
         if (!card && value.Extra.TryGetValue("room_bulletin", out var data) && data is LiveRoomBulletin bulletin)
             return OverlayBulletinRenderer.Render(bulletin, background ? region : region with { BackgroundOpacity = 0 }, style, cache, maxHeight);
         style = style with { AvatarSize = (int)Math.Round(style.AvatarSize * region.ContentScale) };
@@ -191,7 +197,7 @@ internal static class OverlayMessageRenderer
             if (follow) Badge(LiveInteractions.FollowLabel(value), OverlayTextRenderer.Color("#AD3E6C"));
             if (like) Badge("点赞", OverlayTextRenderer.Color("#A75432"));
             if (rankMember) Badge($"#{rankPosition}", accent);
-            if (card && !inlineHeader || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), accent);
+            if (card && !inlineHeader || value.Type is LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat) Badge(Label(value), scPalette is not null ? OverlayTextRenderer.Color(scPalette.Badge) : accent);
             if (entry && style.ShowIdentity && value.Appearance is { GuardLevel: 0, WealthLevel: > 0, EntryEffect: { } entryEffect } wealth)
             {
                 if (!ImageBadge(entryEffect.BadgeUrl)) Badge($"◇ {wealth.WealthLevel}", OverlayTextRenderer.Color(LiveEntryStyles.Accent(wealth)));
@@ -253,7 +259,12 @@ internal static class OverlayMessageRenderer
             using var graphics = Graphics.FromImage(sprite);
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
-            if (background) DrawBackground(graphics, sprite.Size, region, accent);
+            if (scPalette is not null && card)
+            {
+                DrawBackground(graphics, sprite.Size, region with { BackgroundOpacity = Math.Max(0.86, region.BackgroundOpacity) }, accent);
+                using var rail = new Pen(accent, 4); graphics.DrawLine(rail, 3, 7, 3, height - 7);
+            }
+            else if (background) DrawBackground(graphics, sprite.Size, region, accent);
             if (follow)
             {
                 using var rail = new Pen(accent, 3);
@@ -384,14 +395,15 @@ internal static class OverlayMessageRenderer
             if (available <= 0) return "";
             if (OverlayTextRenderer.Measure(measure, text, font).Width <= available) return text;
             var reserve = ellipsis ? OverlayTextRenderer.Measure(measure, "…", font).Width : 0;
-            var low = 0; var high = text.Length;
+            var boundaries = System.Globalization.StringInfo.ParseCombiningCharacters(text);
+            var low = 0; var high = boundaries.Length;
             while (low < high)
             {
                 var mid = (low + high + 1) / 2;
-                if (OverlayTextRenderer.Measure(measure, text[..mid], font).Width <= available - reserve) low = mid; else high = mid - 1;
+                if (OverlayTextRenderer.Measure(measure, text[..(mid == boundaries.Length ? text.Length : boundaries[mid])], font).Width <= available - reserve) low = mid; else high = mid - 1;
             }
-            if (low > 0 && char.IsHighSurrogate(text[low - 1])) low--;
-            return low > 0 ? text[..low] + (ellipsis ? "…" : "") : "";
+            var length = low == boundaries.Length ? text.Length : boundaries[low];
+            return low > 0 ? text[..length] + (ellipsis ? "…" : "") : "";
         }
         void Ellipsis(Font font)
         {

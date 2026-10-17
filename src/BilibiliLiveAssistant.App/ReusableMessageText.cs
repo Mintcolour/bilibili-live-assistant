@@ -48,7 +48,7 @@ internal sealed class ReusableMessageText
             _entryContent!.Text = message.Content + "  ";
             return;
         }
-        if (_price is not null) _price.Set(MessageCard.SuperChatPrice(message), "#8C6A2B");
+        if (_price is not null) _price.Set("SC " + MessageCard.SuperChatPrice(message), SuperChatVisual.For(message).Badge);
         else _body!.Update(message.Content, appearance);
     }
     internal void ClearText()

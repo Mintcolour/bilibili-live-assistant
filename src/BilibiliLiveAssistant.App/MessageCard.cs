@@ -74,11 +74,13 @@ internal sealed class MessageCard : Grid, IDisposable
             AttachMedia(message, vm, animations, visible, previewStyle is not null);
             return;
         }
+        if (message.Type == LiveEventType.SuperChat) style = style with { TextColor = "#FFFFFF", UsernameColor = "#FFFFFF" };
         var border = new Border { Padding = new(style.Padding), CornerRadius = new(style.CornerRadius) };
         Margin = new(0, 0, 0, style.MessageSpacing);
         border.Background = Brush(style.BackgroundColor, style.BackgroundOpacity);
         border.BorderBrush = Brush(message.Type == LiveEventType.SuperChat ? "#D6B35A" : message.Type is LiveEventType.Gift or LiveEventType.Guard ? "#AD79AF" : "#3A4254", 0.65);
         border.BorderThickness = new(important ? 1 : 0);
+        if (message.Type == LiveEventType.SuperChat) ApplySuperChatStyle(border, message, style);
         var layout = new Grid { ColumnSpacing = 10 };
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
@@ -88,6 +90,7 @@ internal sealed class MessageCard : Grid, IDisposable
             avatar.VerticalAlignment = VerticalAlignment.Top; _images.Add(avatar); layout.Children.Add(avatar);
         }
         var content = new StackPanel { Spacing = 5 };
+        if (message.Type == LiveEventType.SuperChat) content.Children.Add(new TextBlock { Text = "SC  " + SuperChatPrice(message), FontSize = style.FontSize + 2, FontWeight = new(700), Foreground = Brush(SuperChatVisual.For(message).Accent) });
         var header = new RichTextBlock { FontFamily = MessageVisualResources.Font(style.FontFamily), FontSize = style.UsernameFontSize, Foreground = Brush(style.UsernameColor), Opacity = style.TextOpacity };
         var headerLine = new Paragraph { Margin = new(0) };
         headerLine.Inlines.Add(new Run { Text = message.Username, FontWeight = new(600) });
@@ -273,6 +276,7 @@ internal sealed class MessageCard : Grid, IDisposable
     {
         var message = record.Event;
         var sc = message.Type == LiveEventType.SuperChat;
+        if (sc) style = style with { TextColor = "#FFFFFF", UsernameColor = "#FFFFFF" };
         var fullEmote = message.Appearance?.FullEmote is not null;
         Margin = new(0, 0, 0, sc ? Math.Max(5, Math.Min(style.MessageSpacing, 10)) : Math.Min(style.MessageSpacing, 4));
         var border = new Border
@@ -283,6 +287,7 @@ internal sealed class MessageCard : Grid, IDisposable
             BorderBrush = sc ? Brush("#D6B35A", 0.7) : null,
             BorderThickness = new(sc ? 1 : 0),
         };
+        if (sc) ApplySuperChatStyle(border, message, style);
         DashboardUi.Describe(border, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}");
         var layout = new Grid { ColumnSpacing = 7 };
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -318,7 +323,7 @@ internal sealed class MessageCard : Grid, IDisposable
             if (sc)
             {
                 var price = SuperChatPrice(message);
-                if (price.Length > 0) AddBadge(paragraph, price, "#8C6A2B", style.BadgeSize);
+                if (price.Length > 0) AddBadge(paragraph, "SC " + price, SuperChatVisual.For(message).Badge, style.BadgeSize + 2);
             }
             else if (!fullEmote) AppendInlineBody(paragraph, message.Content, message.Appearance, style, vm, animations, visible);
         }
@@ -338,6 +343,13 @@ internal sealed class MessageCard : Grid, IDisposable
         }
         else border.Child = layout;
         return border;
+    }
+
+    private static void ApplySuperChatStyle(Border border, LiveEvent value, DashboardSettings style)
+    {
+        var tier = SuperChatVisual.For(value);
+        border.Background = Brush(tier.Fill, Math.Max(0.82, style.BackgroundOpacity));
+        border.BorderBrush = Brush(tier.Accent); border.BorderThickness = new(4, 1, 1, 1);
     }
 
     private static bool IsReusableEntry(LiveEvent message) => LiveInteractions.IsEntry(message) && message.Username.Length > 0
@@ -369,7 +381,7 @@ internal sealed class MessageCard : Grid, IDisposable
         var message = record.Event; var style = vm.Settings.Dashboard;
         foreach (var image in _images) if (image.IsAvatar) image.Rebind(message.Appearance?.AvatarUrl ?? "", message.Username, AvatarUid(message));
         _reusableText!.Update(message);
-        if (_scReuse) _reusableBody!.Update(SuperChatBody(message), message.Appearance);
+        if (_scReuse) { _reusableBody!.Update(SuperChatBody(message), message.Appearance); ApplySuperChatStyle(_reusableBorder!, message, style); }
         DashboardUi.Describe(_reusableBorder!, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}");
         return true;
     }

@@ -61,9 +61,9 @@ internal sealed class ObsOverlayProjection
                 avatar, frame, style.ShowMedals && appearance is { MedalLevel: > 0, MedalName.Length: > 0 } ? $"{appearance.MedalName} {appearance.MedalLevel}" : "",
                 appearance?.MedalColor ?? "#527EBE", style.ShowIdentity ? appearance?.GuardLevel switch { 1 => "总督", 2 => "提督", 3 => "舰长", _ => "" } : "",
                 style.ShowIdentity && appearance?.IsAdmin == true, segments, item.Expires?.ToUnixTimeMilliseconds(),
-                value.HistoryFields?.AmountMilliYuan is { } amount ? $"¥{amount / 1000m:0.###}" : "",
+                SuperChatVisual.AmountMilliYuan(value) is { } amount ? $"¥{amount / 1000m:0.###}" : "",
                 new { region.FontFamily, region.Bold, region.Italic, region.Outline, region.Shadow, region.ShadowOpacity, region.ShadowSize, region.ShadowOffset, region.ShadowColor, region.LargeEmoteHeight },
-                appearance?.GuardLevel ?? 0, value.HistoryFields?.AmountMilliYuan, value.HistoryFields?.GiftName ?? "",
+                appearance?.GuardLevel ?? 0, SuperChatVisual.AmountMilliYuan(value), value.HistoryFields?.GiftName ?? "",
                 value.HistoryFields?.Quantity, PriceTier(vm.Settings, value));
             collected = null; _messages[item.Id] = (value, result, messageImages); return result;
         }
@@ -110,6 +110,7 @@ internal sealed class ObsOverlayProjection
     }
     private static int PriceTier(AppSettings settings, LiveEvent value)
     {
+        if (value.Type == LiveEventType.SuperChat) return SuperChatVisual.For(value).Tier;
         if (value.HistoryFields?.AmountMilliYuan is not { } amount) return 0;
         var tiers = value.Type == LiveEventType.SuperChat ? settings.PriceDurations.SuperChat : settings.PriceDurations.Gift;
         return tiers.Count(t => t.FromYuan <= amount / 1000m);
