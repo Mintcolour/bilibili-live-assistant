@@ -64,7 +64,7 @@ internal sealed class DashboardPage : Page
     private string _lastRank = string.Empty;
     private string _lastRoomInfo = string.Empty;
 
-    public DashboardPage(LiveAssistantViewModel vm, bool overlayVisible, Action<bool> setOverlayVisible, Func<bool> isWindowVisible)
+    public DashboardPage(LiveAssistantViewModel vm, bool overlayVisible, Func<bool, bool> setOverlayVisible, Func<bool> isWindowVisible)
     {
         _vm = vm; _visible = isWindowVisible; _style = vm.Settings.Dashboard;
         _refresh = DispatcherQueue.GetForCurrentThread().CreateTimer();
@@ -123,13 +123,18 @@ internal sealed class DashboardPage : Page
         toolbar.Children.Add(_durationInfo); toolbar.Children.Add(_audienceInfo);
         var overlay = DashboardUi.Toggle("\uE740", "桌面悬浮区");
         overlay.IsChecked = overlayVisible;
-        overlay.Checked += (_, _) => setOverlayVisible(true);
+        overlay.Checked += (_, _) => { if (!setOverlayVisible(true)) overlay.IsChecked = false; };
         overlay.Unchecked += (_, _) => setOverlayVisible(false);
         _interact.IsChecked = vm.OverlayInteractive;
-        _interact.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.ToggleOverlayInteraction(); _interact.IsChecked = vm.OverlayInteractive; };
+        _interact.Click += (_, _) =>
+        {
+            if (overlay.IsChecked != true) overlay.IsChecked = true;
+            if (overlay.IsChecked == true) vm.ToggleOverlayInteraction();
+            _interact.IsChecked = vm.OverlayInteractive;
+        };
         toolbar.Children.Add(_interact);
         var examples = DashboardUi.Button("\uE899", "显示示例消息");
-        examples.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; vm.SendDisplayExamples(); };
+        examples.Click += (_, _) => { if (overlay.IsChecked != true) overlay.IsChecked = true; if (overlay.IsChecked == true) vm.SendDisplayExamples(); };
         var clear = new MenuFlyoutItem { Text = "清空本次记录", Icon = new SymbolIcon(Symbol.Delete) };
         clear.Click += async (_, _) =>
         {

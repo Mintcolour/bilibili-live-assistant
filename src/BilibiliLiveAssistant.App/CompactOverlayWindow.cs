@@ -24,7 +24,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private readonly LiveAssistantViewModel _vm;
     private readonly Dictionary<long, Row> _rows = new();
     private LayeredOverlayCanvas? _canvas;
-    private bool _renderQueued, _disposed, _loadingBounds, _reading;
+    private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported;
     private long? _anchor;
     private Rectangle _listBounds;
     private LiveEvent? _statusRank, _statusOnline, _statusValue;
@@ -47,12 +47,28 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _menu.Items.Add("阅读实时列表", null, (_, _) => StartReading());
         _menu.Items.Add("回到最新", null, (_, _) => { _anchor = null; RequestRender(); });
         _menu.Items.Add("完成调整／阅读", null, async (_, _) => await FinishInteractionAsync());
-        vm.CompactOverlay.Changed += RequestRender; vm.RoomHistoryReset += Reset; vm.PropertyChanged += SettingsChanged;
-        ResizeEnd += async (_, _) => await SaveBoundsAsync();
-        ApplyBounds(); MakeSamples();
+        try
+        {
+            ApplyBounds(); MakeSamples(); ApplyInteraction();
+            vm.CompactOverlay.Changed += RequestRender; vm.RoomHistoryReset += Reset; vm.PropertyChanged += SettingsChanged;
+            ResizeEnd += async (_, _) => await SaveBoundsAsync();
+        }
+        catch { Dispose(); throw; }
     }
-    public void ShowPanel() { if (Visible) return; Show(); _vm.CompactOverlay.SetDesktopVisible(!Editing); ApplyInteraction(); RequestRender(); }
-    public void HidePanel() { if (!Visible) return; Hide(); _vm.CompactOverlay.SetDesktopVisible(false); _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; }
+    public void ShowPanel()
+    {
+        if (_disposed) return;
+        if (!Visible) _errorReported = false;
+        ApplyInteraction();
+        if (!Visible) Show();
+        _vm.CompactOverlay.SetDesktopVisible(!Editing); RequestRender();
+    }
+    public void HidePanel()
+    {
+        if (Visible) Hide();
+        _vm.CompactOverlay.SetDesktopVisible(false); _detail?.Close();
+        _renderQueued = false; ReleaseRows(); _canvas?.Dispose(); _canvas = null;
+    }
     public void StartReading()
     { _reading = true; if (!_vm.OverlayInteractive) _vm.ToggleOverlayInteraction(); _vm.CompactOverlay.SetDesktopVisible(Visible); ApplyInteraction(); ReleaseRows(); RequestRender(); }
     private void Reset() { _anchor = null; _statusRank = _statusOnline = _statusValue = null; _detail?.Close(); ReleaseRows(); RequestRender(); }
@@ -84,14 +100,25 @@ internal sealed class CompactOverlayWindow : Forms.Form
     }
     private void ApplyInteraction()
     {
+        _clickThrough = !Interactive;
         if (!IsHandleCreated) return;
         var style = GetWindowLongPtr(Handle, -20).ToInt64();
-        SetWindowLongPtr(Handle, -20, new((style | 0x80000 | 0x80) & ~0x20L | (Interactive ? 0 : 0x20L)));
+        SetWindowLongPtr(Handle, -20, new(_clickThrough ? style | 0x20 : style & ~0x20L));
     }
     protected override Forms.CreateParams CreateParams
-    { get { var value = base.CreateParams; value.ExStyle |= 0x80000 | 0x80 | 0x08000000; if (!Interactive) value.ExStyle |= 0x20; return value; } }
+    {
+        get
+        {
+            // Control's base constructor calls this before _vm is assigned.
+            // Keep window-style calculation independent of the view model.
+            var value = base.CreateParams;
+            value.ExStyle |= 0x80000 | 0x80 | 0x08000000;
+            if (_clickThrough) value.ExStyle |= 0x20;
+            return value;
+        }
+    }
     protected override bool ShowWithoutActivation => true;
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); ApplyInteraction(); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); ApplyInteraction(); RequestRender(); }
     protected override void OnPaintBackground(Forms.PaintEventArgs e) { }
     protected override void OnFormClosing(Forms.FormClosingEventArgs e)
     {
@@ -99,6 +126,11 @@ internal sealed class CompactOverlayWindow : Forms.Form
         base.OnFormClosing(e);
     }
     protected override void OnResize(EventArgs e) { base.OnResize(e); RequestRender(); }
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        _renderQueued = false; ReleaseRows(); _canvas?.Dispose(); _canvas = null;
+        base.OnHandleDestroyed(e);
+    }
     private void RequestRender()
     {
         if (_disposed || !Visible || !IsHandleCreated || _renderQueued) return;
@@ -181,7 +213,14 @@ internal sealed class CompactOverlayWindow : Forms.Form
             _canvas.Present(Handle, Location, config.Opacity, ClientRectangle);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
-        { _vm.ReportSettingsError("紧凑面板绘制失败，请调整尺寸或重新打开浮窗。"); }
+        { ReportRenderError(ex); }
+    }
+    private void ReportRenderError(Exception exception)
+    {
+        if (_errorReported) return;
+        _errorReported = true;
+        RuntimeErrorLog.Record("compact-render", exception);
+        _vm.ReportSettingsError("紧凑面板绘制失败，请重新打开浮窗；错误已记入 runtime-errors.log。");
     }
     private Row GetRow(long key, LiveEvent value, int maxHeight, bool card)
     {
@@ -215,8 +254,16 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 if (!row.RefreshQueued)
                 {
                     row.RefreshQueued = true;
-                    BeginInvoke((Action)(() => { row.RefreshQueued = false; if (!Current()) return;
-                        var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0); row.Image.Dispose(); row.Image = replacement; RequestRender(); }));
+                    BeginInvoke((Action)(() =>
+                    {
+                        row.RefreshQueued = false; if (!Current()) return;
+                        try
+                        {
+                            var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0);
+                            row.Image.Dispose(); row.Image = replacement; RequestRender();
+                        }
+                        catch (Exception ex) when (ex is not OutOfMemoryException) { ReportRenderError(ex); }
+                    }));
                 }
             }
         }

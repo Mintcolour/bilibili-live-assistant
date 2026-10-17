@@ -12,14 +12,14 @@ public sealed class OverlayWindow : OverlaySurface
     private readonly List<OverlayItem> _items = new();
     private readonly LiveEventBuffer _incoming = new(64);
     private readonly LiveEventBuffer _pendingItems = new(64);
-    private readonly FixedOverlayWindow[] _fixedRegions;
-    private readonly StationaryOverlayWindow[] _stationary;
-    private readonly CompactOverlayWindow _compact;
+    private readonly List<FixedOverlayWindow> _fixedRegions = new(4);
+    private readonly List<StationaryOverlayWindow> _stationary = new(4);
+    private CompactOverlayWindow? _compact;
     public bool OverlayVisible => _overlayVisible;
     internal object GetDiagnostics() => new
     {
         visible = _overlayVisible, appearance = DiagnosticAppearance, clock = _frames.GetDiagnostics(), movingItems = _items.Count,
-        compact = _compact.GetDiagnostics(),
+        compact = _compact?.GetDiagnostics(),
         incoming = _incoming.Count, pending = _pendingItems.Count,
         bitmapBytes = _items.Sum(item => (long)item.Image.Width * item.Image.Height * 4),
         scrolling = _fixedRegions.Select(region => region.GetDiagnostics()).ToArray(),
@@ -35,20 +35,23 @@ public sealed class OverlayWindow : OverlaySurface
     public OverlayWindow(LiveAssistantViewModel vm) : base(vm, OverlayRegionKind.Danmaku)
     {
         _vm = vm;
-        _compact = new(vm);
         _messageStyle = vm.Settings.Dashboard;
         _mediaStyle = vm.Settings.MediaPreview;
-        _fixedRegions = new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status }
-            .Select(kind => new FixedOverlayWindow(vm, kind, _frames)).ToArray();
-        _stationary = new[] { OverlayRegionKind.Danmaku, OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Status }
-            .Select(kind => new StationaryOverlayWindow(vm, kind)).ToArray();
-        SetEditorClock(_frames);
-        foreach (var region in _fixedRegions) region.SetEditorClock(_frames);
-        foreach (var region in _stationary) region.SetEditorClock(_frames);
-        _vm.EventBatchReceived += OnEventBatch;
-        _vm.RoomHistoryReset += ResetContent;
-        _vm.PropertyChanged += OnViewModelPropertyChanged;
-        _intakeTimer.Tick += (_, _) => FlushIncoming();
+        try
+        {
+            foreach (var kind in new[] { OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Interaction, OverlayRegionKind.Status })
+                _fixedRegions.Add(new FixedOverlayWindow(vm, kind, _frames));
+            foreach (var kind in new[] { OverlayRegionKind.Danmaku, OverlayRegionKind.Gift, OverlayRegionKind.SuperChat, OverlayRegionKind.Status })
+                _stationary.Add(new StationaryOverlayWindow(vm, kind));
+            SetEditorClock(_frames);
+            foreach (var region in _fixedRegions) region.SetEditorClock(_frames);
+            foreach (var region in _stationary) region.SetEditorClock(_frames);
+            _vm.EventBatchReceived += OnEventBatch;
+            _vm.RoomHistoryReset += ResetContent;
+            _vm.PropertyChanged += OnViewModelPropertyChanged;
+            _intakeTimer.Tick += (_, _) => FlushIncoming();
+        }
+        catch { Dispose(); throw; }
     }
 
     public void ActivateOverlay()
@@ -58,13 +61,13 @@ public sealed class OverlayWindow : OverlaySurface
         SyncRegionVisibility();
         if (!Editing && _items.Count > 0) StartAnimation();
     }
-    public void ReadCompactList() { ActivateOverlay(); _compact.StartReading(); }
+    public void ReadCompactList() { ActivateOverlay(); _compact?.StartReading(); }
 
     public void HideOverlay()
     {
         _nextDisplayAt = default;
         _overlayVisible = false;
-        _compact.HidePanel();
+        _compact?.HidePanel();
         _frames.Stop(OnFrame);
         _intakeTimer.Stop();
         ClearItems();
@@ -84,9 +87,9 @@ public sealed class OverlayWindow : OverlaySurface
             ResetContent(); Hide();
             foreach (var region in _fixedRegions) region.HideRegion();
             foreach (var region in _stationary) region.HideRegion();
-            _compact.ShowPanel(); return;
+            (_compact ??= new(_vm)).ShowPanel(); return;
         }
-        _compact.HidePanel();
+        _compact?.HidePanel();
         if ((!Editing && !OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku)) || OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
         else if (!Visible) ShowSurface();
         foreach (var region in _fixedRegions)
@@ -370,7 +373,7 @@ public sealed class OverlayWindow : OverlaySurface
             ClearItems();
             foreach (var region in _fixedRegions) region.Dispose();
             foreach (var region in _stationary) region.Dispose();
-            _compact.Dispose();
+            _compact?.Dispose();
             _frames.Dispose();
         }
         base.Dispose(disposing);

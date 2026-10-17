@@ -14,6 +14,11 @@ public partial class App : Application
 
     public App()
     {
+        UnhandledException += (_, args) => RuntimeErrorLog.Record("xaml-unhandled", args.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception exception) RuntimeErrorLog.Record("process-unhandled", exception);
+        };
         InitializeComponent();
         var store = new JsonSettingsStore(); var settings = store.Load();
         var client = new BiliLiveClient();

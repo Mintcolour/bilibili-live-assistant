@@ -161,26 +161,38 @@ public sealed class MainWindow : Window
     public void OpenOverlay()
     {
         if (_allowClose) return;
-        if (_overlay is null)
+        try
         {
-            _overlay = new OverlayWindow(_vm);
-            _overlay.FormClosed += (_, _) => _overlay = null;
+            if (_overlay is null)
+            {
+                var overlay = new OverlayWindow(_vm);
+                _overlay = overlay;
+                overlay.FormClosed += (_, _) => { if (ReferenceEquals(_overlay, overlay)) _overlay = null; };
+            }
+            _overlay.ActivateOverlay();
         }
-        _overlay.ActivateOverlay();
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            RuntimeErrorLog.Record("overlay-open", ex);
+            var failed = _overlay; _overlay = null;
+            failed?.Dispose();
+            _vm.ReportSettingsError("浮窗打开失败，错误已记入 runtime-errors.log；可关闭后重试。");
+        }
     }
 
-    private void SetOverlayVisible(bool visible)
+    private bool SetOverlayVisible(bool visible)
     {
         if (visible)
         {
             OpenOverlay();
-            return;
+            return _overlay?.OverlayVisible == true;
         }
 
         _overlay?.HideOverlay();
+        return false;
     }
     public bool OverlayInteractive => _vm.OverlayInteractive;
-    public void ToggleOverlayInteraction() { OpenOverlay(); _vm.ToggleOverlayInteraction(); }
+    public void ToggleOverlayInteraction() { OpenOverlay(); if (_overlay?.OverlayVisible == true) _vm.ToggleOverlayInteraction(); }
     public bool CompactMode => _vm.Settings.Compact.DesktopEnabled;
     public async Task ToggleCompactModeAsync()
     {
