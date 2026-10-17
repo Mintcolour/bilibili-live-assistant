@@ -14,6 +14,8 @@ internal sealed class CompactSettingsEditor : StackPanel
         _opacity = new("内容不透明度", 100, 10, 100, "%"), _background = new("背景不透明度", 0, 0, 100, "%"),
         _lines = new("固定 SC 正文行数", 6, 1, 12), _follow = new("每条关注停留", 5, 1, 300, " 秒");
     private readonly SettingColor _color = new("背景颜色");
+    private readonly ToggleSwitch _listAnimation = new() { Header = "混合列表出入动画" };
+    private readonly SettingSlider _animationDuration = new("动画过渡时长", 200, 100, 500, " 毫秒");
     private readonly CheckBox[] _sections = new[] { "人数与高能榜", "SC 固定强调区", "礼物／上舰固定强调区", "混合消息列表", "进房提示", "关注提示" }.Select(s => new CheckBox { Content = s }).ToArray();
     private readonly PriceTiersEditor _sc = new("SC · 金额下限（元）／停留（秒）", 10, 50), _gift = new("礼物 · 合并总金额下限／停留（秒）", 3, 30);
     private readonly SettingSlider _guardUnknown = new("上舰缺失金额时停留", 30, 3, 300, " 秒");
@@ -35,6 +37,9 @@ internal sealed class CompactSettingsEditor : StackPanel
         var prices = new StackPanel { Spacing = 12, Children = { _sc, _gift, _guardUnknown } };
         Children.Add(new Expander { Header = "OBS 网页源", Content = obs, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new Expander { Header = "共享外观", Content = style, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch });
+        Children.Add(new Expander { Header = "列表动画", IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch,
+            Content = new StackPanel { Spacing = 10, Children = { _listAnimation, _animationDuration,
+                new TextBlock { Text = "新消息滑入淡入，列表平滑上移，顶部消息滑出淡出。桌面与 OBS 共用；高峰按批次衔接最新位置。", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.65 } } } });
         Children.Add(new Expander { Header = "显示区域与关注停留", Content = sections, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new Expander { Header = "金额停留 · 含普通固定卡片", Content = prices, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new TextBlock { Text = "计时从实际显示开始；滚动模式仍完整滚完。免费及未知金额礼物为 3 秒，未知金额 SC 为 10 秒。字体、头像、粉丝牌、阴影等沿用对应悬浮类别的样式。", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.65 });
@@ -51,6 +56,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         var values = new[] { compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow };
         for (var i = 0; i < values.Length; i++) _sections[i].IsChecked = values[i];
         _lines.Value = compact.SuperChatLines; _follow.Value = compact.FollowSeconds;
+        _listAnimation.IsOn = compact.ListAnimationEnabled; _animationDuration.Value = compact.ListAnimationDurationMs;
         _sc.Load(prices.SuperChat); _gift.Load(prices.Gift); _guardUnknown.Value = prices.UnknownGuardSeconds;
     }
     public CompactOverlaySettings Read() => (_current with { DesktopEnabled = _desktop.IsOn, ObsEnabled = _obs.IsOn,
@@ -58,7 +64,8 @@ internal sealed class CompactSettingsEditor : StackPanel
         FontSize = (int)_font.Value, EmoteSize = (int)_emote.Value, Opacity = _opacity.Value / 100, BackgroundOpacity = _background.Value / 100,
         BackgroundColor = _color.Text, ShowStatus = _sections[0].IsChecked == true, ShowSuperChat = _sections[1].IsChecked == true,
         ShowGift = _sections[2].IsChecked == true, ShowList = _sections[3].IsChecked == true, ShowEntry = _sections[4].IsChecked == true, ShowFollow = _sections[5].IsChecked == true,
-        SuperChatLines = (int)_lines.Value, FollowSeconds = _follow.Value }).Normalize();
+        SuperChatLines = (int)_lines.Value, FollowSeconds = _follow.Value,
+        ListAnimationEnabled = _listAnimation.IsOn, ListAnimationDurationMs = (int)_animationDuration.Value }).Normalize();
     public OverlayPriceDurations ReadPrices() => new OverlayPriceDurations { SuperChat = _sc.Read(), Gift = _gift.Read(), UnknownGuardSeconds = _guardUnknown.Value }.Normalize();
     public void Validate() { _sc.Validate(); _gift.Validate(); }
 }

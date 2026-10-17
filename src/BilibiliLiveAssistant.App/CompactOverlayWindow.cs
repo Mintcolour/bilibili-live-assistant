@@ -215,7 +215,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
             var interactions = OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Interaction);
             AtBottom(timeline.Follow, config.ShowFollow && interactions, -4); AtBottom(timeline.Entry, config.ShowEntry && interactions, -3);
             var nextBounds = new Rectangle(6, top, Math.Max(1, ClientSize.Width - 12), Math.Max(0, bottom - top));
-            var animate = config.ListAnimationEnabled && _listReady && _anchor is null && nextBounds == _listBounds;
+            var animate = config.ListAnimationEnabled && _listReady && _anchor is null && nextBounds.Width == _listBounds.Width;
             _listBounds = nextBounds;
             var moving = false;
             if (config.ShowList && _listBounds.Height > 0)
@@ -247,7 +247,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 g.Restore(state);
             }
             _latestListId = timeline.Rows.Count > 0 ? timeline.Rows[^1].Id : 0;
-            _listReady = config.ShowList && _listBounds.Height > 0 && timeline.Rows.Count > 0;
+            _listReady = config.ShowList && _listBounds.Height > 0;
             foreach (var key in _rows.Keys.Where(k => !keep.Contains(k)).ToArray()) { _rows[key].Dispose(); _rows.Remove(key); }
             _canvas.Present(Handle, Location, config.Opacity, ClientRectangle);
             if (moving) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
@@ -364,7 +364,12 @@ internal sealed class CompactOverlayWindow : Forms.Form
         var wasReading = _reading; _reading = false; _vm.CompactOverlay.SetDesktopVisible(!Editing); MakeSamples(); ReleaseRows(); RequestRender();
         try
         {
-            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; ReleaseRows(); RequestRender(); });
+            using var editor = new CompactQuickEditor(_vm, value => { _preview = value; ReleaseRows(); RequestRender(); }, () =>
+            {
+                if (!Editing) return;
+                _samples.AddBatch([new LiveEvent(LiveEventType.Danmaku, "示例观众", "新弹幕滑入，已有消息平滑上移。", "#FFFFFF")], DateTimeOffset.UtcNow, EffectiveSettings);
+                RequestRender();
+            });
             editor.ShowDialog(this);
         }
         finally { _preview = null; _reading = wasReading; _vm.CompactOverlay.SetDesktopVisible(Visible && !Editing); ReleaseRows(); RequestRender(); }

@@ -91,9 +91,10 @@
   }
   function animateList(before, removed, enabled, duration, changed) {
     const geometry = listGeometry(), now = performance.now(), height = list.clientHeight;
+    const rootShift = geometry.scale > 0 ? (before.geometry.rect.top - geometry.rect.top) / geometry.scale : 0;
+    const oldHeight = before.geometry.scale > 0 ? before.geometry.rect.height / before.geometry.scale : 0;
     const animate = enabled && listReady && !document.hidden && geometry.scale > 0 &&
-      Math.abs(before.geometry.rect.width - geometry.rect.width) < .5 &&
-      Math.abs(before.geometry.rect.height - geometry.rect.height) < .5;
+      Math.abs(before.geometry.rect.width - geometry.rect.width) < .5;
     if (!animate) {
       stopListMotion();
       for (const item of removed) release(item.node);
@@ -105,11 +106,11 @@
         const rect = entry.node.getBoundingClientRect();
         const top = (rect.top - geometry.rect.top) / geometry.scale;
         const rowHeight = rect.height / geometry.scale, previous = before.entries.get(id);
-        const wasVisible = previous && previous.top < height && previous.top + previous.height > 0;
+        const wasVisible = previous && previous.top < oldHeight && previous.top + previous.height > 0;
         const visible = top < height && top + rowHeight > 0;
         if (!visible && !wasVisible) continue;
         const entering = !previous && id > latestListId && visible;
-        const delta = previous ? previous.top - top : entering ? 14 : 0;
+        const delta = previous ? previous.top + rootShift - top : entering ? 14 : 0;
         if (Math.abs(delta) > .1) tween(entry.node, [{transform: `translateY(${delta}px)`}, {transform: 'translateY(0)'}], duration);
         if (entering) entry.fadeUntil = now + duration;
         else entry.fadeUntil = previous?.fadeUntil || 0;
@@ -119,22 +120,23 @@
       for (const item of removed) {
         cancelMotion(item.node);
         const previous = before.entries.get(item.id);
-        if (!previous || previous.top >= height || previous.top + previous.height <= 0 || previous.width * previous.height * 4 > 4 * 1024 * 1024) { release(item.node); continue; }
+        if (!previous || previous.top >= oldHeight || previous.top + previous.height <= 0 || previous.width * previous.height * 4 > 4 * 1024 * 1024) { release(item.node); continue; }
         let bytes = previous.width * previous.height * 4;
         for (const info of leavingNodes.values()) bytes += info.bytes;
         while (leavingNodes.size && (leavingNodes.size >= 4 || bytes > 4 * 1024 * 1024)) {
           const [node, info] = leavingNodes.entries().next().value;
           bytes -= info.bytes; cancelMotion(node); leavingNodes.delete(node); release(node);
         }
-        Object.assign(item.node.style, {position: 'absolute', top: previous.top + 'px', left: '0', width: previous.width + 'px', height: previous.height + 'px', pointerEvents: 'none'});
+        const fromTop = previous.top + rootShift;
+        Object.assign(item.node.style, {position: 'absolute', top: fromTop + 'px', left: '0', width: previous.width + 'px', height: previous.height + 'px', pointerEvents: 'none'});
         list.append(item.node);
-        const destination = Math.min(-14, -previous.height - previous.top - 4);
+        const destination = Math.min(-14, -previous.height - fromTop - 4);
         const animation = tween(item.node, [{transform: 'translateY(0)', opacity: previous.alpha}, {transform: `translateY(${destination}px)`, opacity: 0}], duration);
         leavingNodes.set(item.node, {bytes: previous.width * previous.height * 4});
         animation.onfinish = () => { animation.cancel(); leavingNodes.delete(item.node); release(item.node); };
       }
     }
-    latestListId = Math.max(0, ...rowNodes.keys()); listReady = rowNodes.size > 0;
+    latestListId = Math.max(0, ...rowNodes.keys()); listReady = !!state?.config?.showList && height > 0;
   }
   function section(id, item, show, now) {
     const host = document.getElementById(id);
@@ -194,7 +196,8 @@
         }
       }
     }
-    const geometryChanged = Math.abs(before.geometry.rect.height - list.getBoundingClientRect().height) >= .5;
+    const currentBounds = list.getBoundingClientRect();
+    const geometryChanged = Math.abs(before.geometry.rect.height - currentBounds.height) >= .5 || Math.abs(before.geometry.rect.top - currentBounds.top) >= .5;
     animateList(before, removed, c.listAnimationEnabled !== false && !styleChanged && previousRoom === next.roomId,
       Math.max(100, Math.min(500, c.listAnimationDurationMs || 200)), listChanged || geometryChanged);
     clearTimeout(expiry);
