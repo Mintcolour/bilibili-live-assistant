@@ -75,15 +75,21 @@ internal sealed class ObsOverlayProjection
                 .Select(m => (m.Rank, OverlayBulletinRenderer.MemberEvent(m, "#B998FF"))).ToArray() : [];
         }
         var ranks = _ranking.Select(m => new { rank = m.Rank, message = Message(new CompactMessage(-m.Rank, m.Value, DateTimeOffset.UtcNow), includeAvatar: false) }).ToArray();
+        var hot = vm.Settings.HotPhrases;
+        var hotPhrases = compact.ShowList && hot.Enabled && OverlayRegions.Enabled(vm.Settings.Display, OverlayRegionKind.Danmaku)
+            ? vm.HotPhrases.Select(p => new { p.Text, p.Count, key = HotBubbleLayouts.Key(p), segments = RichMessageSegments.Split(p.Text, p.Appearance).Select(segment => new
+                { text = segment.Text, image = segment.Emote is { } e ? Image(e.Url, size: BiliImageCache.SizeTier(Math.Max(hot.EmoteSize, hot.EmoteSize * Math.Clamp(e.Width / (double)Math.Max(1, e.Height), .25, 6)))) : "",
+                    width = segment.Emote?.Width ?? 0, height = segment.Emote?.Height ?? 0 }).ToArray() }).ToArray() : [];
         var payload = new { revision, roomId = vm.RoomId, now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), width = compact.ObsWidth, height = compact.ObsHeight,
             // CSS is delivered separately on changes; never repeat up to 256 KiB per message batch.
             config = Configuration(compact), style = Style(vm.Settings),
             rows = timeline.Rows.Select(item => Message(item)).ToArray(), sc = Message(timeline.SuperChat), gift = Message(timeline.Gift), entry = Message(timeline.Entry), follow = Message(timeline.Follow),
-            hotPhrases = compact.ShowList && OverlayRegions.Enabled(vm.Settings.Display, OverlayRegionKind.Danmaku) ? vm.HotPhrases : Array.Empty<HotPhrase>(),
+            hotPhrases, hotStyle = HotStyle(hot),
             status, ranks };
         foreach (var key in _messages.Keys.Where(k => !used.Contains(k)).ToArray()) _messages.Remove(key);
         return new(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)), images);
     }
+    internal static object HotStyle(HotPhraseSettings hot) => new { hot.FontSize, hot.EmoteSize, hot.Opacity, hot.BackgroundOpacity, hot.Enabled, hot.AnimationEnabled, hot.AnimationDurationMs };
     internal static object Configuration(CompactOverlaySettings compact) => new
     {
         compact.FontSize, compact.EmoteSize, compact.Opacity, compact.BackgroundColor, compact.BackgroundOpacity,

@@ -63,7 +63,7 @@ internal sealed class ObsOverlayServer : IAsyncDisposable
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var snapshot = JsonSerializer.SerializeToUtf8Bytes(new { width = settings.Compact.ObsWidth, height = settings.Compact.ObsHeight,
-            config = ObsOverlayProjection.Configuration(settings.Compact), style = ObsOverlayProjection.Style(settings) }, options);
+            config = ObsOverlayProjection.Configuration(settings.Compact), style = ObsOverlayProjection.Style(settings), hotStyle = ObsOverlayProjection.HotStyle(settings.HotPhrases) }, options);
         var theme = JsonSerializer.SerializeToUtf8Bytes(settings.Compact.ObsTheme, options);
         lock (_gate)
         {

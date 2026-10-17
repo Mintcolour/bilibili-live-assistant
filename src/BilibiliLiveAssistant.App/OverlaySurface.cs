@@ -40,18 +40,7 @@ public abstract class OverlaySurface : Forms.Form
     private OverlayRegionSettings RawRegion => _previewRegion ?? _inlineRegion ?? OverlayRegions.Get(ViewModel.Settings.Display, Kind);
     private bool ContentEnabled => _inlineEnabled ?? OverlayRegions.Enabled(ViewModel.Settings.Display, Kind);
     protected bool Editing => ViewModel.OverlayInteractive || !ViewModel.Settings.Display.LayoutLocked;
-    private readonly HotPhraseSprite _hotSprite = new();
-    private int HotHeight => !Editing && Kind == OverlayRegionKind.Danmaku ? HotPhraseSprite.Height(ViewModel.HotPhrases, ClientSize.Height / 3, RegionSettings.FontSize) : 0;
-    protected int ContentTop => Editing ? OverlayInlineControls.ContentTop(ClientSize.Width) : HotHeight;
-    private bool HasSurfaceContent => HasLiveContent || HotHeight > 0;
-    protected virtual void OnHotLayoutChanged() { }
-    private void OnHotPhrasesChanged()
-    {
-        if (IsDisposed || Kind != OverlayRegionKind.Danmaku) return;
-        _hotSprite.Dispose();
-        if (!Visible) return;
-        OnHotLayoutChanged(); RequestRender();
-    }
+    protected int ContentTop => Editing ? OverlayInlineControls.ContentTop(ClientSize.Width) : 0;
     private int ActionTop => ClientSize.Width < 360 ? 32 : 8;
     private Rectangle DoneBounds => new(Math.Max(4, ClientSize.Width - 48), ActionTop, 40, 22);
     private Rectangle ModeBounds => new(Math.Max(4, DoneBounds.Left - (ClientSize.Width < 280 ? 52 : 96) - 4), ActionTop, ClientSize.Width < 280 ? 52 : 96, 22);
@@ -76,7 +65,6 @@ public abstract class OverlaySurface : Forms.Form
         TransparencyKey = Color.Empty;
         MinimumSize = new Size(160, 80);
         vm.PropertyChanged += OnSettingsChanged;
-        vm.HotPhrasesChanged += OnHotPhrasesChanged;
         ApplySurfaceSettings();
         _wasEditing = Editing;
         _inlinePreviewTimer.Tick += (_, _) => { _inlinePreviewTimer.Stop(); ApplyInlinePreview(); };
@@ -214,7 +202,6 @@ public abstract class OverlaySurface : Forms.Form
             _dirtyRects.Clear();
             _renderQueued = false;
             _canvas?.Dispose(); _canvas = null;
-            _hotSprite.Dispose();
         }
     }
 
@@ -227,7 +214,6 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
-        _hotSprite.Dispose();
         _editorClock?.Stop(OnEditorFrame);
         _pendingDirty = Rectangle.Empty;
         _dirtyRects.Clear();
@@ -245,7 +231,7 @@ public abstract class OverlaySurface : Forms.Form
         _dirtyRects.Clear();
         _pendingDirty = Rectangle.Empty;
         if (IsDisposed || Disposing || !IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0 || !Visible) return;
-        if (_canvas is null && !Editing && !HasSurfaceContent) return;
+        if (_canvas is null && !Editing && !HasLiveContent) return;
         using var timing = PerformanceCounters.Measure(3 + (int)Kind);
         try
         {
@@ -265,7 +251,7 @@ public abstract class OverlaySurface : Forms.Form
                 graphics.InterpolationMode = InterpolationMode.Bilinear;
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
                 graphics.CompositingQuality = CompositingQuality.HighSpeed;
-                using (var background = new SolidBrush(!Editing ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
+                using (var background = new SolidBrush(ContentTop == 0 ? Color.Transparent : Color.FromArgb(24, 32, 36, 42)))
                 using (PerformanceCounters.Measure(8))
                 {
                     // Keep separated tracks rectangular and crop source pixels
@@ -279,14 +265,7 @@ public abstract class OverlaySurface : Forms.Form
                         graphics.FillRectangle(background, area);
                         graphics.CompositingMode = CompositingMode.SourceOver;
                         if (Editing) DrawEditorSample(graphics);
-                        else
-                        {
-                            var contentState = graphics.Save();
-                            graphics.SetClip(new Rectangle(0, ContentTop, ClientSize.Width, Math.Max(0, ClientSize.Height - ContentTop)), CombineMode.Intersect);
-                            DrawContent(graphics, area); graphics.Restore(contentState);
-                            if (HotHeight > 0) _hotSprite.Draw(graphics, ViewModel.HotPhrases,
-                                new Rectangle(Math.Max(0, ClientSize.Width - 300), 0, Math.Min(ClientSize.Width, 300), HotHeight), RegionSettings.FontFamily, RegionSettings.FontSize);
-                        }
+                        else DrawContent(graphics, area);
                         DrawEditorChrome(graphics);
                     }
                 }
@@ -297,7 +276,7 @@ public abstract class OverlaySurface : Forms.Form
             using (PerformanceCounters.Measure(9)) _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, dirty);
             // Present the final clear before releasing the native backing store.
             // Empty, still-visible windows need no persistent full-size canvas.
-            if (!Editing && !HasSurfaceContent) { _canvas.Dispose(); _canvas = null; }
+            if (!Editing && !HasLiveContent) { _canvas.Dispose(); _canvas = null; }
             _presentationErrorReported = false;
         }
         catch (ExternalException ex)
@@ -316,7 +295,7 @@ public abstract class OverlaySurface : Forms.Form
 
     private void DrawEditorChrome(Graphics graphics)
     {
-        if (Editing)
+        if (ContentTop != 0)
         {
             if (graphics.IsVisible(new Rectangle(0, 0, ClientSize.Width, ContentTop)))
             {
@@ -592,7 +571,6 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ViewModel.HotPhrasesChanged -= OnHotPhrasesChanged; _hotSprite.Dispose(); }
         if (disposing) { _editorClock?.Stop(OnEditorFrame); ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }

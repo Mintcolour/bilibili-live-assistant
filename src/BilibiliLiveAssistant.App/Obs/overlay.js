@@ -11,6 +11,82 @@
   let source, state, expiry, statusKey = '', styleKey = '';
   let countsKey = '', rankMotion, rankMotionKey = '', rankViewport, rankContent;
   let hotKey = '';
+  const hotNodes = new Map();
+  let hotReady = false;
+  function clearHot() {
+    for (const entry of hotNodes.values()) { cancelMotion(entry.node); release(entry.node); }
+    hotNodes.clear(); const host = document.getElementById('hot-phrases'); if (host) { host.replaceChildren(); host.style.height = ''; }
+    hotKey = ''; hotReady = false;
+  }
+  function renderHot(next, animate) {
+    const host = document.getElementById('hot-phrases'); if (!host) return;
+    const s = next.hotStyle || {};
+    if (s.enabled === false || !next.config.showList || panel.dataset.hideList === 'true') { clearHot(); return; }
+    const items = (next.hotPhrases || []).slice(0,5);
+    const key = JSON.stringify([items,s,panel.clientWidth,panel.dataset.template]);
+    if (hotKey === key) return; hotKey = key;
+    const origin = host.getBoundingClientRect(), before = new Map();
+    const scale = panel.clientWidth > 0 ? panel.getBoundingClientRect().width / panel.clientWidth : 1;
+    if (!(scale > 0)) return;
+    for (const [id, entry] of hotNodes) {
+      const r = entry.node.getBoundingClientRect(); before.set(id,{x:(r.left-origin.left)/scale,y:(r.top-origin.top)/scale,opacity:parseFloat(getComputedStyle(entry.node).opacity),width:r.width/scale,height:r.height/scale});
+      if (!entry.leaving || items.some(item => (item.key || item.text) === id)) cancelMotion(entry.node);
+    }
+    const font = Math.max(12,Math.min(40,s.fontSize || 16)), emote = Math.max(16,Math.min(80,s.emoteSize || 28));
+    const rowHeight = Math.max(emote,Math.ceil(font*1.5))+18;
+    host.style.fontSize = font+'px'; host.style.opacity = s.opacity ?? 1;
+    host.style.setProperty('--bla-hot-emote-size',emote+'px'); host.style.setProperty('--bla-hot-background',`rgba(35,40,52,${s.backgroundOpacity ?? .78})`);
+    host.style.setProperty('--bla-hot-row-height',rowHeight+'px'); host.style.maxHeight = rowHeight*2+'px';
+    const duration = Math.max(100,Math.min(500,s.animationDurationMs || 200));
+    const motion = animate && hotReady && s.animationEnabled !== false && !document.hidden;
+    const keep = new Set(items.map(item=>item.key || item.text));
+    for (const [id, entry] of hotNodes) {
+      if (keep.has(id)) continue;
+      if (!motion) { cancelMotion(entry.node); release(entry.node); hotNodes.delete(id); continue; }
+      if (entry.leaving) continue;
+      const p=before.get(id); cancelMotion(entry.node); entry.leaving=true;
+      Object.assign(entry.node.style,{position:'absolute',left:p.x+'px',top:p.y+'px',width:p.width+'px',height:p.height+'px'});
+      const animation=entry.node.animate([{transform:'translateY(0)',opacity:p.opacity},{transform:'translateY(10px)',opacity:0}],{duration,easing:'cubic-bezier(.22,1,.36,1)',fill:'both'});
+      animation.onfinish=()=>{if(entry.leaving){animation.cancel();release(entry.node);hotNodes.delete(id);if(![...hotNodes.values()].some(e=>e.leaving)){host.style.height='';}}};
+    }
+    for (const [index,item] of items.entries()) {
+      const id=item.key || item.text; let entry=hotNodes.get(id);
+      if (!entry) {
+        const node=document.createElement('div');node.className='bla-hot-phrase';
+        const body=document.createElement('span');body.className='bla-hot-text';
+        const count=document.createElement('span');count.className='bla-hot-count';node.append(body,count);
+        entry={node,body,count,segmentsKey:'',leaving:false};hotNodes.set(id,entry);
+      }
+      if(entry.leaving){cancelMotion(entry.node);entry.leaving=false;entry.node.style.cssText='';}
+      const segments=item.segments || [{text:item.text}];const segmentKey=JSON.stringify(segments);
+      if(entry.segmentsKey!==segmentKey){
+        for(const img of entry.body.querySelectorAll('img')){observer.unobserve(img);img.removeAttribute('src');}
+        entry.body.replaceChildren();entry.segmentsKey=segmentKey;
+        for(const segment of segments){
+          if(!segment.image){entry.body.append(document.createTextNode(segment.text));continue;}
+          const img=image(segment.image,'bla-hot-emote');img.alt=segment.text;
+          if(segment.width>0&&segment.height>0){img.style.aspectRatio=`${segment.width}/${segment.height}`;img.dataset.ratio=String(segment.width/segment.height);}
+          entry.body.append(img);
+        }
+      }
+      for(const img of entry.body.querySelectorAll('img'))img.style.width=Math.min(160,emote*Number(img.dataset.ratio || 1))+'px';
+      entry.node.dataset.top=String(index===0);entry.count.textContent='×'+item.count;host.append(entry.node);
+    }
+    // At most five leaving nodes, independent of rapid incoming changes.
+    let leaving=0;for(const [id,entry] of hotNodes)if(entry.leaving&&++leaving>5){cancelMotion(entry.node);release(entry.node);hotNodes.delete(id);}
+    // Hold the dock only while its last chips leave. No timer or frame polling.
+    host.style.height = ''; if ([...hotNodes.values()].some(e=>e.leaving)) host.style.height = Math.min(rowHeight*2,Math.max(origin.height/scale,host.offsetHeight))+'px';
+    for(const item of items){
+      const id=item.key || item.text, entry=hotNodes.get(id), old=before.get(id), r=entry.node.getBoundingClientRect(), h=host.getBoundingClientRect();
+      if(!motion){cancelMotion(entry.node);continue;}
+      const dx=old?old.x-(r.left-h.left)/scale:0,dy=old?old.y-(r.top-h.top)/scale:10;
+      if(Math.abs(dx)<.5&&Math.abs(dy)<.5&&(!old||old.opacity>=.999))continue;
+      cancelMotion(entry.node);
+      const animation=entry.node.animate([{transform:`translate(${dx}px,${dy}px)`,opacity:old?.opacity??0},{transform:'translate(0,0)',opacity:1}],{duration,easing:'cubic-bezier(.22,1,.36,1)'});
+      animation.onfinish=()=>animation.cancel();
+    }
+    hotReady=true;
+  }
   function stopRankMotion() {
     rankMotion?.cancel(); rankMotion = undefined; rankMotionKey = '';
     if (rankViewport) rowResize.unobserve(rankViewport);
@@ -181,6 +257,7 @@
   function render(next) {
     if (!next.config) { stopListMotion(); return; }
     const before = captureList(), previousRoom = state?.roomId;
+    if (previousRoom !== next.roomId) clearHot();
     state = next;
     const c = next.config, s = next.style;
     const sk = JSON.stringify([c, s, next.width, next.height]);
@@ -191,17 +268,7 @@
     // A font/image resize or theme redraw must not restart an old snapshot's remaining lifetime.
     // The loopback producer and OBS share this machine's clock.
     const now = Date.now();
-    const hot = document.getElementById('hot-phrases');
-    const nextHotKey = JSON.stringify(next.hotPhrases || []);
-    if (hot && hotKey !== nextHotKey) {
-      hotKey = nextHotKey; hot.replaceChildren();
-      for (const item of (next.hotPhrases || []).slice(0, 5)) {
-        const row = document.createElement('div'); row.className = 'bla-hot-phrase';
-        const text = document.createElement('span'); text.className = 'bla-hot-text'; text.textContent = item.text;
-        const count = document.createElement('span'); count.className = 'bla-hot-count'; count.textContent = '×' + item.count;
-        row.append(text, count); hot.append(row);
-      }
-    }
+    renderHot(next, !styleChanged && previousRoom === next.roomId);
     section('sc', next.sc, c.showSuperChat, now); section('gift', next.gift, c.showGift, now);
     section('entry', next.entry, c.showEntry, now); section('follow', next.follow, c.showFollow, now);
     const rows = c.showList ? (next.rows || []).slice(-32) : [];
@@ -267,9 +334,9 @@
     if (source || document.hidden) return;
     rowResize.observe(list); rowResize.observe(document.getElementById('status'));
     source = new EventSource(preview ? 'preview-events' : 'events');
-    source.addEventListener('open', stopListMotion);
+    source.addEventListener('open', () => { stopListMotion(); clearHot(); });
     source.addEventListener('error', () => {
-      stopListMotion(); stopRankMotion();
+      stopListMotion(); stopRankMotion(); clearHot();
       if (preview) { disconnect(); window.BlaTheme.set({}); window.dispatchEvent(new Event('bla-preview-disconnected')); }
     });
     source.addEventListener('state', event => { try { const next = JSON.parse(event.data); render(preview ? window.BlaPreviewState(next) : next); } catch { /* wait for the next complete state */ } });
@@ -280,7 +347,7 @@
     source?.close(); source = undefined; clearTimeout(expiry);
     for (const node of panel.querySelectorAll('img')) { observer.unobserve(node); node.removeAttribute('src'); }
     for (const id of sections) document.getElementById(id).replaceChildren(); list.replaceChildren(); document.getElementById('status').replaceChildren();
-    document.getElementById('hot-phrases')?.replaceChildren(); hotKey = '';
+    clearHot();
     rowResize.disconnect(); clearTimeout(resizePending); resizePending = undefined; rowNodes.clear(); sectionKeys.clear(); statusKey = ''; styleKey = ''; state = undefined;
     window.BlaTheme.clear();
   }
@@ -299,5 +366,5 @@
   });
   if (preview) window.BlaPreviewRender = value => render(value);
   document.addEventListener('visibilitychange', () => document.hidden ? disconnect() : connect());
-  addEventListener('pagehide', disconnect); addEventListener('resize', () => { stopListMotion(); fit(); }); connect();
+  addEventListener('pagehide', disconnect); addEventListener('resize', () => { stopListMotion(); fit(); if(state)renderHot(state,false); }); connect();
 })();

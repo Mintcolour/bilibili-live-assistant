@@ -15,11 +15,13 @@ public sealed class OverlayWindow : OverlaySurface
     private readonly List<FixedOverlayWindow> _fixedRegions = new(4);
     private readonly List<StationaryOverlayWindow> _stationary = new(4);
     private CompactOverlayWindow? _compact;
+    private HotPhraseOverlayWindow? _hotPhrases;
     public bool OverlayVisible => _overlayVisible;
     internal object GetDiagnostics() => new
     {
         visible = _overlayVisible, appearance = DiagnosticAppearance, clock = _frames.GetDiagnostics(), movingItems = _items.Count,
         compact = _compact?.GetDiagnostics(),
+        hotPhrases = _hotPhrases?.GetDiagnostics(),
         incoming = _incoming.Count, pending = _pendingItems.Count,
         bitmapBytes = _items.Sum(item => (long)item.Image.Width * item.Image.Height * 4),
         scrolling = _fixedRegions.Select(region => region.GetDiagnostics()).ToArray(),
@@ -68,6 +70,7 @@ public sealed class OverlayWindow : OverlaySurface
         _nextDisplayAt = default;
         _overlayVisible = false;
         _compact?.HidePanel();
+        _hotPhrases?.HidePanel();
         _frames.Stop(OnFrame);
         _intakeTimer.Stop();
         ClearItems();
@@ -84,12 +87,15 @@ public sealed class OverlayWindow : OverlaySurface
         if (!_overlayVisible) return;
         if (_vm.Settings.Compact.DesktopEnabled)
         {
+            _hotPhrases?.HidePanel();
             ResetContent(); Hide();
             foreach (var region in _fixedRegions) region.HideRegion();
             foreach (var region in _stationary) region.HideRegion();
             (_compact ??= new(_vm, _frames)).ShowPanel(); return;
         }
         _compact?.HidePanel();
+        if (_vm.Settings.HotPhrases.Enabled || Editing) (_hotPhrases ??= new(_vm, _frames)).ShowPanel();
+        else _hotPhrases?.HidePanel();
         if ((!Editing && !OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku)) || OverlayRegions.Stationary(_vm.Settings.Display, OverlayRegionKind.Danmaku)) { ResetContent(); Hide(); }
         else if (!Visible) ShowSurface();
         foreach (var region in _fixedRegions)
@@ -163,10 +169,6 @@ public sealed class OverlayWindow : OverlaySurface
 
     private int TrackHeight => Math.Max(_vm.Settings.Display.TrackHeight,
         Math.Max(RegionSettings.FontSize * 2 + 8, Math.Max(RegionSettings.EmoteSize, RegionSettings.LargeEmoteHeight) + 8));
-    protected override void OnHotLayoutChanged()
-    {
-        foreach (var item in _items) item.SetY(ContentTop + item.Track * TrackHeight);
-    }
     private int FindFreeTrack(int span = 1)
     {
         var count = Math.Clamp(_vm.Settings.Display.MaxTracks, 1, Math.Max(1, Math.Min(24, (ClientSize.Height - ContentTop) / TrackHeight)));
@@ -379,6 +381,7 @@ public sealed class OverlayWindow : OverlaySurface
             foreach (var region in _fixedRegions) region.Dispose();
             foreach (var region in _stationary) region.Dispose();
             _compact?.Dispose();
+            _hotPhrases?.Dispose();
             _frames.Dispose();
         }
         base.Dispose(disposing);

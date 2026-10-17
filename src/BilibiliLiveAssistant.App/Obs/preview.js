@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  let base, sequence = 20;
+  let base, sequence = 20, hotPhase = 0;
   const label = document.getElementById('bla-preview-status');
   const replay = document.getElementById('bla-replay');
   const toolbar = document.getElementById('bla-workbench'), stage = document.querySelector('.bla-preview-stage');
@@ -18,8 +18,10 @@
   function snapshot() {
     const s = base.style || {};
     const decorate = m => ({...m,avatar:s.showAvatars === false ? '' : m.avatar,medal:s.showMedals === false ? '' : m.medal,guard:s.showIdentity === false ? '' : m.guard});
-    return {...base,roomId:0,now:Date.now(),rows:rows.map(decorate),
-      hotPhrases:[{text:'好好好',count:37},{text:'谢谢陪伴',count:12},{text:'晚上见',count:9}],
+    const hotPhrases=[{key:'sample-a',text:'好好好[开心]',count:37,segments:[{text:'好好好'},{text:'[开心]',image:'sample-emote.svg',width:64,height:64}]},
+        {key:'sample-b',text:'[开心]',count:12,segments:[{text:'[开心]',image:'sample-emote.svg',width:64,height:64}]},
+        {key:'sample-c',text:'谢谢陪伴',count:9},{key:'sample-d',text:'晚上见',count:6},{key:'sample-e',text:'欢迎回来',count:3}];
+    return {...base,roomId:0,now:Date.now(),rows:rows.map(decorate),hotPhrases:hotPhase ? hotPhrases.reverse().slice(1) : hotPhrases,
       sc:decorate(sample(100,'SuperChat','固定 SC 示例：感谢陪伴！这是一段用于检查正文行数、字号和换行的长文字。'.repeat(5),{price:'¥100',amountMilliYuan:100000,priceTier:3})),
       gift:decorate(sample(101,'Gift','星星 × 3',{giftName:'星星',quantity:3,price:'¥15',amountMilliYuan:15000,priceTier:3})),
       entry:decorate(sample(102,'Enter','进入直播间',{avatar:s.showEntryAvatars === false ? '' : 'sample-avatar.svg'})),
@@ -33,7 +35,7 @@
     base = value; label.textContent = `${value.width} × ${value.height} · 草稿已更新`; replay.disabled = false; return snapshot();
   };
   replay.disabled = true;
-  replay.addEventListener('click', () => { if (!base) return; rows.push(sample(++sequence,'Danmaku','新消息滑入示例 ' + (sequence-20))); rows = rows.slice(-12); window.BlaPreviewRender(snapshot()); });
+  replay.addEventListener('click', () => { if (!base) return; hotPhase=1-hotPhase; rows.push(sample(++sequence,'Danmaku','新消息滑入示例 ' + (sequence-20))); rows = rows.slice(-12); window.BlaPreviewRender(snapshot()); });
   document.getElementById('bla-background').addEventListener('click', () => {
     const values = ['checker','dark','light']; document.body.className = values[(values.indexOf(document.body.className)+1)%3];
   });

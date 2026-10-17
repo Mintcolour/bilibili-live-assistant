@@ -42,22 +42,22 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private CompactStatusStrip? _statusStrip;
     private Point _statusLocation;
     private double _statusStarted;
-    private bool _statusVisible, _listMoving;
+    private bool _statusVisible, _listMoving, _hotMoving;
     private Forms.Form? _detail;
     private readonly Forms.ContextMenuStrip _menu = new();
-    private readonly HotPhraseSprite _hotSprite = new();
+    private readonly HotPhraseSprite _hotSprite;
     private readonly CompactTimeline _samples = new();
     private CompactOverlaySettings? _preview;
     private AppSettings EffectiveSettings => _preview is { } preview ? _vm.Settings with { Compact = preview } : _vm.Settings;
     private bool Editing => (_vm.OverlayInteractive || !_vm.Settings.Display.LayoutLocked) && !_reading;
     private bool Interactive => _reading || Editing;
     internal object GetDiagnostics() => new { visible = Visible, editing = Editing, reading = _reading, rows = _rows.Count,
-        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4) + (_statusStrip?.Bytes ?? 0), readingOlder = _anchor is not null,
+        bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4) + (_statusStrip?.Bytes ?? 0) + _hotSprite.Bytes, readingOlder = _anchor is not null,
         animationActive = _frames.IsRunning(OnAnimationFrame), leavingRows = _rows.Values.Count(row => row.Motion.Leaving) };
     private CompactTimeline Timeline => Editing ? _samples : _vm.CompactOverlay.Timeline;
     public CompactOverlayWindow(LiveAssistantViewModel vm, OverlayFrameClock frames)
     {
-        _vm = vm; _frames = frames; Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
+        _vm = vm; _frames = frames; _hotSprite = new(vm.Images, RequestRender); Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
         StartPosition = Forms.FormStartPosition.Manual; AutoScaleMode = Forms.AutoScaleMode.None;
         ShowInTaskbar = false; TopMost = true; MinimumSize = new(240, 320);
         _menu.Items.Add("调整样式…", null, (_, _) => ShowStyleEditor());
@@ -215,14 +215,6 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 _statusStrip.Draw(g, _statusLocation, now - _statusStarted); top += _statusStrip.Height + 4;
             }
             else { _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null; }
-            if (!Editing && config.ShowList && OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku))
-            {
-                var height = HotPhraseSprite.Height(_vm.HotPhrases, Math.Min(ClientSize.Height / 4, Math.Max(0, bottom - top - 120)), config.FontSize);
-                _hotSprite.Draw(g, _vm.HotPhrases, new(6, top, Math.Max(1, ClientSize.Width - 12), height),
-                    ObsOverlayProjection.Region(EffectiveSettings, new(LiveEventType.Danmaku, "", "", "#FFFFFF")).FontFamily, config.FontSize);
-                if (height > 0) top += height + 4;
-            }
-            else _hotSprite.Dispose();
             void AtTop(CompactMessage? item, int maxHeight, bool show, long key)
             {
                 if (!show || item is null || bottom - top < 60) return;
@@ -241,6 +233,16 @@ internal sealed class CompactOverlayWindow : Forms.Form
             }
             var interactions = OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Interaction);
             AtBottom(timeline.Follow, config.ShowFollow && interactions, -4); AtBottom(timeline.Entry, config.ShowEntry && interactions, -3);
+            if (config.ShowList && OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku))
+            {
+                var hotStyle = _vm.Settings.HotPhrases;
+                var hotHeight = hotStyle.Enabled && (Editing || _vm.HotPhrases.Count > 0 || _hotSprite.HasContent)
+                    ? Math.Min(HotBubbleLayouts.RowHeight(hotStyle) * 2, Math.Max(0, bottom - top - 100)) : 0;
+                _hotSprite.Update(Editing ? HotPhraseSamples.Items : _vm.HotPhrases, hotStyle,
+                    new(Math.Max(1, ClientSize.Width - 12), hotHeight), 2, _vm.Settings.Dashboard.FontFamily);
+                if (hotHeight > 0) { bottom -= hotHeight; _hotSprite.Draw(g, new(6, bottom), hotStyle.Opacity); bottom -= 4; }
+            }
+            else _hotSprite.Dispose();
             var nextBounds = new Rectangle(6, top, Math.Max(1, ClientSize.Width - 12), Math.Max(0, bottom - top));
             var animate = config.ListAnimationEnabled && _listReady && _anchor is null && nextBounds.Width == _listBounds.Width;
             _listBounds = nextBounds;
@@ -279,8 +281,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
             _listReady = config.ShowList && _listBounds.Height > 0;
             foreach (var key in _rows.Keys.Where(k => !keep.Contains(k)).ToArray()) { _rows[key].Dispose(); _rows.Remove(key); }
             _canvas.Present(Handle, Location, config.Opacity, ClientRectangle);
-            _listMoving = moving;
-            if (moving || _statusVisible && _statusStrip?.Moving == true) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
+            _listMoving = moving; _hotMoving = _hotSprite.Moving;
+            if (moving || _hotSprite.Moving || _statusVisible && _statusStrip?.Moving == true) _frames.Start(OnAnimationFrame); else _frames.Stop(OnAnimationFrame);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         { _frames.Stop(OnAnimationFrame); ReportRenderError(ex); }
@@ -289,7 +291,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         if (_disposed || !Visible) { _frames.Stop(OnAnimationFrame); return; }
         if (_renderQueued) return;
-        if (_listMoving && _anchor is null) { Render(); return; }
+        if (_hotMoving || _listMoving && _anchor is null) { Render(); return; }
         if (!_statusVisible || _statusStrip?.Moving != true || _canvas is null) { _frames.Stop(OnAnimationFrame); return; }
         try
         {
@@ -448,7 +450,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         _hotSprite.Dispose();
         _frames.Stop(OnAnimationFrame); _listReady = false; _latestListId = 0;
-        _statusVisible = _listMoving = false; _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null;
+        _statusVisible = _listMoving = _hotMoving = false; _statusStrip?.Dispose(); _statusStrip = null; _renderedStatus = null;
         foreach (var row in _rows.Values) row.Dispose(); _rows.Clear();
     }
     protected override void Dispose(bool disposing)

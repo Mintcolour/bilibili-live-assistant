@@ -55,7 +55,8 @@ public sealed class HotPhraseWindow
                 var appearance = message.Appearance;
                 entry = new(text, appearance is null ? null : new LiveMessageAppearance
                 { FullEmote = appearance.FullEmote, Emotes = appearance.Emotes
-                    .Where(e => e.Token.Length > 0 && text.Contains(e.Token, StringComparison.Ordinal)).Take(16).ToArray() });
+                    .Where(e => e.Token.Length > 0 && text.Contains(e.Token, StringComparison.Ordinal))
+                    .OrderBy(e => text.IndexOf(e.Token, StringComparison.Ordinal)).Take(32).ToArray() });
                 _entries.Add(key, entry);
             }
             entry.Count++; _arrivals.Enqueue((key, received));
