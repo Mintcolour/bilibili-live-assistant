@@ -65,6 +65,7 @@ public sealed record DisplaySettings
 
 public sealed record AppSettings
 {
+    public HotPhraseSettings HotPhrases { get; init; } = new();
     public CompactOverlaySettings Compact { get; init; } = new();
     public OverlayPriceDurations PriceDurations { get; init; } = new();
     public int SchemaVersion { get; init; } = 1;

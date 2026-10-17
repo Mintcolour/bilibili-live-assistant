@@ -115,6 +115,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         { historySettings = new(); _historyConfigurationWarning = "存档目录配置无效，已使用默认目录；请在可视化设置中重新保存目录。"; }
         _settings = settings with { Compact = (settings.Compact ?? new()).Normalize(), PriceDurations = (settings.PriceDurations ?? new()).Normalize(), Cookies = new(), TradeViews = (settings.TradeViews ?? new()).Normalize(), Dashboard = (settings.Dashboard ?? new()).Normalize(),
             MediaPreview = (settings.MediaPreview ?? new()).Normalize(), Cards = (settings.Cards ?? new()).Normalize(), History = historySettings };
+        _settings = _settings with { HotPhrases = (settings.HotPhrases ?? new()).Normalize() };
         Dashboard.Cleared += CardBoard.Clear;
         Dashboard.Cleared += ClearHotPhrases;
         _store = store;
@@ -307,6 +308,13 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
         finally { _connectionGate.Release(); }
     }
 
+    internal async Task UpdateHotPhrasesAsync(Func<HotPhraseSettings, HotPhraseSettings> update)
+    {
+        await _connectionGate.WaitAsync();
+        try { await SaveCoreAsync(_settings with { HotPhrases = update(_settings.HotPhrases).Normalize() }); }
+        finally { _connectionGate.Release(); }
+    }
+
     public async Task SaveAsync(AppSettings settings)
     {
         await _connectionGate.WaitAsync();
@@ -314,6 +322,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     }
     private async Task SaveCoreAsync(AppSettings settings)
     {
+        settings = settings with { HotPhrases = (settings.HotPhrases ?? new()).Normalize() };
         var previous = _settings;
         settings = settings with { Compact = (settings.Compact ?? new()).Normalize(), PriceDurations = (settings.PriceDurations ?? new()).Normalize(), History = (settings.History ?? new()).Normalize() };
         var directoryChanged = !string.Equals(previous.History.EffectiveDirectory, settings.History.EffectiveDirectory, StringComparison.OrdinalIgnoreCase);
