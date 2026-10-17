@@ -37,6 +37,10 @@ OBS 网页源启用、地址复制和输出宽高设置仍位于上方「OBS 网
 | `.bla-rank-member`、`.bla-rank-index` | 榜单成员、名次 |
 | `.bla-counts`、`.bla-ranks`、`.bla-rank-list`、`.bla-rank-icon` | 横排人数、榜单分区、横排成员、榜单图标 |
 | `.bla-rank-viewport`、`.bla-rank-track`、`.bla-rank-copy` | 榜单裁剪区域、滚动运动层、循环副本 |
+| `.bla-hot-phrases`、`.bla-hot-phrase` | 底部高频气泡区域、每个气泡 |
+| `.bla-hot-text`、`.bla-hot-emote`、`.bla-hot-count` | 高频原文、真实表情图片、独立次数 |
+
+高频气泡统计最近 30 秒、重复至少 3 次的前 5 项；默认最多两行，不轮播。第一名为 `.bla-hot-phrase[data-top="true"]`。字号、表情和透明度沿用「高频气泡」设置，OBS 的整体透明度仍作用于整个面板。气泡外层的 `transform`、`opacity` 与离场定位由运行时管理；可在 `.bla-hot-text` 和 `.bla-hot-count` 定制内容样式，或修改气泡背景／边框。超过默认两行或改变行高的 CSS 需自行核对裁剪效果。隐藏消息列表也会隐藏高频提示并解除图片观察。
 
 紧凑布局将房间人数、看过人数和榜单横向排列；人数固定，奖杯图标后的前三名以每秒 40 px 从右向左循环滚动，不生成榜单头像。名单不足三人时仅显示接口已提供的成员。循环副本使用 `aria-hidden`，不代表额外成员。人数更新不重建榜单动画，隐藏或断线时取消动画。旧的成员、名次、昵称和徽章选择器继续可用；用户 CSS 可以覆盖默认排版。`.bla-rank-track` 的 `transform` 由运行时管理，请在 `.bla-rank-list` 或成员内自定义外观。`--bla-rank-avatar-size` 保留为旧样式变量，但当前榜单没有头像节点。
 
