@@ -165,6 +165,14 @@ $phases = foreach ($segment in $segments) {
         MainHiddenSamples = @($rows | Where-Object { $_.ui.window.mainVisible -eq $false }).Count
         CanvasPeakMiB = [math]::Round(($rows.ui | Measure-Object canvasBytes -Maximum).Maximum / 1MB, 2)
         ArchivePendingPeak = ($rows.ui.history | Measure-Object pending -Maximum).Maximum
+        ArchiveSqliteNativeBytesPeak = Optional-Peak @($rows | ForEach-Object { $_.ui.history.sqliteNativeBytes })
+        ArchiveSqliteNativeLifetimePeakBytes = Optional-Peak @($rows | ForEach-Object { $_.ui.history.sqliteNativePeakBytes })
+        OverlayTextMeasurements = $(
+            $text = @($rows | Where-Object uiFresh | ForEach-Object { $_.timings.text } | Where-Object { $null -ne $_ })
+            if ($text.Count) { ($text | Measure-Object measurements -Sum).Sum } else { $null })
+        OverlayTextDraws = $(
+            $text = @($rows | Where-Object uiFresh | ForEach-Object { $_.timings.text } | Where-Object { $null -ne $_ })
+            if ($text.Count) { ($text | Measure-Object draws -Sum).Sum } else { $null })
         BufferDroppedDelta = Get-Delta $rows { param($r) $r.ui.bufferDropped }
         OverlayDroppedDelta = Get-Delta $rows { param($r) $r.ui.overlayDropped }
         ArchiveDroppedDelta = Get-Delta $rows { param($r) $r.ui.history.dropped }
@@ -182,6 +190,7 @@ $report = [pscustomobject]@{ Session = $Session; Samples = $ordered.Count; Skipp
         'privateBytes 为私有提交量，workingSetBytes 为包含共享页的总工作集；schema 4 新增 privateWorkingSetBytes，才对应本轮任务管理器内存验收口径。旧日志缺失时返回 null，不以其他指标替代。',
         'gcGenerations 为最近一次 GC 后的分代观测，索引 0–2 为普通代、3 为 LOH、4 为 POH；不是当前时刻的逐对象内存清单。图片读入字节累计值用于分析分配压力，不代表常驻内存。',
         '内存增长率至少 3 个点，仅作定位线索；缓存预热、GC 和原生内存都会影响，不能直接认定泄漏。',
+        'sqliteNativeBytes/PeakBytes 是本进程 SQLite 分配器当前量/未重置的生命周期峰值，不是历史文件大小，也不覆盖所有原生分配；旧日志缺失时返回 null。text 为本区间浮窗文字测量/绘制次数，不是常驻对象数量。',
         'timings 为 UI 脉冲间的区间统计；嵌套测量会重叠，不要相加当作 CPU。frameGap 是回调间隔，不是屏幕实际呈现帧率。',
         'schema 3 的 uiImages 内，active、idle、reserved 的显示源及估算字节互斥；reserved 为创建完成、尚未发出租约的资源。',
         'imageResources.nativeSources 含共享源、上传中源及设置预览，是总数；uiImages 为其中共享服务部分，不能相加。像素估算不涵盖 WinUI、驱动和分配器全部原生内存。旧日志缺少的新字段返回 null。',

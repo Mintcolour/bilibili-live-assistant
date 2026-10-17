@@ -10,6 +10,7 @@ internal static class OverlayTextRenderer
     public static void Draw(Graphics graphics, string text, Font font, PointF location, Color color, bool outline, OverlayRegionSettings? effects = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
+        PerformanceCounters.Text(false);
         using var format = Format();
         using var path = new GraphicsPath();
         path.AddString(text, font.FontFamily, (int)font.Style, font.SizeInPoints * graphics.DpiY / 72f, location, format);
@@ -36,12 +37,15 @@ internal static class OverlayTextRenderer
     }
     public static SizeF Measure(Graphics graphics, string text, Font font)
     {
+        PerformanceCounters.Text(true);
         using var format = Format();
         return graphics.MeasureString(text, font, PointF.Empty, format);
     }
     private static StringFormat Format()
     {
-        var format = (StringFormat)StringFormat.GenericTypographic.Clone();
+        // This getter already creates an owned native format. Cloning it left
+        // the original for finalization on every glyph measurement/draw.
+        var format = StringFormat.GenericTypographic;
         format.FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip | StringFormatFlags.MeasureTrailingSpaces;
         return format;
     }

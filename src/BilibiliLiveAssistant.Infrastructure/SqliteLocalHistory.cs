@@ -28,6 +28,10 @@ public sealed partial class SqliteLocalHistory
             commands = _commands.Count, gapGroups = _gaps.Count, dropped = _dropped, writtenEvents = _writtenEvents,
             writeBatches = _writeBatches, writeMs = _writeTicks * 1000d / Stopwatch.Frequency,
             writeMaxMs = _writeMaxTicks * 1000d / Stopwatch.Frequency, writeFailures = _writeFailures,
+            // SQLite's allocator across this process, not the database file
+            // size, page-cache estimate, or the whole native working set.
+            sqliteNativeBytes = _ready.Task.IsCompletedSuccessfully ? (long?)SQLitePCL.raw.sqlite3_memory_used() : null,
+            sqliteNativePeakBytes = _ready.Task.IsCompletedSuccessfully ? (long?)SQLitePCL.raw.sqlite3_memory_highwater(0) : null,
             bytes = Status.Bytes, faulted = Status.Faulted };
     }
     private bool _closing;

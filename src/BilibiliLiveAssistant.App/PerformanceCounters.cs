@@ -12,6 +12,9 @@ internal static class PerformanceCounters
     private static long _intervals, _lateFrames, _maxFrameTicks;
     private static long _blits, _sourcePixels, _blitPixels;
     private static long _imageInvalidations, _imageInvalidationsMerged;
+    private static long _textMeasurements, _textDraws;
+    internal static void Text(bool measure)
+    { if (!Enabled) return; if (measure) _textMeasurements++; else _textDraws++; }
     internal static void ImageInvalidation(bool merged)
     { if (!Enabled) return; _imageInvalidations++; if (merged) _imageInvalidationsMerged++; }
     internal static void Blit(long sourcePixels, long blitPixels)
@@ -47,9 +50,11 @@ internal static class PerformanceCounters
         _intervals = _lateFrames = _maxFrameTicks = 0;
         var blits = new { count = _blits, sourcePixels = _sourcePixels, submittedPixels = _blitPixels };
         var imageInvalidations = new { requested = _imageInvalidations, merged = _imageInvalidationsMerged };
+        var text = new { measurements = _textMeasurements, draws = _textDraws, nativeFormatPolicy = "owned-no-clone" };
+        _textMeasurements = _textDraws = 0;
         _imageInvalidations = _imageInvalidationsMerged = 0;
         _blits = _sourcePixels = _blitPixels = 0;
-        return new { operations = result, frameCadence = cadence, blits, imageInvalidations };
+        return new { operations = result, frameCadence = cadence, blits, imageInvalidations, text };
     }
     internal static void Reset() => _ = Drain();
 }
