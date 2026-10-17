@@ -41,9 +41,12 @@ internal sealed class VisualRegionEditor : StackPanel
             finally { foreach (var family in families) family.Dispose(); }
         }
         catch { _font.ItemsSource = new[] { "Microsoft YaHei UI", "Microsoft YaHei", "Arial" }; }
-        foreach (var control in new UIElement[] { _mode, _modeHint, _font, _scale, _size, _emote, _large, _color, _opacity,
-            new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { _bold, _italic, _outline } }, _speed, _duration, _followDuration, _guardDuration, _count, _cardHeight, _columns, _background, _backgroundOpacity, _merge, _broadcast, _rankCount, _audience,
-            new Expander { Header = "文字阴影", HorizontalAlignment = HorizontalAlignment.Stretch, Content = new StackPanel { Spacing = 8, Children = { _shadow, _shadowOpacity, _shadowSize, _shadowOffset, _shadowColor } } }, _displayInterval,
+        foreach (var control in new UIElement[] { _mode, _modeHint,
+            SettingGroup.Create("文字与大小", true, _font, _scale, _size, _emote, _large,
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { _bold, _italic, _outline } }),
+            SettingGroup.Create("颜色与透明度", false, _color, _opacity, _background, _backgroundOpacity),
+            SettingGroup.Create("播放、数量与间隔", false, _speed, _duration, _followDuration, _guardDuration, _count, _cardHeight, _columns, _merge, _broadcast, _rankCount, _audience, _displayInterval),
+            SettingGroup.Create("文字阴影", false, _shadow, _shadowOpacity, _shadowSize, _shadowOffset, _shadowColor),
             new Expander { Header = "精确布局与接收节奏", HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel { Spacing = 8, Children = { _x, _y, _width, _height, _update } } } }) Children.Add(control);
         SettingEvents.Watch(this, () => { if (!_loading) Changed?.Invoke(); });
@@ -88,7 +91,7 @@ internal sealed class VisualRegionEditor : StackPanel
         _background.Visibility = _backgroundOpacity.Visibility = Visibility.Visible;
         _displayInterval.Visibility = _kind == OverlayRegionKind.Interaction || _kind == OverlayRegionKind.Status && !fixedMode ? Visibility.Collapsed : Visibility.Visible;
         _broadcast.Visibility = _kind == OverlayRegionKind.Status && !fixedMode ? Visibility.Visible : Visibility.Collapsed;
-        _modeHint.Text = cards ? "停留时间按金额档位计算，请到“紧凑面板 / OBS / 金额停留”调整。到期前保护当前卡片；礼物待播 64 条/60 秒，上舰与 SC 各 64 条/5 分钟。"
+        _modeHint.Text = cards ? "停留时间请到“SC / 礼物 · 金额停留”调整。到期前保护当前卡片；礼物待播 64 条/60 秒，上舰与 SC 各 64 条/5 分钟。"
             : mode == OverlayDisplayMode.Grid ? "固定槽位，最多 32 张；沿用概览卡片的精确合并和防刷屏规则。临时交互时悬停保护、点击查看发言者、右键隐藏。"
             : mode == OverlayDisplayMode.List ? "只保存最近 100 条；临时交互时滚轮翻阅。仅可见行加载图片。"
             : mode == OverlayDisplayMode.Panel ? "收到新数据后更新固定面板，无持续动画；临时交互时滚轮查看其余名次。" : "";

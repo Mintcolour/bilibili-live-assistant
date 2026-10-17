@@ -27,9 +27,12 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     private AppSettings _settings;
     private bool _active, _disposed;
     private int _generation;
+    private int _scAmount = 100;
     public CompactPreview(LiveAssistantViewModel vm)
     {
         _vm = vm; _settings = vm.Settings; Spacing = 10;
+        var scTier = new ComboBox { Header = "示例 SC 档位", ItemsSource = new[] { 30, 50, 100, 500, 1000, 2000 }, SelectedIndex = 2 };
+        Children.Add(scTier);
         _surface.Children.Add(_image); _surface.Children.Add(_listCanvas); _surface.Children.Add(_rankCanvas);
         Children.Add(new Viewbox { Child = _surface, Stretch = Stretch.Uniform, MaxHeight = 640, HorizontalAlignment = HorizontalAlignment.Left });
         var replay = UiFactory.Button("播放出入示例"); replay.Click += (_, _) => PlaySample();
@@ -37,6 +40,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
         _animation.Completed += (_, _) => FinishSample();
         _timer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _timer.IsRepeating = false; _timer.Interval = TimeSpan.FromMilliseconds(100);
         _timer.Tick += (_, _) => Render();
+        scTier.SelectionChanged += (_, _) => { if (scTier.SelectedItem is int amount) { _scAmount = amount; if (_active) { _timer.Stop(); _timer.Start(); } } };
     }
     public void Update(AppSettings settings)
     {
@@ -124,7 +128,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                     g.DrawImageUnscaled(status.Prefix, 8, top + (status.Height - status.Prefix.Height) / 2); g.Restore(saved);
                     top += status.Height + 4;
                 }
-                var messages = CompactExamples.Messages();
+                var messages = SampleMessages();
                 void Draw(LiveEvent value, int maxHeight, bool card = true, bool inline = false)
                 {
                     if (top + 40 >= height) return;
@@ -146,7 +150,7 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                 rankSource = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(rankImage), rankImage.Width, false, 256, token);
             if (c.ShowList && listHeight >= 40)
             {
-                var samples = CompactExamples.Messages();
+                var samples = SampleMessages();
                 foreach (var value in new[] { samples[2] with { Content = "上一条弹幕从顶部离开。" }, samples[1],
                     samples[0] with { Content = "列表里的 SC 也会平滑上移。" }, samples[2] with { Content = "新弹幕从底部滑入，欢迎来到直播间！" } })
                 {
@@ -195,11 +199,17 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                     i == 0, i == preparedRows.Length - 1)); y -= 4;
             }
             PlaySample();
-            _summary.Text = $"桌面原生示例 · OBS CSS 请使用“打开真实网页预览”\nOBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥100：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
+            _summary.Text = $"桌面原生示例 · OBS CSS 请使用“打开真实网页预览”\nOBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥{_scAmount}：{_settings.PriceDurations.Seconds(SampleMessages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (generation == _generation) { Clear(); _summary.Text = "本地预览暂不可用。"; } }
         finally { status?.Dispose(); rankSource?.Dispose(); backgroundSource?.Dispose(); foreach (var row in localRows) row.Source.Dispose(); }
+    }
+    private LiveEvent[] SampleMessages()
+    {
+        var messages = CompactExamples.Messages();
+        messages[0] = messages[0] with { HistoryFields = messages[0].HistoryFields! with { AmountMilliYuan = _scAmount * 1000L } };
+        return messages;
     }
     public void Dispose() { if (_disposed) return; _disposed = true; _timer.Stop(); Clear(); }
 }

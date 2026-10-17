@@ -459,6 +459,8 @@ internal static class OverlayMessageRenderer
     private static string Price(LiveEvent value)
     {
         if (value.Extra.TryGetValue("scroll_price", out var label) && label is string saved) return saved;
+        if (SuperChatVisual.AmountMilliYuan(value) is { } amount)
+            return " · ¥" + (amount / 1000m).ToString("0.###", CultureInfo.InvariantCulture);
         if (value.Extra.TryGetValue("price", out var price) && price is not null) return $" · ¥{price}";
         var space = value.Content.IndexOf(' ');
         return value.Content.StartsWith('¥') && space is > 1 and < 16 ? " · " + value.Content[..space] : "";

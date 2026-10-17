@@ -46,11 +46,13 @@ internal sealed class DashboardSettingsEditor : StackPanel
         _draft = settings; Spacing = 10;
         var apply = UiFactory.Button("应用预设到下方设置");
         apply.Click += (_, _) => { Load(DashboardSettings.ForPreset(_preset.SelectedItem as string ?? "深色简约", Read(_draft))); Changed?.Invoke(); };
-        foreach (var child in new UIElement[] { _preset, apply, _font, _size, _nameSize, _textColor, _nameColor, _background, _textOpacity, _backgroundOpacity,
-            new Expander { Header = "排版与图文尺寸", HorizontalAlignment = HorizontalAlignment.Stretch,
-                Content = new StackPanel { Spacing = 10, Children = { _lines, _spacing, _padding, _radius, _avatarSize, _badgeSize, _emoteSize, _largeEmote } } },
-            _compact, _avatars, _entryAvatars, _medals, _identity, _animation,
-            UiFactory.Subtitle("表情默认显示静态首帧。动画只在概览可见时播放；格式或帧数不适合播放时回退静态。桌面滚动弹幕使用静态图文缓存。"),
+        foreach (var child in new UIElement[] {
+            SettingGroup.Create("文字与字号", true, _font, _size, _nameSize, _compact),
+            SettingGroup.Create("颜色与透明度", false, _textColor, _nameColor, _background, _textOpacity, _backgroundOpacity),
+            SettingGroup.Create("排版与图文尺寸", false, _lines, _spacing, _padding, _radius, _avatarSize, _badgeSize, _emoteSize, _largeEmote),
+            SettingGroup.Create("头像、粉丝牌与表情", false, _avatars, _entryAvatars, _medals, _identity, _animation,
+                UiFactory.Subtitle("表情默认显示静态首帧。动画只在概览可见时播放；格式或帧数不适合播放时回退静态。桌面滚动弹幕使用静态图文缓存。")),
+            SettingGroup.Create("样式预设", false, _preset, apply),
             new Expander { Header = "刷新与本次记录上限", HorizontalAlignment = HorizontalAlignment.Stretch,
                 Content = new StackPanel { Spacing = 10, Children = { _rankRefresh, _refresh, _danmaku, _gifts, _sc, _interactions,
                     UiFactory.Subtitle("记录仅本次运行保留，切换房间后清空。进房、关注、点赞等互动仅保留最近最多 15 条；其他消息达到上限先移除已读 / 已感谢记录，再移除最早记录。") } } },
@@ -62,7 +64,7 @@ internal sealed class DashboardSettingsEditor : StackPanel
     {
         _loading = true;
         _draft = settings;
-        _preset.SelectedItem = settings.Preset; _font.Text = settings.FontFamily;
+        _preset.SelectedItem = settings.Preset; _font.SelectedItem = settings.FontFamily; _font.Text = settings.FontFamily;
         _size.Value = settings.FontSize; _nameSize.Value = settings.UsernameFontSize;
         _textColor.Text = settings.TextColor; _nameColor.Text = settings.UsernameColor; _background.Text = settings.BackgroundColor;
         _textOpacity.Value = settings.TextOpacity * 100; _backgroundOpacity.Value = settings.BackgroundOpacity * 100;

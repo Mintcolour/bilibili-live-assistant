@@ -54,6 +54,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         Children.Add(new Expander { Header = "显示区域与关注停留", Content = sections, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new Expander { Header = "金额停留 · 含普通固定卡片", Content = prices, HorizontalAlignment = HorizontalAlignment.Stretch });
         Children.Add(new TextBlock { Text = "计时从实际显示开始；滚动模式仍完整滚完。免费及未知金额礼物为 3 秒，未知金额 SC 为 10 秒。字体、头像、粉丝牌、阴影等沿用对应悬浮类别的样式。", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.65 });
+        foreach (var expander in Children.OfType<Expander>()) expander.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         foreach (var child in Children) SettingEvents.Watch(child, () => Changed?.Invoke());
         _sc.Changed += () => Changed?.Invoke(); _gift.Changed += () => Changed?.Invoke();
     }

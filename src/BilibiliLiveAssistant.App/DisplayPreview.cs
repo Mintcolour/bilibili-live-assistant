@@ -31,6 +31,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private int _frameRate = 60;
     private int _tracks = 8;
     private bool _enabled = true;
+    private bool _sampleInitialized;
     private readonly ComboBox _sample = new() { ItemsSource = new[] { "图文消息", "整条图片表情" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Left };
     public DisplayPreview(LiveAssistantViewModel vm, Func<bool> visible)
     {
@@ -44,7 +45,17 @@ internal sealed class DisplayPreview : Grid, IDisposable
         _canvas.SizeChanged += (_, _) => Schedule();
     }
     public void Update(OverlayRegionKind? kind, OverlayRegionSettings region, DashboardSettings style, int frameRate, bool enabled, int tracks)
-    { _kind = kind; _region = region; _style = style; _frameRate = frameRate; _enabled = enabled; _tracks = tracks; Schedule(); }
+    {
+        if (!_sampleInitialized || _kind != kind)
+        {
+            _sampleInitialized = true;
+            var tiers = new[] { "SC · ¥30", "SC · ¥50", "SC · ¥100", "SC · ¥500", "SC · ¥1000", "SC · ¥2000" };
+            _sample.ItemsSource = kind == OverlayRegionKind.SuperChat ? tiers : kind is null
+                ? new[] { "图文消息", "整条图片表情" }.Concat(tiers).ToArray() : new[] { "图文消息", "整条图片表情" };
+            _sample.SelectedIndex = 0;
+        }
+        _kind = kind; _region = region; _style = style; _frameRate = frameRate; _enabled = enabled; _tracks = tracks; Schedule();
+    }
     public void SetActive(bool active)
     {
         if (_disposed) return;
@@ -172,13 +183,18 @@ internal static class PreviewSamples
     };
     internal static LiveEvent[] For(OverlayRegionKind? kind)
     {
+        if (kind == OverlayRegionKind.SuperChat) return SuperChats();
         var type = kind switch { OverlayRegionKind.Gift => LiveEventType.Gift, OverlayRegionKind.SuperChat => LiveEventType.SuperChat,
             OverlayRegionKind.Interaction => LiveEventType.Enter, _ => LiveEventType.Danmaku };
         if (kind == OverlayRegionKind.Interaction) return [new(type, "关注观众", "关注了主播", "#FF8AB3", 1, Appearance: Appearance) { HistoryFields = new(InteractionKind: 2) },
             new(type, "点赞观众", "为主播点赞了", "#FFAA78", 2, Appearance: Appearance) { HistoryFields = new(InteractionKind: 6) },
             new(type, "进房观众", "进入了直播间", "#71C6A6", 3, Appearance: Appearance)];
-        return new[] { new LiveEvent(type, "示例观众", kind == OverlayRegionKind.Gift ? "赠送 小心心 × 3" : kind == OverlayRegionKind.SuperChat ? "¥30 这是一条醒目留言 [热] 😊" : "这是一条带图片表情的弹幕 [热] 😊 👍🏽 🇨🇳 👨‍👩‍👧‍👦", "#FFFFFF", 1, Appearance: Appearance),
+        var messages = new[] { new LiveEvent(type, "示例观众", kind == OverlayRegionKind.Gift ? "赠送 小心心 × 3" : "这是一条带图片表情的弹幕 [热] 😊 👍🏽 🇨🇳 👨‍👩‍👧‍👦", "#FFFFFF", 1, Appearance: Appearance),
             new LiveEvent(LiveEventType.Danmaku, "大表情示例", "[图片表情]", "#FFFFFF", 2, Appearance: Appearance with
             { FullEmote = new("[图片表情]", "https://i0.hdslb.com/bfs/live/a98e35996545509188fe4d24bd1a56518ea5af48.png", 183, 60) }) }.Take(kind == OverlayRegionKind.Gift ? 1 : 2).ToArray();
+        return kind is null ? messages.Concat(SuperChats()).ToArray() : messages;
     }
+    private static LiveEvent[] SuperChats() => new[] { 30, 50, 100, 500, 1000, 2000 }.Select(amount =>
+        new LiveEvent(LiveEventType.SuperChat, "分档示例观众", $"¥{amount} 感谢陪伴 [热] 😊 👍🏽 👨‍👩‍👧‍👦", "#FFFFFF", 1, Appearance: Appearance)
+        { HistoryFields = new(AmountMilliYuan: amount * 1000L, RawBody: "感谢陪伴 [热] 😊 👍🏽 👨‍👩‍👧‍👦") }).ToArray();
 }

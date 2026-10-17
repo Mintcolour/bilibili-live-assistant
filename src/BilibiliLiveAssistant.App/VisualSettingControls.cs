@@ -5,6 +5,17 @@ using Windows.UI;
 
 namespace BilibiliLiveAssistant.App;
 
+internal static class SettingGroup
+{
+    internal static Expander Create(string title, bool expanded, params UIElement[] children)
+    {
+        var content = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var child in children) content.Children.Add(child);
+        return new Expander { Header = title, IsExpanded = expanded, Content = content,
+            HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    }
+}
+
 internal sealed class SettingSlider : StackPanel
 {
     private readonly Slider _slider;
