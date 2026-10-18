@@ -379,8 +379,12 @@ internal sealed class MessageCard : Grid, IDisposable
     {
         if (_disposed || (_reusableParagraph is null && _reusableEntry is null) || _images.Count > 8) return false;
         Deactivate(); _visible = static () => false; _actions?.ClearBinding();
-        _reusableText?.ClearText(); _reusableEntry?.Clear(); RecordId = Guid.Empty;
-        _reusableBody?.ClearText();
+        // A pooled card is detached and cannot be presented until TryRebind
+        // updates every field. Keep its bounded text/badge tree intact instead
+        // of first blanking the native document and immediately filling it again.
+        // Images and action bindings still relinquish all active resources;
+        // room reset / pool eviction clears the document through Dispose.
+        RecordId = Guid.Empty;
         AutomationProperties.SetName(this, "");
         foreach (var image in _images) image.Rebind("", "", 0);
         return true;
