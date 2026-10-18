@@ -7,6 +7,7 @@ param(
     [ValidateSet('unique','shared','none','avatars','emotes')][string]$Images = 'unique',
     [string]$BinarySource = '',
     [string]$AppearanceSettingsPath = '',
+    [switch]$UseCurrentAccount,
     [switch]$Snapshot,
     [switch]$NoImageBinding,
     [switch]$NoImageSources,
@@ -26,6 +27,7 @@ param(
     [switch]$PlaybackProbe
 )
 $ErrorActionPreference = 'Stop'
+if ($UseCurrentAccount -and $LiveRoom -le 0) { throw '当前账号仅允许用于明确指定的真实房间观察' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $sourceDirectory = Join-Path $repository 'tests/BilibiliLiveAssistant.StressHarness/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64'
 if ($BinarySource.Length -gt 0) { $sourceDirectory = (Resolve-Path -LiteralPath $BinarySource).Path }
@@ -37,7 +39,8 @@ New-Item -ItemType Directory -Path $runDirectory,$binaryDirectory -Force | Out-N
 Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $binaryDirectory -Recurse
 [ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent; ScrollProbe=$ScrollProbe.IsPresent; LiveRoom=$LiveRoom; BaselineSeconds=$BaselineSeconds; EntryAvatars=!$NoEntryAvatars.IsPresent; FixturePort=$FixturePort; FixtureCount=$FixtureCount; Pattern=$Pattern; StartupOnly=$StartupOnly.IsPresent; LifecycleProbe=$LifecycleProbe.IsPresent; AnimateEmotes=$AnimateEmotes.IsPresent } |
     ForEach-Object { $_.InteractionProbe = $InteractionProbe.IsPresent; $_.TradeProbe = $TradeProbe.IsPresent; $_.PlaybackProbe = $PlaybackProbe.IsPresent;
-        $_.AppearanceSettingsPath = if ($AppearanceSettingsPath.Length -gt 0) { (Resolve-Path -LiteralPath $AppearanceSettingsPath).Path } else { '' }; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
+        $_.AppearanceSettingsPath = if ($AppearanceSettingsPath.Length -gt 0) { (Resolve-Path -LiteralPath $AppearanceSettingsPath).Path } else { '' };
+        $_.UseCurrentAccount = $UseCurrentAccount.IsPresent; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
 $binary = Join-Path $binaryDirectory 'StressApp.exe'
 # Explorer avoids inheriting the Codex/terminal package identity. Never launch
 # the real assistant, BrowserHost or any browser account listener for this run.

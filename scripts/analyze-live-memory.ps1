@@ -50,7 +50,10 @@ $results = foreach ($directory in $Path) {
     for ($i = 1; $i -lt $traffic.Count; $i++) { $gap = [math]::Max($gap, $traffic[$i].seconds - $traffic[$i-1].seconds) }
     $peak = ($samples.privateWorkingSetBytes | Measure-Object -Maximum).Maximum
     $missingMetric = @($samples | Where-Object { $null -eq $_.privateWorkingSetBytes }).Count -gt 0
+    $monitoring = @($traffic | Where-Object { $_.ui.monitoring -ne $true }).Count -eq 0
+    $connectedFraction = @($traffic | Where-Object { $_.ui.connected -eq $true }).Count / [double]$traffic.Count
     $coverage = $duration -ge $RequiredSeconds -and $gap -le 30 -and $visible -and !$missingMetric -and
+        $monitoring -and $connectedFraction -ge .9 -and
         $traffic.Count -ge [math]::Floor($RequiredSeconds / 5 * .9) -and $last.ui.received -gt $traffic[0].ui.received
     $windows = @(for ($minute = 0; $minute * 60 -lt $last.seconds; $minute += 5) {
         $window = @($traffic | Where-Object { $_.seconds -ge $minute * 60 -and $_.seconds -lt ($minute + 5) * 60 })
@@ -58,9 +61,11 @@ $results = foreach ($directory in $Path) {
     })
     [ordered]@{
         name = $header.config.Name; room = $header.config.LiveRoom; processId = $header.pid
-        anonymous = $true; isolatedHistory = $true; inheritedAppearance = ![string]::IsNullOrEmpty($header.config.AppearanceSettingsPath)
+        anonymous = if ($null -ne $header.anonymousReading) { $header.anonymousReading } else { $header.config.UseCurrentAccount -ne $true }
+        isolatedHistory = $true; inheritedAppearance = ![string]::IsNullOrEmpty($header.config.AppearanceSettingsPath)
         observedSeconds = $duration; requiredSeconds = $RequiredSeconds; coverageComplete = $coverage
         overviewAndCompactVisibleThroughout = $visible; maximumSampleGapSeconds = $gap
+        monitoringThroughout = $monitoring; connectedSampleFraction = [math]::Round($connectedFraction, 4)
         limitMiB = $LimitMiB; privateWorkingSetPeakMiB = [math]::Round($peak / 1MB, 2)
         observedMemoryPass = $coverage -and $peak -le $LimitMiB * 1MB
         endedNormally = Test-Path -LiteralPath (Join-Path $root 'completed.json')
@@ -68,7 +73,7 @@ $results = foreach ($directory in $Path) {
         totalReceived = $last.ui.received; overviewCardsCreated = $last.ui.window.dashboard.danmaku.createdCards
         overviewCardsRebound = $last.ui.window.dashboard.danmaku.reboundCards
         windows = $windows
-        note = '约五秒数值采样；非瞬时峰值保证。真实流量不等于固定负载；多进程同时观察会相互影响。匿名隔离运行不替代已登录正式应用、实际显示及完整功能验收。'
+        note = '约五秒数值采样；非瞬时峰值保证。真实流量不等于固定负载；多进程同时观察会相互影响。账号模式见 anonymous；隔离运行不替代正式应用、实际显示及完整功能验收。'
     }
 }
 ConvertTo-Json -InputObject @($results) -Depth 12

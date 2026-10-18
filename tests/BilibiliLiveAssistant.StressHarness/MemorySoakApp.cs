@@ -42,7 +42,8 @@ public partial class App : Application
         InitializeComponent();
         _config = JsonSerializer.Deserialize<SoakConfig>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-config.json")))!;
         DiagnosticDirectory = _config.Output;
-        _client = new(_config.LiveRoom > 0);
+        if (_config.UseCurrentAccount && _config.LiveRoom <= 0) throw new InvalidOperationException("账号观察需要真实房间");
+        _client = new(_config.LiveRoom > 0, _config.UseCurrentAccount);
         AttachImageSources = _config.AttachImages;
         CreateImageSources = _config.CreateSources;
         UseDrawingDecode = _config.DrawingDecode;
@@ -59,7 +60,7 @@ public partial class App : Application
         {
             _log = new StreamWriter(Path.Combine(_config.Output, "samples.jsonl"), false) { AutoFlush = true };
             var live = _config.LiveRoom > 0;
-            var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = true,
+            var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = !_config.UseCurrentAccount,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
                 Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, AnimateEmotes = _config.AnimateEmotes, ShowAvatars = _config.Images is not ("none" or "emotes") } };
             if (!string.IsNullOrEmpty(_config.AppearanceSettingsPath))
@@ -77,6 +78,15 @@ public partial class App : Application
             HttpMessageHandler? handler = live ? null : _config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages();
             var images = new BiliImageCache(handler, Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
+            if (_config.UseCurrentAccount)
+            {
+                // Explicit real-room observation only. Read existing credentials
+                // into process memory; never copy/modify the vault, pair a browser,
+                // start an account listener or serialize credentials to a log.
+                var cookies = await Task.Run(() => new BrowserAuthVault().Read().Cookies);
+                if (string.IsNullOrWhiteSpace(cookies.Sessdata)) throw new InvalidOperationException("本机账号不可用，观察未启动");
+                ViewModel.UpdateAccountCredentials(cookies, "真实房间隔离观察", "本机已有账号", false);
+            }
             _window = new(ViewModel) { Title = "内存模拟 · " + _config.Name };
             _window.Activate();
             if (_config.View is not ("dashboard" or "pipeline")) _window.OpenOverlay();
@@ -94,7 +104,10 @@ public partial class App : Application
                 build = File.Exists(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))
                     ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))) : (JsonElement?)null,
                 timestamp = DateTimeOffset.UtcNow, simulatedImages = !live, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
-                note = live ? "Anonymous live transport; isolated archive and image cache; no user settings, cookies or BrowserHost."
+                anonymousReading = ViewModel.IsAnonymousReading,
+                note = live ? _config.UseCurrentAccount
+                    ? "Current local account used in memory only; isolated archive and image cache; no vault writes, account listener or BrowserHost."
+                    : "Anonymous live transport; isolated archive and image cache; no user settings, cookies or BrowserHost."
                     : "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
             Sample();
             _phase = "startup_baseline";
@@ -474,7 +487,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "");
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
@@ -484,9 +497,11 @@ internal sealed class SoakStore : ISettingsStore
 internal sealed class SoakClient : ILiveRoomClient
 {
     private readonly BiliLiveClient? _live;
+    private readonly bool _useCurrentAccount;
     private bool _running;
-    public SoakClient(bool live)
+    public SoakClient(bool live, bool useCurrentAccount = false)
     {
+        _useCurrentAccount = useCurrentAccount;
         if (!live) return;
         _live = new();
         _live.EventReceived += (_, e) => EventReceived?.Invoke(this, e);
@@ -496,7 +511,7 @@ internal sealed class SoakClient : ILiveRoomClient
     public event EventHandler<string>? StatusChanged;
     public bool IsRunning => _live?.IsRunning ?? _running;
     public Task StartAsync(int roomId, CookieOptions cookies, CancellationToken cancellationToken = default)
-    { if (_live is not null) return _live.StartAsync(roomId, new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
+    { if (_live is not null) return _live.StartAsync(roomId, _useCurrentAccount ? cookies : new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
     public Task StopAsync() { if (_live is not null) return _live.StopAsync(); _running = false; StatusChanged?.Invoke(this, "已断开连接"); return Task.CompletedTask; }
     public void Emit(LiveEvent value) { if (_live is null && IsRunning) EventReceived?.Invoke(this, value); }
 }
