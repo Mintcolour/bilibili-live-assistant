@@ -10,6 +10,7 @@ param(
     [string]$ReplaySource = '',
     [ValidateCount(0,7)][string[]]$ReplayImageSources = @(),
     [ValidateRange(30,3600)][int]$ReplayWindowSeconds = 600,
+    [ValidateRange(0.25,20)][double]$ReplaySpeed = 1,
     [switch]$UseCurrentAccount,
     [switch]$KeepOverviewVisible,
     [ValidateRange(0,600)][int]$StopObservationSeconds = 0,
@@ -63,7 +64,7 @@ Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $bin
 [ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent; ScrollProbe=$ScrollProbe.IsPresent; LiveRoom=$LiveRoom; BaselineSeconds=$BaselineSeconds; EntryAvatars=!$NoEntryAvatars.IsPresent; FixturePort=$FixturePort; FixtureCount=$FixtureCount; Pattern=$Pattern; StartupOnly=$StartupOnly.IsPresent; LifecycleProbe=$LifecycleProbe.IsPresent; AnimateEmotes=$AnimateEmotes.IsPresent } |
     ForEach-Object { $_.InteractionProbe = $InteractionProbe.IsPresent; $_.TradeProbe = $TradeProbe.IsPresent; $_.PlaybackProbe = $PlaybackProbe.IsPresent;
         $_.AppearanceSettingsPath = if ($AppearanceSettingsPath.Length -gt 0) { (Resolve-Path -LiteralPath $AppearanceSettingsPath).Path } else { '' };
-        $_.ReplaySource = if ($ReplaySource.Length -gt 0) { (Resolve-Path -LiteralPath $ReplaySource).Path } else { '' }; $_.ReplayWindowSeconds = $ReplayWindowSeconds;
+        $_.ReplaySource = if ($ReplaySource.Length -gt 0) { (Resolve-Path -LiteralPath $ReplaySource).Path } else { '' }; $_.ReplayWindowSeconds = $ReplayWindowSeconds; $_.ReplaySpeed = $ReplaySpeed;
         $_.ReplayImageSources = @($ReplayImageSources | ForEach-Object { (Resolve-Path -LiteralPath $_).Path });
         $_.KeepOverviewVisible = $KeepOverviewVisible.IsPresent; $_.StopObservationSeconds = $StopObservationSeconds; $_.UseCurrentAccount = $UseCurrentAccount.IsPresent; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
 $binary = Join-Path $binaryDirectory 'StressApp.exe'

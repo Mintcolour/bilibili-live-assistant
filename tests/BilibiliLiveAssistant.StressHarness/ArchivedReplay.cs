@@ -15,14 +15,17 @@ internal sealed class ArchivedReplay
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly string _database, _images, _session;
     private readonly long _from, _to;
+    private readonly double _speed;
     private TimeSpan _profileTimeShift;
     private long _cycles, _events, _missingImages, _loadedImages, _skippedOffline, _mediaReferences;
     private readonly long _fixtureBytes;
     private readonly int _fixtureFiles;
     private DashboardRankPage _rank = new([], false, null);
     internal int Room { get; }
-    internal ArchivedReplay(string sourceDirectory, string outputDirectory, int windowSeconds, string[]? imageSources)
+    internal ArchivedReplay(string sourceDirectory, string outputDirectory, int windowSeconds, string[]? imageSources, double speed)
     {
+        if (!double.IsFinite(speed) || speed is < 0.25 or > 20) throw new ArgumentOutOfRangeException(nameof(speed));
+        _speed = speed;
         var source = Path.GetFullPath(sourceDirectory);
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..")) + Path.DirectorySeparatorChar;
         if (!source.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(Path.Combine(source, "samples.jsonl")))
@@ -82,7 +85,7 @@ internal sealed class ArchivedReplay
     internal HttpMessageHandler ImageHandler() => new CachedImages(this);
     internal object Diagnostics() => new
     {
-        sourceDurationSeconds = (_to - _from) / 1000d, cycles = Interlocked.Read(ref _cycles),
+        sourceDurationSeconds = (_to - _from) / 1000d, speed = _speed, cycles = Interlocked.Read(ref _cycles),
         emitted = Interlocked.Read(ref _events), loadedImages = Interlocked.Read(ref _loadedImages),
         fixtureFiles = _fixtureFiles, fixtureBytes = _fixtureBytes,
         missingImages = Interlocked.Read(ref _missingImages), skippedOffline = Interlocked.Read(ref _skippedOffline),
@@ -130,7 +133,7 @@ internal sealed class ArchivedReplay
             while (rows.Read())
             {
                 token.ThrowIfCancellationRequested();
-                var targetMs = cycleStart + rows.GetInt64(2) - _from;
+                var targetMs = cycleStart + (rows.GetInt64(2) - _from) / _speed;
                 var remaining = Math.Min(targetMs, seconds * 1000d) - Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 if (remaining > 0) await Task.Delay(TimeSpan.FromMilliseconds(remaining), token).ConfigureAwait(false);
                 if (Stopwatch.GetElapsedTime(started).TotalSeconds >= seconds) return;

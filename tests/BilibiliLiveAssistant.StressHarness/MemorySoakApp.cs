@@ -63,7 +63,7 @@ public partial class App : Application
             _log = new StreamWriter(Path.Combine(_config.Output, "samples.jsonl"), false) { AutoFlush = true };
             var live = _config.LiveRoom > 0;
             if (_config.ReplaySource.Length > 0)
-                Replay = await Task.Run(() => new ArchivedReplay(_config.ReplaySource, _config.Output, _config.ReplayWindowSeconds, _config.ReplayImageSources));
+                Replay = await Task.Run(() => new ArchivedReplay(_config.ReplaySource, _config.Output, _config.ReplayWindowSeconds, _config.ReplayImageSources, _config.ReplaySpeed));
             var settings = new AppSettings { RoomId = live ? _config.LiveRoom : Replay?.Room ?? 900000001, AnonymousReading = !_config.UseCurrentAccount,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
                 Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, AnimateEmotes = _config.AnimateEmotes, ShowAvatars = _config.Images is not ("none" or "emotes") } };
@@ -517,7 +517,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false, bool KeepOverviewVisible = false, int StopObservationSeconds = 0, string ReplaySource = "", int ReplayWindowSeconds = 600, string[]? ReplayImageSources = null);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false, bool KeepOverviewVisible = false, int StopObservationSeconds = 0, string ReplaySource = "", int ReplayWindowSeconds = 600, string[]? ReplayImageSources = null, double ReplaySpeed = 1);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
