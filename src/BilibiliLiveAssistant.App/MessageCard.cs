@@ -27,6 +27,10 @@ internal sealed class MessageCard : Grid, IDisposable
     private Border? _reusableBorder;
     private ReusableMessageText? _reusableText;
     private ReusableMessageBody? _reusableBody;
+    private StackPanel? _reusableCompactBody;
+    private RichTextBlock? _reusableCompactHeader;
+    private BiliImageView? _reusableFullEmote;
+    private Viewbox? _reusableFullEmoteHost;
     private bool _entryReuse, _scReuse;
     private MessageActions? _actions;
     private TextBlock? _legacyStatus;
@@ -332,7 +336,14 @@ internal sealed class MessageCard : Grid, IDisposable
         }
         text.Blocks.Add(paragraph);
         FrameworkElement messageContent = text;
-        if (fullEmote && !sc)
+        if (_reusableText is not null && !sc)
+        {
+            _reusableCompactHeader = text;
+            _reusableCompactBody = new StackPanel { Spacing = 4, Children = { text } };
+            UpdateFullEmote(message, style, vm, animations);
+            messageContent = _reusableCompactBody;
+        }
+        else if (fullEmote && !sc)
             messageContent = new StackPanel { Spacing = 4, Children = { text, BuildBody(message.Content, message.Appearance, style, vm, animations, visible) } };
         Grid.SetColumn(messageContent, 1); layout.Children.Add(messageContent);
         if (important)
@@ -362,7 +373,8 @@ internal sealed class MessageCard : Grid, IDisposable
     internal static bool IsReusable(DashboardRecord record, DashboardSettings style, bool important) =>
         IsReusableEntry(record.Event) || (style.CompactMessages
         && record.Event.Type is (LiveEventType.Danmaku or LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat)
-        && record.Event.MediaReferences.Count == 0 && record.Event.Appearance?.FullEmote is null);
+        && record.Event.MediaReferences.Count == 0
+        && (record.Event.Type != LiveEventType.SuperChat || record.Event.Appearance?.FullEmote is null));
     internal bool RetireForReuse()
     {
         if (_disposed || _reusableParagraph is null || _images.Count > 8) return false;
@@ -386,9 +398,46 @@ internal sealed class MessageCard : Grid, IDisposable
         UpdateAutomationText(message);
         foreach (var image in _images) if (image.IsAvatar) image.Rebind(message.Appearance?.AvatarUrl ?? "", message.Username, AvatarUid(message));
         _reusableText!.Update(message);
+        if (_reusableCompactBody is not null) UpdateFullEmote(message, style, vm, animations);
         if (_scReuse) { _reusableBody!.Update(SuperChatBody(message), message.Appearance); ApplySuperChatStyle(_reusableBorder!, message, style); }
         DashboardUi.Describe(_reusableBorder!, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}");
         return true;
+    }
+
+    private void UpdateFullEmote(LiveEvent message, DashboardSettings style, LiveAssistantViewModel vm, MessageAnimationClock animations)
+    {
+        var emote = message.Appearance?.FullEmote;
+        _reusableCompactHeader!.VerticalAlignment = emote is null ? VerticalAlignment.Center : VerticalAlignment.Top;
+        if (emote is null)
+        {
+            if (_reusableFullEmote is not null)
+            {
+                _reusableFullEmote.Deactivate();
+                _reusableFullEmote.Rebind("", "", 0);
+                _reusableFullEmote.Visibility = Visibility.Collapsed;
+                _reusableFullEmoteHost!.Visibility = Visibility.Collapsed;
+            }
+            return;
+        }
+        if (_reusableFullEmote is null)
+        {
+            _reusableFullEmote = CreateEmote(emote, message.Content, true, style, vm, animations, _ownedVisible);
+            _reusableFullEmoteHost = new Viewbox
+            {
+                Child = _reusableFullEmote, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 240, MaxHeight = style.LargeEmoteHeight,
+                Opacity = style.TextOpacity,
+            };
+            _reusableCompactBody!.Children.Add(_reusableFullEmoteHost);
+        }
+        // Keep the document/name/badge tree while replacing only the image binding.
+        // A text -> large-emote -> text transition must not retain the old image.
+        var height = (double)style.LargeEmoteHeight;
+        var width = height * Math.Max(1d, emote.Width) / Math.Max(1, emote.Height);
+        if (width > 240) { height *= 240 / width; width = 240; }
+        _reusableFullEmote.Width = width; _reusableFullEmote.Height = height;
+        _reusableFullEmote.Rebind(emote.Url, string.IsNullOrEmpty(message.Content) ? "[表情]" : message.Content, 0);
+        _reusableFullEmote.Visibility = _reusableFullEmoteHost!.Visibility = Visibility.Visible;
     }
 
     internal bool UpdateReadState(DashboardRecord record)
@@ -531,6 +580,7 @@ internal sealed class MessageCard : Grid, IDisposable
         ReleaseContentTree(this);
         _visible = static () => false;
         _reusableParagraph?.Inlines.Clear(); _reusableParagraph = null; _reusableBorder = null; _reusableText = null; _reusableBody = null;
+        _reusableCompactBody = null; _reusableCompactHeader = null; _reusableFullEmote = null; _reusableFullEmoteHost = null;
         foreach (var image in _images) image.Dispose(); _images.Clear();
         _media?.Dispose(); _media = null;
         _actions?.Dispose(); _actions = null;

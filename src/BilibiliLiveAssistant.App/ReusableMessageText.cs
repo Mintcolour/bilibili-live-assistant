@@ -49,6 +49,7 @@ internal sealed class ReusableMessageText
             return;
         }
         if (_price is not null) _price.Set("SC " + MessageCard.SuperChatPrice(message), SuperChatVisual.For(message).Badge);
+        else if (appearance?.FullEmote is not null) _body!.ClearText();
         else _body!.Update(message.Content, appearance);
     }
     internal void ClearText()
