@@ -25,14 +25,9 @@ internal sealed class DashboardPage : Page
     private readonly MessageAnimationClock _animations;
     private readonly TextBlock _room = new() { FontSize = 14, FontWeight = new(600), VerticalAlignment = VerticalAlignment.Center };
     private readonly Microsoft.UI.Xaml.Shapes.Ellipse _connection = new() { Width = 7, Height = 7, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock _duration = new() { FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock _audience = new() { FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _rank = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("#D6B35A") };
     private readonly TextBlock _details = new() { TextWrapping = TextWrapping.Wrap, FontSize = 13, MaxWidth = 420 };
     private readonly StackPanel _roomInfo = new() { Orientation = Orientation.Horizontal, Spacing = 7 };
-    private readonly StackPanel _durationInfo = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
-    private readonly StackPanel _audienceInfo = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
-    private readonly Grid _ranking = new() { ColumnSpacing = 7, Margin = new Thickness(14, 0, 14, 0) };
     private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = new SolidColorBrush(Colors.IndianRed) };
     private readonly TextBlock _overlayOmissions = new() { FontSize = 12, Foreground = Brush("#D6B35A"), Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
     private readonly Grid _columns = new() { ColumnSpacing = 4 };
@@ -64,9 +59,6 @@ internal sealed class DashboardPage : Page
     private bool _unloaded;
     private bool _settingsDirty;
     private DashboardSettings _style;
-    private string _lastSummary = string.Empty;
-    private string _lastOnline = string.Empty;
-    private string _lastRank = string.Empty;
     private string _lastRoomInfo = string.Empty;
 
     public DashboardPage(LiveAssistantViewModel vm, bool overlayVisible, Func<bool, bool> setOverlayVisible, Func<bool> isWindowVisible)
@@ -119,13 +111,9 @@ internal sealed class DashboardPage : Page
         DashboardUi.Describe(_anonymous, "开启监视前选择读取方式；匿名读取不发送登录 Cookie");
         _roomInfo.Children.Add(_headingTitle); _roomInfo.Children.Add(_connection); _roomInfo.Children.Add(_historyAnchor); _roomInfo.Children.Add(_monitor);
         _monitor.Click += async (_, _) => await ToggleMonitorAsync();
-        _durationInfo.Children.Add(DashboardUi.Icon("\uE823")); _durationInfo.Children.Add(_duration);
-        _audienceInfo.Children.Add(DashboardUi.Icon("\uE890")); _audienceInfo.Children.Add(_audience);
         top.Children.Add(_roomInfo);
-        _ranking.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
 
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        toolbar.Children.Add(_durationInfo); toolbar.Children.Add(_audienceInfo);
         var overlay = DashboardUi.Toggle("\uE740", "桌面悬浮区");
         overlay.IsChecked = overlayVisible;
         overlay.Checked += (_, _) => { if (!setOverlayVisible(true)) overlay.IsChecked = false; };
@@ -184,8 +172,8 @@ internal sealed class DashboardPage : Page
         samples.Items.Add(single); samples.Items.Add(allSamples); samples.Items.Add(_stressItem);
         flyout.Items.Add(samples); more.Flyout = flyout; toolbar.Children.Add(more);
         Grid.SetColumn(toolbar, 2); top.Children.Add(toolbar);
-        var navigation = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        _anchor.MinWidth = 150; _anchor.MaxWidth = 360;
+        var navigation = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        _anchor.MinWidth = 220; _anchor.MaxWidth = 390;
         navigation.Children.Add(_anchor);
         _rankExpanded.Content = "榜单 ▾"; _rankExpanded.IsChecked = false;
         var rankHost = new Grid { Width = 560, Height = 440 }; rankHost.Children.Add(_rankPanel); _rankFlyout.Content = rankHost;
@@ -197,8 +185,10 @@ internal sealed class DashboardPage : Page
         var changesFlyout = new Flyout { Content = _changes, Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
         changesFlyout.Opened += async (_, _) => await _changes.OpenAsync(); changesFlyout.Closed += (_, _) => _changes.Suspend();
         changesButton.Flyout = changesFlyout; navigation.Children.Add(changesButton); navigation.Children.Add(_anonymous);
-        _ranking.Children.Clear(); _ranking.Children.Add(navigation);
-        heading.Children.Add(top); heading.Children.Add(_ranking); heading.Children.Add(_error); heading.Children.Add(_overlayOmissions); root.Children.Add(heading);
+        Grid.SetColumn(navigation, 1); navigation.Margin = new(10, 0, 10, 0); top.Children.Add(navigation);
+        var headerScroll = new ScrollViewer { Content = top, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled };
+        heading.Children.Add(headerScroll); heading.Children.Add(_error); heading.Children.Add(_overlayOmissions); root.Children.Add(heading);
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.DanmakuColumnWidth, GridUnitType.Star), MinWidth = 150 });
         _columns.ColumnDefinitions.Add(new() { Width = new(6) });
         _columns.ColumnDefinitions.Add(new() { Width = new(_style.SuperChatColumnWidth, GridUnitType.Star), MinWidth = 150 });
@@ -220,11 +210,14 @@ internal sealed class DashboardPage : Page
         Content = root;
         SizeChanged += (_, e) =>
         {
-            _ranking.Visibility = Visibility.Visible;
-            _durationInfo.Visibility = e.NewSize.Width < 1300 ? Visibility.Collapsed : Visibility.Visible;
-            _audienceInfo.Visibility = e.NewSize.Width < 1200 ? Visibility.Collapsed : Visibility.Visible;
-            _headingTitle.Visibility = e.NewSize.Width < 800 ? Visibility.Collapsed : Visibility.Visible;
-            _historyAnchor.Width = e.NewSize.Width < 900 ? 220 : 270;
+            var compactHeader = e.NewSize.Width < 1250;
+            top.Width = Math.Max(900, e.NewSize.Width - 20);
+            _headingTitle.Visibility = e.NewSize.Width < 1500 ? Visibility.Collapsed : Visibility.Visible;
+            _historyAnchor.Width = compactHeader ? 150 : e.NewSize.Width < 1500 ? 180 : 240;
+            _anchor.MinWidth = compactHeader ? 160 : 220; _anchor.MaxWidth = compactHeader ? 270 : 390;
+            _interact.Content = compactHeader ? DashboardUi.Icon("\uE7C9") : "编辑浮窗"; _interact.MinWidth = compactHeader ? 34 : 82;
+            overlay.Content = compactHeader ? DashboardUi.Icon("\uE740") : "显示浮窗"; overlay.MinWidth = compactHeader ? 34 : 82;
+            _overlayMode.MinWidth = compactHeader ? 76 : 110;
         };
         vm.PropertyChanged += OnPropertyChanged; vm.Dashboard.Changed += Dirty; vm.CardBoard.Changed += Dirty;
         vm.HotPhrasesChanged += Dirty;
@@ -322,21 +315,6 @@ internal sealed class DashboardPage : Page
             _lastRoomInfo = roomInfo;
             _connection.Fill = Brush(_vm.IsConnected ? "#76CFA6" : _vm.IsListening ? "#D6B35A" : "#758198");
             DashboardUi.Describe(_roomInfo, roomInfo);
-        }
-        if (_lastSummary != _vm.RoomSummary)
-        {
-            _lastSummary = _vm.RoomSummary;
-            var parts = _lastSummary.Split(" · ", 3, StringSplitOptions.TrimEntries);
-            _duration.Text = parts.Length > 1 && parts[1].StartsWith("已直播 ", StringComparison.Ordinal) ? parts[1][4..] : "—";
-            _duration.Foreground = Brush(parts[0] is "直播中" or "轮播中" ? "#76CFA6" : "#9BA5BD");
-            DashboardUi.Describe(_durationInfo, _lastSummary);
-        }
-        var audience = (_vm.LatestRank?.Extra.GetValueOrDefault("rank_total") as long?)?.ToString("N0") ?? "—";
-        var audienceDetails = $"房间人数（高能榜人数）：{audience}\n看过：{_vm.LatestOnline?.Extra.GetValueOrDefault("watched") as string ?? "—"}";
-        if (_lastOnline != audienceDetails)
-        {
-            _lastOnline = audienceDetails; _audience.Text = audience;
-            DashboardUi.Describe(_audienceInfo, audienceDetails);
         }
     }
     private static string ShortRankName(string name)

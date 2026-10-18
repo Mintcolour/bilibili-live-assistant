@@ -16,6 +16,9 @@ internal sealed class AnchorSummary : Button, IDisposable
     private BiliImageView? _avatar;
     private string _avatarKey = "";
     private readonly TextBlock _summary = new() { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _duration = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _audience = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _status = new() { FontSize = 12, Opacity = 0.75, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _title = new() { FontSize = 14, FontWeight = new(600), TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _subtitle = new() { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private readonly Grid _stats = new() { ColumnSpacing = 12 };
@@ -30,9 +33,11 @@ internal sealed class AnchorSummary : Button, IDisposable
     {
         _vm = vm; _animations = animations; _visible = visible;
         Padding = new(6, 3, 6, 3); Background = MessageCard.Brush("#242833", 0.4); BorderThickness = new(0); HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        var content = new Grid { ColumnSpacing = 7 }; content.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); content.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        content.Children.Add(_avatarHost); Grid.SetColumn(_summary, 1); content.Children.Add(_summary); Content = content;
-        _flyout = new Flyout { Content = new StackPanel { Width = 360, Spacing = 10, Children = { _title, _subtitle, _stats,
+        var content = new Grid { ColumnSpacing = 7 }; content.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); content.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); content.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        content.Children.Add(_avatarHost); Grid.SetColumn(_summary, 1); content.Children.Add(_summary);
+        var live = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, Children = { DashboardUi.Icon("\uE823"), _duration, DashboardUi.Icon("\uE890"), _audience } };
+        Grid.SetColumn(live, 2); content.Children.Add(live); Content = content;
+        _flyout = new Flyout { Content = new StackPanel { Width = 360, Spacing = 10, Children = { _title, _subtitle, _status, _stats,
             new TextBlock { Text = "本次监视 · 房间人数（高能榜人数）", FontSize = 12, Opacity = 0.6 }, _chart, _range } } };
         _flyout.Opening += (_, _) => { _open = true; RefreshDetails(); }; _flyout.Closed += (_, _) => { _open = false; _chart.Children.Clear(); };
         Flyout = _flyout; DashboardUi.Describe(this, "主播统计 · 点击展开"); Loaded += (_, _) => _avatar?.Activate(XamlRoot?.RasterizationScale ?? 1);
@@ -50,6 +55,11 @@ internal sealed class AnchorSummary : Button, IDisposable
         }
         if (_visible()) _avatar.Activate(XamlRoot?.RasterizationScale ?? 1);
         _summary.Text = p is null ? "信息 ▾" : $"信息 · ⚓ {Number(p.Guards)}   {(!string.IsNullOrEmpty(p.MedalName) ? p.MedalName : "粉丝团")} {Number(p.FansClub)}   ★ {Number(p.EnergyMembers)}";
+        var parts = _vm.RoomSummary.Split(" · ", 3, StringSplitOptions.TrimEntries);
+        _duration.Text = parts.Length > 1 && parts[1].StartsWith("已直播 ", StringComparison.Ordinal) ? parts[1][4..] : "—";
+        _audience.Text = Number(_vm.LatestRank?.Extra.GetValueOrDefault("rank_total") as long?);
+        _status.Text = $"直播时长 {_duration.Text}  ·  房间人数（高能榜人数）{_audience.Text}";
+        DashboardUi.Describe(this, $"{p?.Name ?? "主播信息"} · 点击展开\n{_vm.RoomSummary}\n{_status.Text}\n大航海 {Number(p?.Guards)} · 粉丝团 {Number(p?.FansClub)} · 高能 {Number(p?.EnergyMembers)}");
         var latestSample = _vm.AudienceHistory.LastOrDefault()?.Time ?? default;
         if (_open && _visible() && (_detailProfile != p || _detailOnline != _vm.OnlineText || _detailSample != latestSample)) RefreshDetails();
     }
