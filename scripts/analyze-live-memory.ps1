@@ -59,6 +59,17 @@ function Summarize-Window([object[]]$Rows) {
         cpuP95 = $cpu[[math]::Ceiling($cpu.Count * .95) - 1]
     }
 }
+function Get-VisibilityKey($Row) {
+    # Treat unknown visibility separately rather than assuming a hidden window.
+    $window = $Row.ui.window
+    if ($null -eq $window.mainVisible -or $null -eq $window.overlay.compact.visible) { return 'unknown' }
+    $overview = $window.mainVisible -eq $true -and $window.page -eq 'dashboard'
+    $compact = $window.overlay.compact.visible -eq $true
+    if ($overview -and $compact) { return 'overview-and-compact' }
+    if ($overview) { return 'overview-only' }
+    if ($compact) { return 'compact-only' }
+    return 'neither'
+}
 $results = foreach ($directory in $Path) {
     $root = (Resolve-Path -LiteralPath $directory).Path
     $records = @(Get-Content -LiteralPath (Join-Path $root 'samples.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
@@ -95,6 +106,32 @@ $results = foreach ($directory in $Path) {
         $window = @($traffic | Where-Object { $_.seconds -ge $minute * 60 -and $_.seconds -lt ($minute + 5) * 60 })
         if ($window.Count -gt 1) { Summarize-Window $window }
     })
+    # Keep contiguous visibility intervals: joining disjoint visible samples can
+    # hide growth during a long hidden period or manufacture a misleading slope.
+    $visibilityWindows = @()
+    $segmentStart = 0
+    for ($i = 1; $i -le $traffic.Count; $i++) {
+        if ($i -lt $traffic.Count -and
+            (Get-VisibilityKey $traffic[$i]) -eq (Get-VisibilityKey $traffic[$segmentStart]) -and
+            $traffic[$i].seconds - $traffic[$i - 1].seconds -le 30) { continue }
+        $segment = @($traffic[$segmentStart..($i - 1)])
+        $visibilityWindows += [ordered]@{
+            state = Get-VisibilityKey $traffic[$segmentStart]
+            fromSeconds = $segment[0].seconds; toSeconds = $segment[-1].seconds
+            samples = $segment.Count
+            summary = Summarize-Window $segment
+        }
+        $segmentStart = $i
+    }
+    $tailWindows = @(foreach ($minutes in @(15,20,30)) {
+        $tail = @($postWarmup | Where-Object { $_.seconds -ge $last.seconds - $minutes * 60 })
+        [ordered]@{
+            requestedMinutes = $minutes
+            fullDurationAvailable = $tail.Count -ge 2 -and $tail[-1].seconds - $tail[0].seconds -ge $minutes * 60 - 10
+            visibilityStates = @($tail | ForEach-Object { Get-VisibilityKey $_ } | Sort-Object -Unique)
+            summary = Summarize-Window $tail
+        }
+    })
     [ordered]@{
         name = $header.config.Name; room = $header.config.LiveRoom; processId = $header.pid
         anonymous = if ($null -ne $header.anonymousReading) { $header.anonymousReading } else { $header.config.UseCurrentAccount -ne $true }
@@ -118,6 +155,8 @@ $results = foreach ($directory in $Path) {
         totalReceived = $last.ui.received; overviewCardsCreated = $last.ui.window.dashboard.danmaku.createdCards
         overviewCardsRebound = $last.ui.window.dashboard.danmaku.reboundCards
         windows = $windows
+        visibilityWindows = $visibilityWindows
+        tailWindows = $tailWindows
         note = '当前目标为预热后收敛，limitMiB 与 observedMemoryPass 仅保留旧阈值口径，不自动判定稳定或泄漏。结合分段斜率、谷值、提交量及流量评估。约五秒采样，非瞬时峰值保证；真实流量不等于固定负载，多进程会相互影响。隔离运行不替代正式应用及完整功能验收。'
     }
 }
