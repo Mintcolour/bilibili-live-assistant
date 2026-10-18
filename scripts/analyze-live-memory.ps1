@@ -132,6 +132,25 @@ $results = foreach ($directory in $Path) {
             summary = Summarize-Window $tail
         }
     })
+    $stopWindows = @(foreach ($phase in @('stopped_retained','stopped_hidden')) {
+        $stopRows = @($samples | Where-Object phase -eq $phase)
+        if ($stopRows.Count -eq 0) { continue }
+        $end = $stopRows[-1]
+        [ordered]@{
+            phase = $phase; summary = Summarize-Window $stopRows
+            visibilityStates = @($stopRows | ForEach-Object { Get-VisibilityKey $_ } | Sort-Object -Unique)
+            monitoringEnd = $end.ui.monitoring; receivedEnd = $end.ui.received
+            activeImageViewsEnd = $end.ui.imageResources.activeViews
+            nativeSourcesEnd = $end.ui.imageResources.nativeSources
+            nativeSourceEstimateEndMiB = [math]::Round($end.ui.imageResources.nativePixelBytesEstimate / 1MB, 3)
+            uiImageLeasesEnd = $end.ui.uiImages.leases
+            pendingUploadsEnd = $end.ui.imageResources.pendingUploads
+            activeUploadsEnd = $end.ui.imageResources.activeUploads
+            pendingImageRequestsEnd = $end.ui.images.inflight
+            pendingDisplayEventsEnd = $end.ui.pending
+            archivePendingEnd = $end.ui.history.pending
+        }
+    })
     [ordered]@{
         name = $header.config.Name; room = $header.config.LiveRoom; processId = $header.pid
         anonymous = if ($null -ne $header.anonymousReading) { $header.anonymousReading } else { $header.config.UseCurrentAccount -ne $true }
@@ -154,9 +173,12 @@ $results = foreach ($directory in $Path) {
         archiveDropped = $last.ui.history.dropped; archiveFaulted = $last.ui.history.faulted
         totalReceived = $last.ui.received; overviewCardsCreated = $last.ui.window.dashboard.danmaku.createdCards
         overviewCardsRebound = $last.ui.window.dashboard.danmaku.reboundCards
+        visibilityRestores = $last.visibilityRestores
+        asyncOperationOwnership = $last.ui.imageResources.experimentalAsyncOwnership
         windows = $windows
         visibilityWindows = $visibilityWindows
         tailWindows = $tailWindows
+        stopWindows = $stopWindows
         note = '当前目标为预热后收敛，limitMiB 与 observedMemoryPass 仅保留旧阈值口径，不自动判定稳定或泄漏。结合分段斜率、谷值、提交量及流量评估。约五秒采样，非瞬时峰值保证；真实流量不等于固定负载，多进程会相互影响。隔离运行不替代正式应用及完整功能验收。'
     }
 }
