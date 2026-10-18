@@ -18,6 +18,11 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private readonly TextBlock _hint = new() { FontSize = 12, Opacity = 0.6, TextWrapping = TextWrapping.Wrap };
     private readonly MessageAnimationClock _clock;
     private readonly DispatcherQueueTimer _renderTimer;
+    private readonly DispatcherQueueTimer _feed;
+    private readonly List<(UiPixelSource Source, int Width, int Height)> _frames = new();
+    private LiveEvent[] _messages = [];
+    private int _sequence;
+    private OverlayPriceDurations _prices = new();
     private readonly List<MessageCard> _cardViews = new();
     private readonly List<Visual> _visuals = new();
     private readonly List<UiPixelSource> _pixelSources = new();
@@ -32,29 +37,41 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private int _tracks = 8;
     private bool _enabled = true;
     private bool _sampleInitialized;
-    private readonly ComboBox _sample = new() { ItemsSource = new[] { "图文消息", "整条图片表情" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly ComboBox _sample = new() { Header = "演示内容", ItemsSource = new[] { "混合消息", "图文消息", "整条图片表情" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Left };
     public DisplayPreview(LiveAssistantViewModel vm, Func<bool> visible)
     {
         _vm = vm; _visible = visible; _clock = new(() => _active && _visible());
         _renderTimer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _renderTimer.Interval = TimeSpan.FromMilliseconds(100); _renderTimer.IsRepeating = false;
         _renderTimer.Tick += async (_, _) =>
         { try { await RenderAsync(); } catch (OperationCanceledException) { } catch (Exception ex) when (ex is not OutOfMemoryException) { if (!_disposed) _hint.Text = $"预览暂不可用：{ex.Message}"; } };
+        _feed = DispatcherQueue.GetForCurrentThread().CreateTimer(); _feed.IsRepeating = false;
+        _feed.Tick += (_, _) =>
+        {
+            if (_disposed || !_active || !_visible() || _messages.Length == 0) return;
+            try
+            {
+                if (_kind is null) AppendOverview();
+                else { _sequence++; PresentFrames(); }
+                StartFeed();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { RuntimeErrorLog.Record("display-preview-feed", ex); _hint.Text = "动态示例暂不可用，请切换分类重试。"; }
+        };
         RowDefinitions.Add(new() { Height = GridLength.Auto }); RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); RowDefinitions.Add(new() { Height = GridLength.Auto });
         Children.Add(_sample); Grid.SetRow(_canvas, 1); Grid.SetRow(_cards, 1); Children.Add(_canvas); Children.Add(_cards); Grid.SetRow(_hint, 2); Children.Add(_hint);
         _sample.SelectionChanged += (_, _) => Schedule();
-        _canvas.SizeChanged += (_, _) => Schedule();
+        _canvas.SizeChanged += (_, e) => { if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) > 1) Schedule(); };
     }
-    public void Update(OverlayRegionKind? kind, OverlayRegionSettings region, DashboardSettings style, int frameRate, bool enabled, int tracks)
+    public void Update(OverlayRegionKind? kind, OverlayRegionSettings region, DashboardSettings style, int frameRate, bool enabled, int tracks, OverlayPriceDurations prices)
     {
         if (!_sampleInitialized || _kind != kind)
         {
             _sampleInitialized = true;
             var tiers = new[] { "SC · ¥30", "SC · ¥50", "SC · ¥100", "SC · ¥500", "SC · ¥1000", "SC · ¥2000" };
-            _sample.ItemsSource = kind == OverlayRegionKind.SuperChat ? tiers : kind is null
-                ? new[] { "图文消息", "整条图片表情" }.Concat(tiers).ToArray() : new[] { "图文消息", "整条图片表情" };
+            _sample.ItemsSource = kind == OverlayRegionKind.SuperChat ? new[] { "混合金额档位" }.Concat(tiers).ToArray() : kind is null
+                ? new[] { "混合消息", "图文消息", "整条图片表情" }.Concat(tiers).ToArray() : new[] { "混合消息", "图文消息", "整条图片表情" };
             _sample.SelectedIndex = 0;
         }
-        _kind = kind; _region = region; _style = style; _frameRate = frameRate; _enabled = enabled; _tracks = tracks; Schedule();
+        _kind = kind; _region = region; _style = style; _frameRate = frameRate; _enabled = enabled; _tracks = tracks; _prices = prices; Schedule();
     }
     public void SetActive(bool active)
     {
@@ -65,6 +82,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
     private void Schedule() { if (!_disposed && _active && _visible()) { _renderTimer.Stop(); _renderTimer.Start(); } }
     private void Clear()
     {
+        _feed.Stop(); _messages = []; _frames.Clear(); _sequence = 0;
         _generation++; _downloads?.Cancel(); _downloads?.Dispose(); _downloads = null;
         _renderCancellation?.Cancel(); _renderCancellation?.Dispose(); _renderCancellation = null;
         foreach (var visual in _visuals) { visual.StopAnimation("Translation.X"); visual.StopAnimation("Opacity"); } _visuals.Clear();
@@ -80,22 +98,19 @@ internal sealed class DisplayPreview : Grid, IDisposable
         var cancellation = (_renderCancellation = new()).Token;
         var messages = PreviewSamples.For(_kind);
         _sample.Visibility = _kind is null or OverlayRegionKind.Danmaku or OverlayRegionKind.SuperChat ? Visibility.Visible : Visibility.Collapsed;
-        if (_sample.Visibility == Visibility.Visible) messages = new[] { messages[Math.Clamp(_sample.SelectedIndex, 0, messages.Length - 1)] };
+        if (_sample.Visibility == Visibility.Visible && _sample.SelectedIndex > 0) messages = new[] { messages[Math.Clamp(_sample.SelectedIndex - 1, 0, messages.Length - 1)] };
+        _messages = messages;
         if (!_enabled)
         { _canvas.Visibility = Visibility.Visible; _cards.Visibility = Visibility.Collapsed; _hint.Text = "这一类悬浮内容已关闭 · 打开显示开关后预览"; return; }
         if (_kind is null)
         {
             _canvas.Visibility = Visibility.Collapsed; _cards.Visibility = Visibility.Visible;
-            foreach (var message in messages)
-            {
-                var card = new MessageCard(new(message), _vm, _clock, () => _active && _visible(), false, _style);
-                _cardViews.Add(card); _cards.Children.Add(card); card.Activate(XamlRoot?.RasterizationScale ?? 1);
-            }
-            _hint.Text = "概览消息 · 预览使用实际图文组件"; return;
+            for (var i = 0; i < 3; i++) AppendOverview();
+            _hint.Text = "概览消息持续到达 · 图文、表情与 SC 混合演示 · 使用实际消息组件"; StartFeed(); return;
         }
         _canvas.Visibility = Visibility.Visible; _cards.Visibility = Visibility.Collapsed;
         var kind = _kind.Value;
-        var stationary = _region.Mode != OverlayDisplayMode.Scrolling;
+        var stationary = _region.Mode != OverlayDisplayMode.Scrolling || kind == OverlayRegionKind.Interaction;
         var renderStyle = stationary ? _style with { BackgroundColor = _region.BackgroundColor, BackgroundOpacity = _region.BackgroundOpacity, TextColor = _region.Color, TextOpacity = 1 } : _style;
         if (kind == OverlayRegionKind.Status)
         {
@@ -106,8 +121,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             if (stationary) messages = new[] { new LiveEvent(LiveEventType.Rank, "", "", _region.Color, Metadata: new Dictionary<string, object?> { ["room_bulletin"] = new LiveRoomBulletin(metrics, [], false) }) }
                 .Concat(members.Select(m => OverlayBulletinRenderer.MemberEvent(m, _region.Color))).ToArray();
         }
-        if (kind == OverlayRegionKind.Interaction) messages = messages.Take(Math.Min(3, _region.MaxVisible)).ToArray();
-        if (stationary && kind != OverlayRegionKind.Status) messages = Enumerable.Range(0, _region.Mode == OverlayDisplayMode.Grid ? 4 : Math.Min(3, _region.MaxVisible)).Select(i => messages[i % messages.Length]).ToArray();
+        _messages = messages;
         var y = 12d; var slot = 0; var columns = _region.Mode == OverlayDisplayMode.Grid ? Math.Max(1, Math.Min(_region.CardColumns, (int)_canvas.ActualWidth / 200)) : 1;
         var cellWidth = Math.Max(140, ((int)_canvas.ActualWidth - 24 - (columns - 1) * 8) / columns);
         foreach (var message in messages)
@@ -117,7 +131,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
                 width: stationary ? cellWidth : kind == OverlayRegionKind.Interaction ? (int)_canvas.ActualWidth - 24 : 0,
                 maxHeight: stationary ? kind == OverlayRegionKind.Status ? OverlayBulletinRenderer.PanelRowHeight(region, _style) : Math.Max(region.CardHeight, region.FontSize * 3 + 24) : Math.Max(160, _region.LargeEmoteHeight + 16),
                 card: stationary && kind != OverlayRegionKind.Status, background: !stationary);
-            using var bitmap = new System.Drawing.Bitmap(rendered.Width, stationary && kind != OverlayRegionKind.Status ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : rendered.Height, PixelFormat.Format32bppPArgb);
+            using var bitmap = new System.Drawing.Bitmap(rendered.Width, stationary && kind != OverlayRegionKind.Status && _region.Mode != OverlayDisplayMode.List ? Math.Max(region.CardHeight, region.FontSize * 3 + 24) : rendered.Height, PixelFormat.Format32bppPArgb);
             using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
             {
                 if (stationary) OverlayMessageRenderer.DrawBackground(graphics, bitmap.Size, region, OverlayTextRenderer.Color(region.Color));
@@ -126,6 +140,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
             var source = await UiPixelSource.CreateAsync(BiliPixelFrame.FromDrawingBitmap(bitmap), bitmap.Width, false, 256, cancellation);
             if (_disposed || generation != _generation || !_active || !_visible()) { source.Dispose(); return; }
             _pixelSources.Add(source);
+            _frames.Add((source, bitmap.Width, bitmap.Height));
             var image = new Image { Source = source.Source, Width = bitmap.Width, Height = bitmap.Height, Stretch = Stretch.Fill, Opacity = _region.Opacity };
             if (stationary && columns > 1) y = 12 + slot / columns * (Math.Max(region.CardHeight, region.FontSize * 3 + 24) + 8);
             Canvas.SetTop(image, y); Canvas.SetLeft(image, stationary ? 12 + slot % columns * (cellWidth + 8) : 0); _canvas.Children.Add(image);
@@ -155,11 +170,53 @@ internal sealed class DisplayPreview : Grid, IDisposable
         _hint.Text = stationary ? $"{OverlayRegions.ModeTitle(_region.Mode)} · 高度 {_region.CardHeight} px" + (_region.Mode == OverlayDisplayMode.Cards ? $" · 每条 {_region.DurationSeconds:0} 秒 / 上舰 {_region.GuardDurationSeconds:0} 秒 · 最多 {_region.MaxVisible} 张" : " · 无持续动画")
             : kind == OverlayRegionKind.Interaction ? $"进房／点赞 {_region.DurationSeconds:0.#} 秒 · 关注 {_region.FollowDurationSeconds:0.#} 秒 · 最多 {_region.MaxVisible} 条，关注优先"
             : $"{_region.ScrollSpeed} px/s · {(_frameRate == 0 ? "跟随屏幕" : $"实际悬浮 {_frameRate} FPS")}{(kind == OverlayRegionKind.Danmaku ? $" · 最多 {_tracks} 轨道 / {_region.MaxVisible} 条" : "")} · 预览展示样式与速度";
+        if (stationary && kind != OverlayRegionKind.Status) { PresentFrames(); StartFeed(); }
         var download = new CancellationTokenSource(); _downloads = download;
         var urls = messages.SelectMany(message => OverlayMessageRenderer.ImageUrls(message, _style)
             .Select(url => (Url: url, Role: OverlayMessageRenderer.ImageRole(message, url)))).Distinct().Take(16)
             .Where(request => _vm.Images.TryGetStaticFrame(request.Url, role: request.Role) is null).ToArray();
         if (urls.Length > 0) _ = LoadAsync(urls, download.Token, generation);
+    }
+    private void AppendOverview()
+    {
+        if (_messages.Length == 0) return;
+        if (_cardViews.Count >= 4) { var old = _cardViews[0]; _cards.Children.Remove(old); _cardViews.RemoveAt(0); old.Dispose(); }
+        var card = new MessageCard(new(_messages[_sequence++ % _messages.Length]), _vm, _clock, () => _active && _visible(), false, _style);
+        _cardViews.Add(card); _cards.Children.Add(card); card.Activate(XamlRoot?.RasterizationScale ?? 1);
+    }
+    private void PresentFrames()
+    {
+        if (_frames.Count == 0) return;
+        var columns = _region.Mode == OverlayDisplayMode.Grid ? Math.Max(1, Math.Min(_region.CardColumns, (int)_canvas.ActualWidth / 200)) : 1;
+        var count = _region.Mode == OverlayDisplayMode.Grid ? columns * 2 : Math.Min(3, _region.MaxVisible);
+        count = Math.Clamp(count, 1, 8);
+        while (_canvas.Children.Count < count) _canvas.Children.Add(new Image { Stretch = Stretch.Fill, Opacity = _region.Opacity });
+        var y = 12d; var rowHeight = 0;
+        for (var i = 0; i < _canvas.Children.Count; i++)
+        {
+            var image = (Image)_canvas.Children[i];
+            image.Visibility = i < count ? Visibility.Visible : Visibility.Collapsed;
+            if (i >= count) { image.Source = null; continue; }
+            var frame = _frames[(i + _sequence) % _frames.Count];
+            image.Source = frame.Source.Source; image.Width = frame.Width; image.Height = frame.Height;
+            Canvas.SetLeft(image, 12 + i % columns * (frame.Width + 8)); Canvas.SetTop(image, y);
+            rowHeight = Math.Max(rowHeight, frame.Height);
+            if (i % columns == columns - 1 || i == count - 1) { y += rowHeight + 8; rowHeight = 0; }
+        }
+        _canvas.Height = Math.Max(280, y); _canvas.Clip = new RectangleGeometry { Rect = new(0, 0, _canvas.ActualWidth, _canvas.Height) };
+        _hint.Text = $"动态{OverlayRegions.ModeTitle(_region.Mode)} · 连续模拟消息到达／替换 · 当前示例停留 {FeedSeconds():0.#} 秒";
+    }
+    private double FeedSeconds()
+    {
+        if (_kind is null) return 1.8;
+        var message = _messages.Length == 0 ? null : _messages[_sequence % _messages.Length];
+        if (_kind == OverlayRegionKind.Interaction) return Math.Max(1, message is not null && LiveInteractions.IsFollow(message) ? _region.FollowDurationSeconds : _region.DurationSeconds);
+        return Math.Max(1.8, (_region.Mode == OverlayDisplayMode.Cards && message is not null ? _prices.Seconds(message) : 1.8) + _region.DisplayIntervalSeconds);
+    }
+    private void StartFeed()
+    {
+        if (!_active || !_visible() || _disposed) return;
+        _feed.Interval = TimeSpan.FromSeconds(FeedSeconds()); _feed.Start();
     }
     private async Task LoadAsync((string Url, BiliImageRole Role)[] urls, CancellationToken token, int generation)
     {
@@ -171,7 +228,7 @@ internal sealed class DisplayPreview : Grid, IDisposable
         }
         catch (OperationCanceledException) { }
     }
-    public void Dispose() { if (_disposed) return; _disposed = true; _renderTimer.Stop(); Clear(); _clock.Dispose(); }
+    public void Dispose() { if (_disposed) return; _disposed = true; _renderTimer.Stop(); _feed.Stop(); Clear(); _clock.Dispose(); }
 }
 
 internal static class PreviewSamples
@@ -184,6 +241,8 @@ internal static class PreviewSamples
     internal static LiveEvent[] For(OverlayRegionKind? kind)
     {
         if (kind == OverlayRegionKind.SuperChat) return SuperChats();
+        if (kind == OverlayRegionKind.Gift) return [new(LiveEventType.Gift, "礼物观众", "赠送 小心心 × 3", "#EC87BF", 1, Appearance: Appearance) { HistoryFields = new(AmountMilliYuan: 3000) },
+            new(LiveEventType.Guard, "上舰观众", "开通 舰长 × 1", "#72B8FF", 2, Appearance: Appearance)];
         var type = kind switch { OverlayRegionKind.Gift => LiveEventType.Gift, OverlayRegionKind.SuperChat => LiveEventType.SuperChat,
             OverlayRegionKind.Interaction => LiveEventType.Enter, _ => LiveEventType.Danmaku };
         if (kind == OverlayRegionKind.Interaction) return [new(type, "关注观众", "关注了主播", "#FF8AB3", 1, Appearance: Appearance) { HistoryFields = new(InteractionKind: 2) },

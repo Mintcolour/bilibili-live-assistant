@@ -58,6 +58,7 @@ internal sealed class DashboardPage : Page
     private bool _dirty = true;
     private bool _unloaded;
     private bool _settingsDirty;
+    private bool _compactHeader;
     private DashboardSettings _style;
     private string _lastRoomInfo = string.Empty;
 
@@ -211,6 +212,7 @@ internal sealed class DashboardPage : Page
         SizeChanged += (_, e) =>
         {
             var compactHeader = e.NewSize.Width < 1250;
+            _compactHeader = compactHeader;
             top.Width = Math.Max(900, e.NewSize.Width - 20);
             _headingTitle.Visibility = e.NewSize.Width < 1500 ? Visibility.Collapsed : Visibility.Visible;
             _historyAnchor.Width = compactHeader ? 150 : e.NewSize.Width < 1500 ? 180 : 240;
@@ -307,7 +309,7 @@ internal sealed class DashboardPage : Page
         _monitor.IsEnabled = !_connectionBusy; _anonymous.IsEnabled = _historyAnchor.IsEnabled = !_vm.IsMonitoring && !_connectionBusy;
         _anchor.Refresh(); ApplyRankLayout();
         _overlayMode.Content = _vm.Settings.Compact.DesktopEnabled ? "紧凑 ▾" : "滚动 ▾";
-        _interact.Content = _vm.OverlayInteractive ? "完成编辑" : "编辑浮窗";
+        if (!_compactHeader) _interact.Content = _vm.OverlayInteractive ? "完成编辑" : "编辑浮窗";
         _room.Text = _vm.RoomId > 0 ? _vm.RoomId.ToString() : "—";
         var roomInfo = $"{_vm.Status} · 房间 {_room.Text}\n{_vm.ConnectionModeText}\n{_vm.RoomSummary}";
         if (_lastRoomInfo != roomInfo)

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using BilibiliLiveAssistant.Core;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -12,6 +13,10 @@ internal sealed class DisplayPage : Page
     private readonly Dictionary<OverlayRegionKind, OverlayRegionSettings> _drafts = new();
     private readonly ListView _selector = new() { SelectionMode = ListViewSelectionMode.Single, Padding = new(0), IsItemClickEnabled = false };
     private readonly TextBlock _selectionTitle = new() { FontSize = 16, FontWeight = new(600) };
+    private readonly Grid _sections = new() { ColumnSpacing = 5, RowSpacing = 5 };
+    private readonly Dictionary<string, object> _sectionMemory = new();
+    private object _target = "dashboard";
+    private Action? _resetScroll;
     private static bool CompactFeature(string? feature) => feature is "compact" or "obs" or "prices";
     private readonly VisualRegionEditor _editor = new();
     private readonly DashboardSettingsEditor _dashboard;
@@ -75,16 +80,12 @@ internal sealed class DisplayPage : Page
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var header = new Grid { ColumnSpacing = 14 }; header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         header.Children.Add(new TextBlock { Text = "可视化设置", FontSize = 22, VerticalAlignment = VerticalAlignment.Center });
-        _selector.Items.Add(new ListViewItem { Content = "概览 · 消息外观", Tag = "dashboard" });
-        foreach (var kind in Enum.GetValues<OverlayRegionKind>()) _selector.Items.Add(new ListViewItem { Content = "浮窗 · " + OverlayRegions.Title(kind), Tag = kind });
-        _selector.Items.Add(new ListViewItem { Content = "媒体预览", Tag = "media" });
-        _selector.Items.Add(new ListViewItem { Content = "概览 · 固定卡片", Tag = "cards" });
-        _selector.Items.Add(new ListViewItem { Content = "高频气泡", Tag = "hot" });
-        _selector.Items.Add(new ListViewItem { Content = "存储 · 历史", Tag = "history" });
-        _selector.Items.Add(new ListViewItem { Content = "浮窗 · 紧凑面板", Tag = "compact" });
-        _selector.Items.Add(new ListViewItem { Content = "OBS · 网页源与 CSS", Tag = "obs" });
-        _selector.Items.Add(new ListViewItem { Content = "SC / 礼物 · 金额停留", Tag = "prices" });
-        var context = new StackPanel { Spacing = 4, Children = { _selectionTitle, new TextBlock { Text = "选择对象 → 调整预览 → 保存并应用", FontSize = 12, Opacity = 0.6 } } };
+        foreach (var (title, key, keywords) in new[] { ("概览", "dashboard", "消息 外观 卡片 列表 媒体 图文 表情"),
+            ("独立浮窗", "overlays", "滚动 普通弹幕 礼物 上舰 SC 醒目留言 进房 互动 人数 高能榜 高频气泡 金额 停留"),
+            ("紧凑面板", "compact", "紧凑 列表 动画 礼物 SC 金额 停留"), ("OBS 网页源", "obs", "OBS CSS 连接 样式 模板"), ("历史存储", "history", "存储 历史 目录 容量") })
+            _selector.Items.Add(new ListViewItem { Content = title, Tag = key, DataContext = keywords });
+        var context = new StackPanel { Spacing = 6, Children = { _selectionTitle, new TextBlock { Text = "示例持续演示实际模式 · 修改即时预览 · 保存后应用", FontSize = 12, Opacity = 0.6 },
+            _sections } };
         Grid.SetColumn(context, 1); header.Children.Add(context); root.Children.Add(header);
         _columns.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 280 }); _columns.ColumnDefinitions.Add(new() { Width = new(330), MinWidth = 270 });
         var previewContent = new StackPanel { Spacing = 12, Children = { new TextBlock { Text = "实时预览", FontSize = 16 }, _preview,
@@ -100,7 +101,7 @@ internal sealed class DisplayPage : Page
         var workspace = new Grid { ColumnSpacing = 16 };
         workspace.ColumnDefinitions.Add(new() { Width = new(190) }); workspace.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         var search = new TextBox { PlaceholderText = "查找设置对象", Margin = new(0, 0, 0, 8) };
-        search.TextChanged += (_, _) => { foreach (var item in _selector.Items.OfType<ListViewItem>()) item.Visibility = string.IsNullOrWhiteSpace(search.Text) || item.Content.ToString()!.Contains(search.Text.Trim(), StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed; };
+        search.TextChanged += (_, _) => { foreach (var item in _selector.Items.OfType<ListViewItem>()) item.Visibility = string.IsNullOrWhiteSpace(search.Text) || $"{item.Content} {item.DataContext}".Contains(search.Text.Trim(), StringComparison.OrdinalIgnoreCase) ? Visibility.Visible : Visibility.Collapsed; };
         var navigation = new Grid(); navigation.RowDefinitions.Add(new() { Height = GridLength.Auto }); navigation.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         navigation.Children.Add(search); Grid.SetRow(_selector, 1); navigation.Children.Add(_selector); workspace.Children.Add(navigation);
         Grid.SetColumn(_columns, 1); workspace.Children.Add(_columns); Grid.SetRow(workspace, 1); root.Children.Add(workspace);
@@ -141,19 +142,18 @@ internal sealed class DisplayPage : Page
         footer.Children.Add(buttons); footer.Children.Add(_feedback); Grid.SetRow(footer, 2); root.Children.Add(footer); Content = root;
         _selector.SelectionChanged += (_, _) =>
         {
-            if (_loading) return; Capture(); _selected = (_selector.SelectedItem as ListViewItem)?.Tag is OverlayRegionKind kind ? kind : null;
-            _feature = (_selector.SelectedItem as ListViewItem)?.Tag is string tag && tag is "media" or "cards" or "history" or "compact" or "obs" or "prices" or "hot" ? tag : null;
+            if (_loading) return; Capture(); RebuildSections();
             LoadSelection(); RefreshPreview();
-            propertiesScroll.ChangeView(null, 0, null, disableAnimation: true);
-            previewScroll.ChangeView(null, 0, null, disableAnimation: true);
+            _resetScroll?.Invoke();
         };
+        _resetScroll = () => { propertiesScroll.ChangeView(null, 0, null, disableAnimation: true); previewScroll.ChangeView(null, 0, null, disableAnimation: true); };
         _editor.Changed += OnEdited; _dashboard.Changed += OnEdited;
         _mediaEditor.Changed += OnEdited; _cardEditor.Changed += OnEdited;
         _historyEditor.Changed += OnEdited;
         _compactEditor.Changed += OnEdited;
         _hotEditor.Changed += OnEdited;
         foreach (var control in new DependencyObject[] { _enabled, _shared, _tracks, _frameRate, _locked, _poll }) SettingEvents.Watch(control, OnEdited);
-        _layout.Selected += kind => { _selector.SelectedItem = _selector.Items.OfType<ListViewItem>().First(item => item.Tag is OverlayRegionKind value && value == kind); };
+        _layout.Selected += kind => { _selector.SelectedItem = _selector.Items.OfType<ListViewItem>().First(item => Equals(item.Tag, "overlays")); SelectTarget(kind); };
         _layout.Changed += (kind, region) =>
         {
             _drafts[kind] = region;
@@ -185,13 +185,52 @@ internal sealed class DisplayPage : Page
         _frameRate.SelectedItem = _frameRate.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (int)item.Tag == _displayDraft.AnimationFrameRate) ?? _frameRate.Items[1];
         _locked.IsOn = _displayDraft.LayoutLocked;
         if (_selector.SelectedIndex < 0) _selector.SelectedIndex = 0;
-        _selected = (_selector.SelectedItem as ListViewItem)?.Tag is OverlayRegionKind selected ? selected : null;
-        _feature = (_selector.SelectedItem as ListViewItem)?.Tag is string tag && tag is "media" or "cards" or "history" or "compact" or "obs" or "prices" or "hot" ? tag : null;
+        RebuildSections();
         _loading = false; LoadSelection(); RefreshPreview();
+    }
+    private static (string Title, object Target)[] Targets(string page) => page switch
+    {
+        "dashboard" => [("消息外观", "dashboard"), ("列表 / 固定卡片", "cards"), ("媒体预览", "media")],
+        "overlays" => Enum.GetValues<OverlayRegionKind>().Select(kind => (OverlayRegions.Title(kind), (object)kind))
+            .Concat(new (string, object)[] { ("高频气泡", "hot"), ("金额停留", "prices") }).ToArray(),
+        "compact" => [("面板与动画", "compact"), ("SC / 礼物停留", "prices")],
+        "obs" => [("连接与 CSS", "obs")],
+        _ => [("记录与目录", "history")]
+    };
+    private void RebuildSections()
+    {
+        var page = (_selector.SelectedItem as ListViewItem)?.Tag as string ?? "dashboard";
+        var targets = Targets(page);
+        _target = _sectionMemory.TryGetValue(page, out var saved) && targets.Any(item => Equals(item.Target, saved)) ? saved : targets[0].Target;
+        _sections.Children.Clear();
+        _sections.ColumnDefinitions.Clear(); _sections.RowDefinitions.Clear();
+        var columns = Math.Min(4, targets.Length);
+        for (var i = 0; i < columns; i++) _sections.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        for (var i = 0; i < (targets.Length + columns - 1) / columns; i++) _sections.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        foreach (var (title, target) in targets)
+        {
+            var button = new ToggleButton { Content = title, Tag = target, Padding = new(6, 5, 6, 5), MinWidth = 0, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Stretch };
+            Grid.SetRow(button, _sections.Children.Count / columns); Grid.SetColumn(button, _sections.Children.Count % columns);
+            button.Click += (_, _) => SelectTarget(target); _sections.Children.Add(button);
+        }
+        ApplyTarget();
+    }
+    private void ApplyTarget()
+    {
+        _selected = _target is OverlayRegionKind kind ? kind : null;
+        _feature = _target is string tag && tag != "dashboard" ? tag : null;
+        var page = (_selector.SelectedItem as ListViewItem)?.Tag as string ?? "dashboard";
+        _sectionMemory[page] = _target;
+        _selectionTitle.Text = $"{(_selector.SelectedItem as ListViewItem)?.Content} · {Targets(page).First(item => Equals(item.Target, _target)).Title}";
+        foreach (var button in _sections.Children.OfType<ToggleButton>()) button.IsChecked = Equals(button.Tag, _target);
+    }
+    private void SelectTarget(object target)
+    {
+        if (_loading) return; Capture(); _target = target; ApplyTarget(); LoadSelection(); RefreshPreview(); _resetScroll?.Invoke();
     }
     private void LoadSelection()
     {
-        _loading = true; _selectionTitle.Text = (_selector.SelectedItem as ListViewItem)?.Content?.ToString() ?? "选择设置对象"; _compactEditor.SelectSection(_feature); var overview = _selected is null && _feature is null;
+        _loading = true; _compactEditor.SelectSection(_feature); var overview = _selected is null && _feature is null;
         _dashboard.Visibility = _poll.Visibility = overview ? Visibility.Visible : Visibility.Collapsed;
         _mediaEditor.Visibility = _feature == "media" ? Visibility.Visible : Visibility.Collapsed;
         _cardEditor.Visibility = _feature == "cards" ? Visibility.Visible : Visibility.Collapsed;
@@ -248,7 +287,7 @@ internal sealed class DisplayPage : Page
             if (_visible()) _obsPreview.Update(settings); else _obsPreview.Close();
         }
         else _obsPreview.Close();
-        if (_feature is "media" or "cards") _featurePreview.Update(_feature, _mediaDraft, _cardDraft, _dashboardDraft);
+        if (_feature is "media" or "cards") _featurePreview.Update(_feature, _mediaDraft, _cardDraft, _dashboardDraft, _drafts[OverlayRegionKind.Danmaku]);
         _featurePreview.SetActive(_feature is "media" or "cards" && _visible());
         if (_feature == "history")
         {
@@ -257,7 +296,7 @@ internal sealed class DisplayPage : Page
         }
         if (_feature is not null) return;
         _preview.Update(_selected, _selected is { } kind ? _drafts[kind] : new(), _dashboardDraft, _displayDraft.AnimationFrameRate,
-            _selected is not { } selected || OverlayRegions.Enabled(_displayDraft, selected), _displayDraft.MaxTracks);
+            _selected is not { } selected || OverlayRegions.Enabled(_displayDraft, selected), _displayDraft.MaxTracks, _pricesDraft);
         _layout.Update(_displayDraft, _drafts, _selected);
     }
     private AppSettings CompactPreviewSettings()

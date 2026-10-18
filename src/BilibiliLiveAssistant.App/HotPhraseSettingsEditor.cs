@@ -33,6 +33,8 @@ internal sealed class HotPhraseSettingsEditor : StackPanel
 internal sealed class HotPhrasePreview : StackPanel, IDisposable
 {
     private readonly HotPhrasePanel _panel;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _feed;
+    private bool _active;
     private HotPhraseSettings _style = new();
     private int _phase;
     private IReadOnlyList<HotPhrase> Samples => _phase == 1 ? HotPhraseSamples.Items.Reverse().Skip(1).ToArray() : HotPhraseSamples.Items;
@@ -40,9 +42,16 @@ internal sealed class HotPhrasePreview : StackPanel, IDisposable
     {
         Spacing = 10; _panel = new(vm, visible, true); Children.Add(_panel);
         var replay = UiFactory.Button("演示出入与换位"); replay.Click += (_, _) => { _phase = (_phase + 1) % 3; _panel.Update(Samples, _style); if (_phase == 0) _panel.Replay(); }; Children.Add(replay);
-        Children.Add(new TextBlock { Text = "本地静态示例，不请求网络。修改即时预览，保存后应用。", FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap });
+        _feed = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread().CreateTimer(); _feed.IsRepeating = false; _feed.Interval = TimeSpan.FromSeconds(2.4);
+        _feed.Tick += (_, _) =>
+        {
+            if (!_active || !visible()) return;
+            try { _phase = (_phase + 1) % 3; _panel.Update(Samples, _style); if (_phase == 0) _panel.Replay(); _feed.Start(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { RuntimeErrorLog.Record("hot-preview-feed", ex); }
+        };
+        Children.Add(new TextBlock { Text = "本地示例持续演示出入与换位，不请求网络。修改即时预览，保存后应用。", FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap });
     }
     internal void Update(HotPhraseSettings style) { _style = style; _panel.Update(Samples, style); }
-    internal void SetActive(bool active) => _panel.SetActive(active);
-    public void Dispose() => _panel.Dispose();
+    internal void SetActive(bool active) { _active = active; _panel.SetActive(active); if (active) _feed.Start(); else _feed.Stop(); }
+    public void Dispose() { _active = false; _feed.Stop(); _panel.Dispose(); }
 }

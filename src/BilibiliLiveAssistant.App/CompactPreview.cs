@@ -19,9 +19,12 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     private readonly Storyboard _rankAnimation = new() { RepeatBehavior = RepeatBehavior.Forever };
     private readonly List<UiPixelSource> _rowSources = new(4);
     private readonly List<(PreviewImage Image, CompositeTransform Transform, double TargetY, double FromY, bool Leaving, bool Entering)> _previewRows = new(4);
+    private (UiPixelSource Source, int Width, int Height)[] _samples = [];
+    private int _sampleStep, _listTop, _listHeight, _listWidth;
     private readonly Storyboard _animation = new();
     private readonly TextBlock _summary = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.65, FontSize = 12 };
     private readonly DispatcherQueueTimer _timer;
+    private readonly DispatcherQueueTimer _feed;
     private CancellationTokenSource? _cancellation;
     private UiPixelSource? _source;
     private AppSettings _settings;
@@ -40,6 +43,17 @@ internal sealed class CompactPreview : StackPanel, IDisposable
         _animation.Completed += (_, _) => FinishSample();
         _timer = DispatcherQueue.GetForCurrentThread().CreateTimer(); _timer.IsRepeating = false; _timer.Interval = TimeSpan.FromMilliseconds(100);
         _timer.Tick += (_, _) => Render();
+        _feed = DispatcherQueue.GetForCurrentThread().CreateTimer(); _feed.IsRepeating = false; _feed.Interval = TimeSpan.FromSeconds(2.4);
+        _feed.Tick += (_, _) =>
+        {
+            if (!_active || _disposed || _previewRows.Count == 0) return;
+            try
+            {
+                // Reuse the bounded bitmap pool; simulated arrivals do not decode new images.
+                _sampleStep = (_sampleStep + 1) % _samples.Length; PresentRows(); _feed.Start();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { RuntimeErrorLog.Record("compact-preview-feed", ex); }
+        };
         scTier.SelectionChanged += (_, _) => { if (scTier.SelectedItem is int amount) { _scAmount = amount; if (_active) { _timer.Stop(); _timer.Start(); } } };
     }
     public void Update(AppSettings settings)
@@ -58,6 +72,8 @@ internal sealed class CompactPreview : StackPanel, IDisposable
     }
     private void Clear()
     {
+        _feed.Stop();
+        _samples = []; _sampleStep = 0;
         _generation++; _cancellation?.Cancel(); _cancellation?.Dispose(); _cancellation = null;
         _animation.Stop(); _animation.Children.Clear(); _previewRows.Clear();
         _rankAnimation.Stop(); _rankAnimation.Children.Clear();
@@ -182,28 +198,37 @@ internal sealed class CompactPreview : StackPanel, IDisposable
                 Storyboard.SetTarget(scroll, transform); Storyboard.SetTargetProperty(scroll, "TranslateX"); _rankAnimation.Children.Add(scroll);
                 _rankAnimation.Begin();
             }
-            var visibleHeight = Math.Min(listHeight, localRows.Skip(1).Sum(row => row.Height + 4));
-            _listCanvas.Width = width - 16; _listCanvas.Height = visibleHeight;
-            _listCanvas.Margin = new Thickness(8, listTop + listHeight - visibleHeight, 0, 0);
-            _listCanvas.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, width - 16, visibleHeight) };
-            var preparedRows = localRows.ToArray();
+            _samples = localRows.ToArray(); _listTop = listTop; _listHeight = listHeight; _listWidth = width - 16;
             _rowSources.AddRange(localRows.Select(row => row.Source)); localRows.Clear();
-            var y = (double)visibleHeight;
-            for (var i = preparedRows.Length - 1; i >= 0; i--)
-            {
-                var row = preparedRows[i]; y -= row.Height;
-                var transform = new CompositeTransform { TranslateY = y };
-                var image = new PreviewImage { Source = row.Source.Source, Width = row.Width, Height = row.Height, Stretch = Stretch.None, RenderTransform = transform };
-                _listCanvas.Children.Add(image);
-                _previewRows.Add((image, transform, y, i == 0 ? 0 : i == preparedRows.Length - 1 ? y + 14 : y + preparedRows[^1].Height + 4,
-                    i == 0, i == preparedRows.Length - 1)); y -= 4;
-            }
-            PlaySample();
-            _summary.Text = $"桌面原生示例 · OBS CSS 请使用“打开真实网页预览”\nOBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥{_scAmount}：{_settings.PriceDurations.Seconds(SampleMessages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
+            PresentRows();
+            if (_previewRows.Count > 0) _feed.Start();
+            _summary.Text = $"混合列表持续模拟消息到达 · OBS CSS 请使用“打开真实网页预览”\nOBS {c.ObsWidth} × {c.ObsHeight} · 列表动画{(c.ListAnimationEnabled ? $" {c.ListAnimationDurationMs} 毫秒" : "已关闭")}\n示例 SC ¥{_scAmount}：{_settings.PriceDurations.Seconds(SampleMessages()[0]):0.#} 秒；礼物 ¥200：{_settings.PriceDurations.Seconds(CompactExamples.Messages()[1]):0.#} 秒。\n示例不进入真实消息或 OBS；保存后应用。";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OutOfMemoryException) { if (generation == _generation) { Clear(); _summary.Text = "本地预览暂不可用。"; } }
         finally { status?.Dispose(); rankSource?.Dispose(); backgroundSource?.Dispose(); foreach (var row in localRows) row.Source.Dispose(); }
+    }
+    private void PresentRows()
+    {
+        FinishSample(); _previewRows.Clear();
+        foreach (var image in _listCanvas.Children.OfType<PreviewImage>()) image.Source = null;
+        _listCanvas.Children.Clear();
+        var rows = Enumerable.Range(0, _samples.Length).Select(i => _samples[(i + _sampleStep) % _samples.Length]).ToArray();
+        var visibleHeight = Math.Min(_listHeight, rows.Skip(1).Sum(row => row.Height + 4));
+        _listCanvas.Width = _listWidth; _listCanvas.Height = visibleHeight;
+        _listCanvas.Margin = new Thickness(8, _listTop + _listHeight - visibleHeight, 0, 0);
+        _listCanvas.Clip = new RectangleGeometry { Rect = new(0, 0, _listWidth, visibleHeight) };
+        var y = (double)visibleHeight;
+        for (var i = rows.Length - 1; i >= 0; i--)
+        {
+            var row = rows[i]; y -= row.Height;
+            var transform = new CompositeTransform { TranslateY = y };
+            var image = new PreviewImage { Source = row.Source.Source, Width = row.Width, Height = row.Height, Stretch = Stretch.None, RenderTransform = transform };
+            _listCanvas.Children.Add(image);
+            _previewRows.Add((image, transform, y, i == 0 ? 0 : i == rows.Length - 1 ? y + 14 : y + rows[^1].Height + 4,
+                i == 0, i == rows.Length - 1)); y -= 4;
+        }
+        PlaySample();
     }
     private LiveEvent[] SampleMessages()
     {
