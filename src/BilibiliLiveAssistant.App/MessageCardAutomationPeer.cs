@@ -7,9 +7,9 @@ using Microsoft.UI.Xaml.Media;
 namespace BilibiliLiveAssistant.App;
 
 // A chat message is one read-only semantic item, not an editable document.
-// Publishing each rapidly rebound RichTextBlock's TextPattern makes UIA clients
-// retain native text ranges and positions from old messages. Keep the complete
-// spoken message on the row and expose its actual actions as child peers.
+// Avoid creating native document text ranges for rapidly rebound RichTextBlocks.
+// Keep the complete spoken message on the row and expose its actual actions as
+// child peers. This does not imply that every UIA client leaks those ranges.
 internal sealed class MessageCardAutomationPeer(MessageCard owner) : FrameworkElementAutomationPeer(owner)
 {
     protected override string GetClassNameCore() => nameof(MessageCard);

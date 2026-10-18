@@ -625,7 +625,7 @@ internal sealed class MessageCard : Grid, IDisposable
     {
         var kind = message.Type switch
         {
-            LiveEventType.SuperChat => "SC", LiveEventType.Gift => "礼物", LiveEventType.Guard => "上舰",
+            LiveEventType.SuperChat => "SC " + SuperChatPrice(message), LiveEventType.Gift => "礼物", LiveEventType.Guard => "上舰",
             LiveEventType.Enter => "互动", LiveEventType.Rank => "榜单", _ => "弹幕",
         };
         var appearance = message.Appearance;
