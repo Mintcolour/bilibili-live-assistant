@@ -254,7 +254,8 @@ public partial class App : Application
     private void Sample()
     {
         if (_process is null || _finishing) return;
-        if (_config.KeepOverviewVisible && _phase != "stopped_hidden" && _window?.KeepObservationVisible() == true)
+        if (_config.KeepOverviewVisible && (_phase is "warmup" or "startup_baseline" or "traffic" or "stopped_retained")
+            && _window?.KeepObservationVisible() == true)
             _visibilityRestores++;
         _process.Refresh(); var seconds = _elapsed.Elapsed.TotalSeconds; var cpu = _process.TotalProcessorTime.TotalSeconds;
         var gc = GC.GetGCMemoryInfo();
