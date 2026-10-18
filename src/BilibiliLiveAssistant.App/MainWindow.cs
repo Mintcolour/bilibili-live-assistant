@@ -219,6 +219,25 @@ public sealed class MainWindow : Window
         Activate();
     }
 
+#if MEMORY_SOAK
+    // Opt-in isolated observation only. Restore without taking keyboard focus;
+    // production builds must continue respecting the user's hide/minimize action.
+    internal bool KeepObservationVisible()
+    {
+        if (_allowClose) return false;
+        var restored = false;
+        if (!_appWindow.IsVisible) { _appWindow.Show(false); restored = true; }
+        if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+        { presenter.Restore(false); restored = true; }
+        return restored;
+    }
+    internal void HideObservationVisuals()
+    {
+        HideToTray();
+        _overlay?.HideOverlay();
+    }
+#endif
+
     public void AllowClose()
     {
         _allowClose = true;

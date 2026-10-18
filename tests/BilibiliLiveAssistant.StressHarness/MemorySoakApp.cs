@@ -34,6 +34,7 @@ public partial class App : Application
     private Process? _process;
     private double _previousSeconds, _previousCpu;
     private bool _finishing;
+    private int _visibilityRestores;
     private Task _snapshot = Task.CompletedTask;
     private Task _scrollProbe = Task.CompletedTask;
     private readonly List<WeakReference> _retired = new();
@@ -125,6 +126,14 @@ public partial class App : Application
             {
                 await Task.Delay(TimeSpan.FromSeconds(_config.Seconds), _stop.Token);
                 await ViewModel.StopAsync();
+                if (_config.StopObservationSeconds > 0)
+                {
+                    _phase = "stopped_retained"; Sample();
+                    await Task.Delay(TimeSpan.FromSeconds(_config.StopObservationSeconds), _stop.Token);
+                    _phase = "stopped_hidden";
+                    _window.HideObservationVisuals(); Sample();
+                    await Task.Delay(TimeSpan.FromSeconds(_config.StopObservationSeconds), _stop.Token);
+                }
                 await FinishAsync();
                 return;
             }
@@ -245,6 +254,8 @@ public partial class App : Application
     private void Sample()
     {
         if (_process is null || _finishing) return;
+        if (_config.KeepOverviewVisible && _phase != "stopped_hidden" && _window?.KeepObservationVisible() == true)
+            _visibilityRestores++;
         _process.Refresh(); var seconds = _elapsed.Elapsed.TotalSeconds; var cpu = _process.TotalProcessorTime.TotalSeconds;
         var gc = GC.GetGCMemoryInfo();
         var native = new ProcessMemoryCounters { Size = (uint)Marshal.SizeOf<ProcessMemoryCounters>() };
@@ -257,6 +268,7 @@ public partial class App : Application
             allocatedBytes = GC.GetTotalAllocatedBytes(false), gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
             cpuPercent = seconds > _previousSeconds ? 100 * (cpu - _previousCpu) / (seconds - _previousSeconds) / Environment.ProcessorCount : 0,
             handles = _process.HandleCount, gdi = GetGuiResources(_process.Handle, 0), user = GetGuiResources(_process.Handle, 1),
+            visibilityRestores = _visibilityRestores,
             ui = ViewModel.CapturePerformanceSnapshot(), timing = PerformanceCounters.Drain() }));
         _previousSeconds = seconds; _previousCpu = cpu;
     }
@@ -488,7 +500,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false, bool KeepOverviewVisible = false, int StopObservationSeconds = 0);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
