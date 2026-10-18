@@ -10,11 +10,12 @@ internal sealed class ProcessResourceBudget : IDisposable
     private const long Limit = 160L * 1024 * 1024;
     private readonly Process _process = Process.GetCurrentProcess();
     private readonly UiImageSourceService _sources;
+    private readonly BiliImageCache _images;
     private long _nextCheck, _recoverySince, _privateWorkingSet, _checks, _failures, _changes;
     private int _level;
     private bool _disposed;
-    internal ProcessResourceBudget(UiImageSourceService sources)
-    { _sources = sources; sources.ResourceActivity = Observe; }
+    internal ProcessResourceBudget(BiliImageCache images)
+    { _images = images; _sources = images.Sources; _sources.ResourceActivity = Observe; }
 
     internal void Observe()
     {
@@ -42,6 +43,10 @@ internal sealed class ProcessResourceBudget : IDisposable
         // transfers the same images between visible slots in one UI batch.
         var mib = level switch { 0 => 8, 1 => 4, 2 => 2, _ => 1 };
         _sources.SetIdleBudget(mib * 1024L * 1024, level switch { 0 => 256, 1 => 128, 2 => 64, _ => 32 });
+        // Reclaim cached pixels as well as idle native display sources, leaving
+        // the original 24 MiB ceiling at normal pressure. No quality reduction,
+        // consumer cancellation or eager reload when the budget recovers.
+        _images.SetMemoryBudget((level switch { 0 => 24L, 1 => 12L, 2 => 8L, _ => 4L }) * 1024 * 1024);
         ImageDecodeAdmission.SerializeForPressure = level >= 2;
         UiPixelSource.SerializeForPressure = level >= 2;
     }

@@ -50,6 +50,7 @@ internal sealed class BiliImageCache : IDisposable
     private readonly HttpClient _http;
     private readonly string _directory;
     private long _bytes;
+    private long _memoryByteLimit = MemoryLimit, _pressureEvicted;
     private int _generation;
     private long _useSequence;
     private Dictionary<string, (long Length, LinkedListNode<string> Node)>? _diskIndex;
@@ -64,7 +65,8 @@ internal sealed class BiliImageCache : IDisposable
     private long _segmentedLengthReads, _cancelledSegmentedReads;
     internal object GetDiagnostics()
     {
-        lock (_gate) return new { items = _memory.Count, estimatedBytes = _bytes, inflight = _inflight.Count,
+        lock (_gate) return new { items = _memory.Count, estimatedBytes = _bytes, memoryBudgetBytes = _memoryByteLimit,
+            pressureEvicted = _pressureEvicted, inflight = _inflight.Count,
             leases = _leases.Count, failureEntries = _failures.Count, hits = _hits, loads = _loads,
             evicted = _evicted, loadFailures = _loadFailures, frameHits = _frameHits, frameMisses = _frameMisses,
             diskHits = Interlocked.Read(ref _diskHits), networkRequests = Interlocked.Read(ref _networkRequests),
@@ -92,6 +94,28 @@ internal sealed class BiliImageCache : IDisposable
     }
 
     private static TaskCompletionSource<bool> NewCapacitySignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal void SetMemoryBudget(long bytes)
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            bytes = Math.Clamp(bytes, 1024 * 1024, MemoryLimit);
+            if (_memoryByteLimit == bytes) return;
+            _memoryByteLimit = bytes;
+            if (_bytes <= bytes) return;
+            // Entries contain managed immutable assets. Consumers already using
+            // an asset keep their own reference; removing its cache entry never
+            // closes a bound source, active animation, or an in-progress upload.
+            // Sort once per pressure transition, not once for each removed item.
+            foreach (var pair in _memory.OrderBy(pair => pair.Value.Used).ToArray())
+            {
+                if (_bytes <= bytes) break;
+                _memory.Remove(pair.Key); _bytes -= pair.Value.Asset.Size;
+                _evicted++; _pressureEvicted++;
+            }
+        }
+    }
 
     internal async Task<BiliStaticImageAsset?> GetStaticForViewAsync(string url, CancellationToken cancellation, int maxDimension = 256, BiliImageRole role = BiliImageRole.Content)
         => await GetForViewAsync(url, false, cancellation, maxDimension, role).ConfigureAwait(false) as BiliStaticImageAsset;
@@ -271,12 +295,17 @@ internal sealed class BiliImageCache : IDisposable
             {
                 if (_disposed || token.IsCancellationRequested) return null;
                 var assetSize = asset.Size;
-                while ((_bytes + assetSize > MemoryLimit || _memory.Count >= MemoryItemLimit) && _memory.Count > 0)
+                // An asset larger than the current idle cache budget is still
+                // returned to its consumer, without flushing all smaller assets.
+                if (assetSize <= _memoryByteLimit)
                 {
-                    var oldest = _memory.MinBy(item => item.Value.Used);
-                    _bytes -= oldest.Value.Asset.Size; _memory.Remove(oldest.Key); _evicted++;
+                    while ((_bytes + assetSize > _memoryByteLimit || _memory.Count >= MemoryItemLimit) && _memory.Count > 0)
+                    {
+                        var oldest = _memory.MinBy(item => item.Value.Used);
+                        _bytes -= oldest.Value.Asset.Size; _memory.Remove(oldest.Key); _evicted++;
+                    }
+                    _memory[key] = (asset, ++_useSequence); _bytes += assetSize;
                 }
-                if (assetSize <= MemoryLimit) { _memory[key] = (asset, ++_useSequence); _bytes += assetSize; }
             }
             return asset;
         }

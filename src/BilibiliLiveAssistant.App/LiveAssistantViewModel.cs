@@ -108,7 +108,7 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     internal LiveAssistantViewModel(AppSettings settings, ISettingsStore store, ILiveRoomClient client, ILiveInfoService info, BiliImageCache? images)
     {
         Images = images ?? new();
-        _resourceBudget = new(Images.Sources);
+        _resourceBudget = new(Images);
         HistorySettings historySettings;
         try { historySettings = (settings.History ?? new()).Normalize(); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException)
