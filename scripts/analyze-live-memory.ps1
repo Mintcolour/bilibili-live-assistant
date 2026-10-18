@@ -34,6 +34,8 @@ function Summarize-Window([object[]]$Rows) {
         privateCommitEndMiB = [math]::Round($last.privateBytes / 1MB, 2)
         privateCommitSlopeMiBPerMinute = if ($denominator -gt 0) { [math]::Round(60 * $commitNumerator / $denominator / 1MB, 4) } else { $null }
         managedEndMiB = [math]::Round($last.managedBytes / 1MB, 2)
+        gcCommittedEndMiB = if ($null -ne $last.gcCommittedBytes) { [math]::Round($last.gcCommittedBytes / 1MB, 2) } else { $null }
+        finalizersPendingEnd = $last.gcFinalizationPending
         receivedEvents = $last.ui.received - $first.ui.received
         receivedPerSecond = if ($duration -gt 0) { [math]::Round(($last.ui.received - $first.ui.received) / $duration, 2) } else { $null }
         createdDanmakuCards = $last.ui.window.dashboard.danmaku.createdCards - $first.ui.window.dashboard.danmaku.createdCards

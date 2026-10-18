@@ -253,6 +253,7 @@ public partial class App : Application
             privateBytes = _process.PrivateMemorySize64, workingSetBytes = _process.WorkingSet64, managedBytes = GC.GetTotalMemory(false),
             privateWorkingSetBytes = hasNativeMemory ? (ulong?)native.PrivateWorkingSetSize : null,
             gcHeapBytes = gc.HeapSizeBytes, fragmentedBytes = gc.FragmentedBytes,
+            gcCommittedBytes = gc.TotalCommittedBytes, gcFinalizationPending = gc.FinalizationPendingCount,
             allocatedBytes = GC.GetTotalAllocatedBytes(false), gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
             cpuPercent = seconds > _previousSeconds ? 100 * (cpu - _previousCpu) / (seconds - _previousSeconds) / Environment.ProcessorCount : 0,
             handles = _process.HandleCount, gdi = GetGuiResources(_process.Handle, 0), user = GetGuiResources(_process.Handle, 1),
