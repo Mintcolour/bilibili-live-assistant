@@ -409,7 +409,7 @@ internal sealed class DashboardList : Grid, IDisposable
     private readonly Stack<MessageCard> _cardPool = new(16);
     private readonly Dictionary<Microsoft.UI.Xaml.Controls.Primitives.SelectorItem, MessageCard> _containerCards = new();
     private long _recycledWithoutRoot;
-    private long _newContainers, _reusedContainers, _createdCards, _reboundCards, _pooledCards;
+    private long _newContainers, _reusedContainers, _createdCards, _reboundCards, _pooledCards, _movedCards;
     private readonly Dictionary<Guid, DashboardRecord> _visibleRecords = new();
     private readonly Dictionary<Guid, int> _recordIndices = new();
     private readonly List<DashboardRecord> _filteredRecords = new();
@@ -577,6 +577,7 @@ internal sealed class DashboardList : Grid, IDisposable
         }
         // Refresh only realized rows. Passing every retained record through
         // ContainerFromItem made thousands of COM identity queries per second.
+        PreserveMessageCards();
         foreach (var container in _containerCards.Keys.ToArray())
         {
             var index = _list.IndexFromContainer(container);
@@ -585,6 +586,41 @@ internal sealed class DashboardList : Grid, IDisposable
         }
         UpdateActions(source.Count, unread);
         _visibility.Request();
+    }
+
+    private void PreserveMessageCards()
+    {
+        // RowSlot identities keep ListView containers stable, but inserting at
+        // the front changes the message behind every visible slot. Move the
+        // existing message visuals before rebinding, rather than rewriting the
+        // text document and avatar of every row for each incoming batch.
+        var bindings = new List<(Microsoft.UI.Xaml.Controls.Primitives.SelectorItem Container, ContentPresenter Host, DashboardRecord Record)>();
+        var detached = new Dictionary<Guid, MessageCard>();
+        foreach (var container in _containerCards.Keys.ToArray())
+        {
+            var index = _list.IndexFromContainer(container);
+            if (index < 0 || index >= _items.Count || container.ContentTemplateRoot is not ContentPresenter host) continue;
+            var record = _items[index].Record;
+            bindings.Add((container, host, record));
+            if (host.Content is not MessageCard card || card.RecordId == record.Id) continue;
+            // Detach all moving roots before assigning any new parent. No
+            // layout is rendered between these synchronous UI-thread steps.
+            host.Content = null; _containerCards.Remove(container);
+            if (card.IsDisposed) _cards.Remove(card);
+            else if (!detached.TryAdd(card.RecordId, card)) ReleaseCard(card);
+        }
+        foreach (var binding in bindings)
+        {
+            if (_containerCards.ContainsKey(binding.Container) || !detached.Remove(binding.Record.Id, out var card)) continue;
+            _containerCards[binding.Container] = card; binding.Host.Content = card; _movedCards++;
+        }
+        // Only messages that actually left the realized range enter the small
+        // existing pool. Never retain a visual for all 500 history messages.
+        foreach (var card in detached.Values) ReleaseCard(card);
+        // Include newly empty hosts: the ordinary binding loop only visits
+        // owners, and these need a new/recycled card for their incoming message.
+        foreach (var binding in bindings)
+            if (!_containerCards.ContainsKey(binding.Container)) BindCard(binding.Container, binding.Host, binding.Record);
     }
     private void RenderContainer(ListViewBase sender, ContainerContentChangingEventArgs e)
     {
@@ -736,7 +772,7 @@ internal sealed class DashboardList : Grid, IDisposable
     {
         var panel = _list.ItemsPanelRoot as ItemsStackPanel;
         return new { items = _items.Count, cards = _cards.Count, cardsWithText = _cards.Count(c => c.HasBoundText), pooled = _cardPool.Count, owners = _containerCards.Count, recycledWithoutRoot = _recycledWithoutRoot, cacheLength = panel?.CacheLength,
-            newContainers = _newContainers, reusedContainers = _reusedContainers, createdCards = _createdCards, reboundCards = _reboundCards, pooledCards = _pooledCards,
+            newContainers = _newContainers, reusedContainers = _reusedContainers, createdCards = _createdCards, reboundCards = _reboundCards, pooledCards = _pooledCards, movedCards = _movedCards,
             syncCalls = _syncCalls, fullSyncs = _fullSyncs, columnVersion = _version, contentVersion = _contentVersion,
             ownedIndices = _containerCards.Keys.Select(x => _list.IndexFromContainer(x)).Order().ToArray(),
             firstVisible = panel?.FirstVisibleIndex, lastVisible = panel?.LastVisibleIndex,

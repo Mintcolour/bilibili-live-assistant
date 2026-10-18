@@ -30,6 +30,9 @@ function Summarize-Window([object[]]$Rows) {
         receivedPerSecond = if ($duration -gt 0) { [math]::Round(($last.ui.received - $first.ui.received) / $duration, 2) } else { $null }
         createdDanmakuCards = $last.ui.window.dashboard.danmaku.createdCards - $first.ui.window.dashboard.danmaku.createdCards
         reboundDanmakuCards = $last.ui.window.dashboard.danmaku.reboundCards - $first.ui.window.dashboard.danmaku.reboundCards
+        movedDanmakuCards = if ($null -ne $last.ui.window.dashboard.danmaku.movedCards) {
+            $last.ui.window.dashboard.danmaku.movedCards - $first.ui.window.dashboard.danmaku.movedCards
+        } else { $null }
         decodedImages = $last.ui.imageResources.decodeCount - $first.ui.imageResources.decodeCount
         cpuP95 = $cpu[[math]::Ceiling($cpu.Count * .95) - 1]
     }
