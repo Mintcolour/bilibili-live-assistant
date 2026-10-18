@@ -39,6 +39,21 @@ $runDirectory = Join-Path $repository "artifacts/memory-soak/$Name"
 $binaryDirectory = Join-Path $repository "artifacts/memory-soak/bin-$Name"
 if ((Test-Path -LiteralPath $runDirectory) -or (Test-Path -LiteralPath $binaryDirectory)) { throw '测试目录已存在，请使用新的 Name，避免覆盖证据' }
 if (!(Test-Path -LiteralPath (Join-Path $sourceDirectory 'StressApp.exe'))) { throw '请先编译 Release x64 压力程序' }
+$buildManifestPath = Join-Path $sourceDirectory 'soak-build.json'
+if ($LiveRoom -gt 0 -and !(Test-Path -LiteralPath $buildManifestPath)) {
+    throw '真实房间观察需要带 soak-build.json 的已核对发布构建。请先运行 build-memory-soak.ps1，再用 -BinarySource 指定其输出目录。'
+}
+if (Test-Path -LiteralPath $buildManifestPath) {
+    $buildManifest = Get-Content -LiteralPath $buildManifestPath -Raw | ConvertFrom-Json
+    if ($buildManifest.appSha256 -ne (Get-FileHash -LiteralPath (Join-Path $sourceDirectory 'StressApp.dll') -Algorithm SHA256).Hash) {
+        throw '压力程序与构建清单不符，拒绝用此二进制观察'
+    }
+    foreach ($module in $buildManifest.nativeModules) {
+        if ($module.sha256 -ne (Get-FileHash -LiteralPath (Join-Path $sourceDirectory $module.name) -Algorithm SHA256).Hash) {
+            throw "原生模块与构建清单不符：$($module.name)"
+        }
+    }
+}
 New-Item -ItemType Directory -Path $runDirectory,$binaryDirectory -Force | Out-Null
 Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $binaryDirectory -Recurse
 [ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent; ScrollProbe=$ScrollProbe.IsPresent; LiveRoom=$LiveRoom; BaselineSeconds=$BaselineSeconds; EntryAvatars=!$NoEntryAvatars.IsPresent; FixturePort=$FixturePort; FixtureCount=$FixtureCount; Pattern=$Pattern; StartupOnly=$StartupOnly.IsPresent; LifecycleProbe=$LifecycleProbe.IsPresent; AnimateEmotes=$AnimateEmotes.IsPresent } |

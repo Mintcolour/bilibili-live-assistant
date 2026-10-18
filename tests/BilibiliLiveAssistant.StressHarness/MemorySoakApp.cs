@@ -270,6 +270,7 @@ public partial class App : Application
             cpuPercent = seconds > _previousSeconds ? 100 * (cpu - _previousCpu) / (seconds - _previousSeconds) / Environment.ProcessorCount : 0,
             handles = _process.HandleCount, gdi = GetGuiResources(_process.Handle, 0), user = GetGuiResources(_process.Handle, 1),
             visibilityRestores = _visibilityRestores,
+            transportShape = _client.GetShapeDiagnostics(),
             ui = ViewModel.CapturePerformanceSnapshot(), timing = PerformanceCounters.Drain() }));
         _previousSeconds = seconds; _previousCpu = cpu;
     }
@@ -512,13 +513,15 @@ internal sealed class SoakClient : ILiveRoomClient
 {
     private readonly BiliLiveClient? _live;
     private readonly bool _useCurrentAccount;
+    private readonly long[] _types = new long[Enum.GetValues<LiveEventType>().Max(t => (int)t) + 1];
+    private long _withAvatar, _withMedal, _withIdentity, _withInlineEmotes, _withFullEmote;
     private bool _running;
     public SoakClient(bool live, bool useCurrentAccount = false)
     {
         _useCurrentAccount = useCurrentAccount;
         if (!live) return;
         _live = new();
-        _live.EventReceived += (_, e) => EventReceived?.Invoke(this, e);
+        _live.EventReceived += (_, e) => Receive(e);
         _live.StatusChanged += (_, e) => StatusChanged?.Invoke(this, e);
     }
     public event EventHandler<LiveEvent>? EventReceived;
@@ -527,7 +530,30 @@ internal sealed class SoakClient : ILiveRoomClient
     public Task StartAsync(int roomId, CookieOptions cookies, CancellationToken cancellationToken = default)
     { if (_live is not null) return _live.StartAsync(roomId, _useCurrentAccount ? cookies : new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
     public Task StopAsync() { if (_live is not null) return _live.StopAsync(); _running = false; StatusChanged?.Invoke(this, "已断开连接"); return Task.CompletedTask; }
-    public void Emit(LiveEvent value) { if (_live is null && IsRunning) EventReceived?.Invoke(this, value); }
+    public void Emit(LiveEvent value) { if (_live is null && IsRunning) Receive(value); }
+    private void Receive(LiveEvent value)
+    {
+        var type = (int)value.Type;
+        if ((uint)type < (uint)_types.Length) Interlocked.Increment(ref _types[type]);
+        if (value.Appearance is { } appearance)
+        {
+            if (!string.IsNullOrEmpty(appearance.AvatarUrl)) Interlocked.Increment(ref _withAvatar);
+            if (appearance.MedalLevel > 0 && appearance.MedalName.Length > 0) Interlocked.Increment(ref _withMedal);
+            if (appearance.GuardLevel > 0 || appearance.IsAdmin) Interlocked.Increment(ref _withIdentity);
+            if (appearance.Emotes.Count > 0) Interlocked.Increment(ref _withInlineEmotes);
+            if (appearance.FullEmote is not null) Interlocked.Increment(ref _withFullEmote);
+        }
+        EventReceived?.Invoke(this, value);
+    }
+    // Aggregate transport shape only: never retain messages, URLs, IDs or names.
+    // Info-service events are outside this transport count.
+    internal object GetShapeDiagnostics() => new
+    {
+        types = Enum.GetValues<LiveEventType>().ToDictionary(t => t.ToString(), t => Interlocked.Read(ref _types[(int)t])),
+        withAvatar = Interlocked.Read(ref _withAvatar), withMedal = Interlocked.Read(ref _withMedal),
+        withIdentity = Interlocked.Read(ref _withIdentity), withInlineEmotes = Interlocked.Read(ref _withInlineEmotes),
+        withFullEmote = Interlocked.Read(ref _withFullEmote),
+    };
 }
 internal sealed class SoakInfo : ILiveInfoService
 {

@@ -8,6 +8,19 @@ $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $projectDirectory = Join-Path $repository 'tests/BilibiliLiveAssistant.StressHarness'
 $publishDirectory = Join-Path $repository "artifacts/memory-soak/build-$Name"
 if (Test-Path -LiteralPath $publishDirectory) { throw '构建目录已存在，请使用新的 Name' }
+$appSources = if ($SourceRoot.Length -gt 0) { (Resolve-Path -LiteralPath $SourceRoot).Path } else { Join-Path $repository 'src/BilibiliLiveAssistant.App' }
+function Get-SourceFingerprint {
+    $inputs = foreach ($directory in @($appSources, $projectDirectory,
+        (Join-Path $repository 'src/BilibiliLiveAssistant.Core'), (Join-Path $repository 'src/BilibiliLiveAssistant.Infrastructure'))) {
+        Get-ChildItem -LiteralPath $directory -File -Recurse |
+            Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' -and $_.Extension -in @('.cs','.csproj','.xaml','.manifest','.props','.targets') }
+    }
+    $lines = @($inputs | Sort-Object FullName -Unique | ForEach-Object {
+        $_.FullName + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    })
+    [ordered]@{ files = $lines.Count; sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))) }
+}
+$sourceBefore = Get-SourceFingerprint
 # The SDK caches extracted MSIX native DLLs below obj. A package-version
 # change can otherwise publish the previous runtime even after restore.
 foreach ($generatedName in @('bin','obj')) {
@@ -52,7 +65,10 @@ try {
     }
 }
 finally { $zip.Dispose() }
+$sourceAfter = Get-SourceFingerprint
+if ($sourceBefore.sha256 -ne $sourceAfter.sha256) { throw '编译期间源码发生变化，请使用新目录重新构建；本轮不能作为可追溯基线' }
 [ordered]@{ appSdkVersion=$AppSdkVersion; nativeModules=@($nativeModules); alternateSource=($SourceRoot.Length -gt 0);
+    sourceFingerprint=$sourceBefore; builtAt=[DateTimeOffset]::UtcNow;
     appSha256=(Get-FileHash -LiteralPath (Join-Path $publishDirectory 'StressApp.dll') -Algorithm SHA256).Hash } |
     ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $publishDirectory 'soak-build.json') -Encoding utf8
 [ordered]@{ verified=$true; directory=$publishDirectory; appSdkVersion=$AppSdkVersion } | ConvertTo-Json
