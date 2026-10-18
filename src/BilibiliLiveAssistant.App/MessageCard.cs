@@ -855,6 +855,9 @@ internal sealed class BiliImageView : Grid, IDisposable
     {
         if (_disposed) return; Deactivate(); _disposed = true;
         _clock.Remove(this); ReleaseImages();
+        // An optional inline image can be collapsed/unrealized when its card's
+        // visual-tree cleanup runs. Release its own tooltip registration too.
+        DashboardUi.ReleaseDescriptions(this);
         _visible = static () => false; _url = _displayUrl = ""; _avatarUid = 0;
         Children.Clear(); _image = null; _fallback = null;
         Interlocked.Decrement(ref ImageResourceCounters.Views);
