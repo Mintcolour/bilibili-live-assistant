@@ -3,6 +3,8 @@ using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -56,6 +58,7 @@ internal sealed class MessageCard : Grid, IDisposable
         // recycled; they must not close over its original DashboardRecord.
         visible = _ownedVisible = () => _visible();
         var message = record.Event;
+        UpdateAutomationText(message);
         _follow = LiveInteractions.IsFollow(message);
         _entryPolicy = LiveInteractions.IsEntry(message);
         var style = previewStyle ?? vm.Settings.Dashboard;
@@ -366,6 +369,7 @@ internal sealed class MessageCard : Grid, IDisposable
         Deactivate(); _visible = static () => false; _actions?.ClearBinding();
         _reusableText!.ClearText(); RecordId = Guid.Empty;
         _reusableBody?.ClearText();
+        AutomationProperties.SetName(this, "");
         foreach (var image in _images) image.Rebind("", "", 0);
         return true;
     }
@@ -379,6 +383,7 @@ internal sealed class MessageCard : Grid, IDisposable
         RecordId = record.Id; RecordRevision = record.Revision; Read = record.IsRead; Thanked = record.IsThanked;
         _actions?.Bind(record);
         var message = record.Event; var style = vm.Settings.Dashboard;
+        UpdateAutomationText(message);
         foreach (var image in _images) if (image.IsAvatar) image.Rebind(message.Appearance?.AvatarUrl ?? "", message.Username, AvatarUid(message));
         _reusableText!.Update(message);
         if (_scReuse) { _reusableBody!.Update(SuperChatBody(message), message.Appearance); ApplySuperChatStyle(_reusableBorder!, message, style); }
@@ -521,6 +526,7 @@ internal sealed class MessageCard : Grid, IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
+        AutomationProperties.SetName(this, "");
         DashboardUi.ReleaseDescriptions(this);
         ReleaseContentTree(this);
         _visible = static () => false;
@@ -562,6 +568,25 @@ internal sealed class MessageCard : Grid, IDisposable
         inlines.Clear();
     }
     internal bool IsDisposed => _disposed;
+
+    protected override AutomationPeer OnCreateAutomationPeer() => new MessageCardAutomationPeer(this);
+
+    private void UpdateAutomationText(LiveEvent message)
+    {
+        var kind = message.Type switch
+        {
+            LiveEventType.SuperChat => "SC", LiveEventType.Gift => "礼物", LiveEventType.Guard => "上舰",
+            LiveEventType.Enter => "互动", LiveEventType.Rank => "榜单", _ => "弹幕",
+        };
+        var appearance = message.Appearance;
+        var medal = appearance is { MedalName.Length: > 0, MedalLevel: > 0 }
+            ? $" · {appearance.MedalName} {appearance.MedalLevel}" : "";
+        var guard = appearance?.GuardLevel switch { 1 => " · 总督", 2 => " · 提督", 3 => " · 舰长", _ => "" };
+        var content = message.Type == LiveEventType.SuperChat ? SuperChatBody(message) : message.Content;
+        if (content.Length > 4096) content = content[..4096] + "…";
+        var name = $"{kind} · {message.Username}{medal}{guard} · {message.OccurredAt:HH:mm:ss} · {content}";
+        if (AutomationProperties.GetName(this) != name) AutomationProperties.SetName(this, name);
+    }
 }
 
 internal sealed class BiliImageView : Grid, IDisposable
