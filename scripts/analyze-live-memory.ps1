@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string[]]$Path,
     [ValidateRange(64,4096)][int]$LimitMiB = 160,
-    [ValidateRange(60,14400)][int]$RequiredSeconds = 3600
+    [ValidateRange(60,14400)][int]$RequiredSeconds = 3600,
+    [ValidateRange(0,7200)][int]$WarmupSeconds = 300
 )
 $ErrorActionPreference = 'Stop'
 # Read only numeric resource logs. Never emit message payloads or settings.
@@ -12,10 +13,13 @@ function Summarize-Window([object[]]$Rows) {
     $meanSeconds = ($Rows.seconds | Measure-Object -Average).Average
     $meanBytes = ($Rows.privateWorkingSetBytes | Measure-Object -Average).Average
     $denominator = 0.0; $numerator = 0.0
+    $meanCommit = ($Rows.privateBytes | Measure-Object -Average).Average
+    $commitNumerator = 0.0
     foreach ($row in $Rows) {
         $delta = $row.seconds - $meanSeconds
         $denominator += $delta * $delta
         $numerator += $delta * ($row.privateWorkingSetBytes - $meanBytes)
+        $commitNumerator += $delta * ($row.privateBytes - $meanCommit)
     }
     $cpu = @($Rows.cpuPercent | Sort-Object)
     [ordered]@{
@@ -23,8 +27,12 @@ function Summarize-Window([object[]]$Rows) {
         privateWorkingSetStartMiB = [math]::Round($first.privateWorkingSetBytes / 1MB, 2)
         privateWorkingSetEndMiB = [math]::Round($last.privateWorkingSetBytes / 1MB, 2)
         privateWorkingSetPeakMiB = [math]::Round(($Rows.privateWorkingSetBytes | Measure-Object -Maximum).Maximum / 1MB, 2)
+        privateWorkingSetMinimumMiB = [math]::Round(($Rows.privateWorkingSetBytes | Measure-Object -Minimum).Minimum / 1MB, 2)
+        privateWorkingSetMeanMiB = [math]::Round($meanBytes / 1MB, 2)
         privateWorkingSetSlopeMiBPerMinute = if ($denominator -gt 0) { [math]::Round(60 * $numerator / $denominator / 1MB, 4) } else { $null }
+        privateCommitStartMiB = [math]::Round($first.privateBytes / 1MB, 2)
         privateCommitEndMiB = [math]::Round($last.privateBytes / 1MB, 2)
+        privateCommitSlopeMiBPerMinute = if ($denominator -gt 0) { [math]::Round(60 * $commitNumerator / $denominator / 1MB, 4) } else { $null }
         managedEndMiB = [math]::Round($last.managedBytes / 1MB, 2)
         receivedEvents = $last.ui.received - $first.ui.received
         receivedPerSecond = if ($duration -gt 0) { [math]::Round(($last.ui.received - $first.ui.received) / $duration, 2) } else { $null }
@@ -68,6 +76,7 @@ $results = foreach ($directory in $Path) {
     $traffic = @($samples | Where-Object phase -eq traffic)
     if ($traffic.Count -lt 2) { throw '真实流量采样尚不足两条' }
     $last = $traffic[-1]; $duration = $last.seconds - $traffic[0].seconds
+    $postWarmup = @($traffic | Where-Object { $_.seconds -ge $traffic[0].seconds + $WarmupSeconds })
     $visible = @($traffic | Where-Object {
         $_.ui.window.mainVisible -ne $true -or $_.ui.window.page -ne 'dashboard' -or $_.ui.window.overlay.compact.visible -ne $true
     }).Count -eq 0
@@ -93,13 +102,21 @@ $results = foreach ($directory in $Path) {
         overviewAndCompactVisibleThroughout = $visible; maximumSampleGapSeconds = $gap
         monitoringThroughout = $monitoring; connectedSampleFraction = [math]::Round($connectedFraction, 4)
         limitMiB = $LimitMiB; privateWorkingSetPeakMiB = [math]::Round($peak / 1MB, 2)
+        evaluationObjective = 'post-warmup-stability'
+        limitIsReferenceOnly = $true
+        warmupSeconds = $WarmupSeconds
+        postWarmup = Summarize-Window $postWarmup
+        stabilityPass = $null
+        legacyThresholdPass = $coverage -and $peak -le $LimitMiB * 1MB
+        # Retain the old field for consumers; it only tests the legacy limit.
+        # Neither this field nor complete coverage certifies memory stability.
         observedMemoryPass = $coverage -and $peak -le $LimitMiB * 1MB
         endedNormally = Test-Path -LiteralPath (Join-Path $root 'completed.json')
         archiveDropped = $last.ui.history.dropped; archiveFaulted = $last.ui.history.faulted
         totalReceived = $last.ui.received; overviewCardsCreated = $last.ui.window.dashboard.danmaku.createdCards
         overviewCardsRebound = $last.ui.window.dashboard.danmaku.reboundCards
         windows = $windows
-        note = '约五秒数值采样；非瞬时峰值保证。真实流量不等于固定负载；多进程同时观察会相互影响。账号模式见 anonymous；隔离运行不替代正式应用、实际显示及完整功能验收。'
+        note = '当前目标为预热后收敛，limitMiB 与 observedMemoryPass 仅保留旧阈值口径，不自动判定稳定或泄漏。结合分段斜率、谷值、提交量及流量评估。约五秒采样，非瞬时峰值保证；真实流量不等于固定负载，多进程会相互影响。隔离运行不替代正式应用及完整功能验收。'
     }
 }
 ConvertTo-Json -InputObject @($results) -Depth 12
