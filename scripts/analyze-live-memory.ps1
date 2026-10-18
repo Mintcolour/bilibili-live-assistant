@@ -89,7 +89,8 @@ $results = foreach ($directory in $Path) {
     $root = (Resolve-Path -LiteralPath $directory).Path
     $records = @(Get-Content -LiteralPath (Join-Path $root 'samples.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
     $header = $records | Where-Object kind -eq header | Select-Object -First 1
-    if ($header.config.LiveRoom -le 0) { throw '此脚本只分析真实直播观察日志' }
+    $replay = $header.archivedReplay -eq $true
+    if ($header.config.LiveRoom -le 0 -and !$replay) { throw '此脚本只分析真实直播观察或隔离存档回放日志' }
     $samples = @($records | Where-Object kind -eq sample)
     $interferenceFile = Join-Path $root 'diagnostic-interference.json'
     $interference = Test-Path -LiteralPath $interferenceFile
@@ -171,11 +172,16 @@ $results = foreach ($directory in $Path) {
         }
     })
     [ordered]@{
-        name = $header.config.Name; room = $header.config.LiveRoom; processId = $header.pid
+        name = $header.config.Name; room = if ($replay) { $header.replaySourceRoom } else { $header.config.LiveRoom }; processId = $header.pid
+        workload = if ($replay) { 'archived-local-replay' } else { 'live-room' }
+        replay = if ($replay) { $last.replay } else { $null }
         anonymous = if ($null -ne $header.anonymousReading) { $header.anonymousReading } else { $header.config.UseCurrentAccount -ne $true }
         isolatedHistory = $true; inheritedAppearance = ![string]::IsNullOrEmpty($header.config.AppearanceSettingsPath)
         observedSeconds = $duration; requiredSeconds = $RequiredSeconds; coverageComplete = $coverage
         diagnosticInterference = $interference; diagnosticFromSeconds = $diagnosticFromSeconds
+        environmentObservations = if (Test-Path -LiteralPath (Join-Path $root 'environment-observations.json')) {
+            Get-Content -LiteralPath (Join-Path $root 'environment-observations.json') -Raw | ConvertFrom-Json
+        } else { $null }
         overviewAndCompactVisibleThroughout = $visible; maximumSampleGapSeconds = $gap
         monitoringThroughout = $monitoring; connectedSampleFraction = [math]::Round($connectedFraction, 4)
         limitMiB = $LimitMiB; privateWorkingSetPeakMiB = [math]::Round($peak / 1MB, 2)

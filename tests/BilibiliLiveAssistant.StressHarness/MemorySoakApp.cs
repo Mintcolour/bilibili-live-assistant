@@ -21,6 +21,7 @@ public partial class App : Application
     internal static bool CreateImageSources { get; private set; } = true;
     internal static bool UseDrawingDecode { get; private set; }
     internal static string DiagnosticDirectory { get; private set; } = null!;
+    internal static ArchivedReplay? Replay { get; private set; }
     private MainWindow? _window;
     internal static nint MainWindowHandle => Current is App app && app._window is { } window ? WinRT.Interop.WindowNative.GetWindowHandle(window) : 0;
     private readonly SoakConfig _config;
@@ -61,7 +62,9 @@ public partial class App : Application
         {
             _log = new StreamWriter(Path.Combine(_config.Output, "samples.jsonl"), false) { AutoFlush = true };
             var live = _config.LiveRoom > 0;
-            var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = !_config.UseCurrentAccount,
+            if (_config.ReplaySource.Length > 0)
+                Replay = await Task.Run(() => new ArchivedReplay(_config.ReplaySource, _config.Output, _config.ReplayWindowSeconds, _config.ReplayImageSources));
+            var settings = new AppSettings { RoomId = live ? _config.LiveRoom : Replay?.Room ?? 900000001, AnonymousReading = !_config.UseCurrentAccount,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
                 Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, AnimateEmotes = _config.AnimateEmotes, ShowAvatars = _config.Images is not ("none" or "emotes") } };
             if (!string.IsNullOrEmpty(_config.AppearanceSettingsPath))
@@ -76,7 +79,7 @@ public partial class App : Application
                     PriceDurations = appearance.PriceDurations, Cards = appearance.Cards,
                     MediaPreview = appearance.MediaPreview, TradeViews = appearance.TradeViews };
             }
-            HttpMessageHandler? handler = live ? null : _config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages();
+            HttpMessageHandler? handler = live ? null : Replay?.ImageHandler() ?? (_config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages());
             var images = new BiliImageCache(handler, Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
             if (_config.UseCurrentAccount)
@@ -104,11 +107,12 @@ public partial class App : Application
                 winUiVersion = _process.Modules.Cast<ProcessModule>().FirstOrDefault(m => m.ModuleName.Equals("Microsoft.UI.Xaml.dll", StringComparison.OrdinalIgnoreCase))?.FileVersionInfo.FileVersion,
                 build = File.Exists(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))
                     ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "soak-build.json"))) : (JsonElement?)null,
-                timestamp = DateTimeOffset.UtcNow, simulatedImages = !live, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
+                timestamp = DateTimeOffset.UtcNow, simulatedImages = !live && Replay is null, archivedReplay = Replay is not null, replaySourceRoom = Replay?.Room, realArchive = _config.View != "pipeline", realRendering = _config.View != "pipeline",
                 anonymousReading = ViewModel.IsAnonymousReading,
                 note = live ? _config.UseCurrentAccount
                     ? "Current local account used in memory only; isolated archive and image cache; no vault writes, account listener or BrowserHost."
                     : "Anonymous live transport; isolated archive and image cache; no user settings, cookies or BrowserHost."
+                    : Replay is not null ? "Local archived replay; consistent isolated database copy, cached images only, no account or media HTTP; production display and isolated archive."
                     : "No external network, browser login, user settings or user history. Extra rank-panel HTTP disabled." }));
             Sample();
             _phase = "startup_baseline";
@@ -120,6 +124,16 @@ public partial class App : Application
             await ViewModel.StartAsync(settings.RoomId);
             await Task.Delay(TimeSpan.FromSeconds(_config.WarmupSeconds));
             _phase = "traffic";
+            if (Replay is not null)
+            {
+                await Task.Run(() => Replay.RunAsync(_config.Seconds, value => { _client.Emit(value); Interlocked.Increment(ref _produced); }, _stop.Token));
+                await ViewModel.StopAsync();
+                _phase = "stopped_retained"; Sample();
+                await Task.Delay(TimeSpan.FromSeconds(_config.StopObservationSeconds), _stop.Token);
+                _phase = "stopped_hidden"; _window.HideObservationVisuals(); Sample();
+                await Task.Delay(TimeSpan.FromSeconds(_config.StopObservationSeconds), _stop.Token);
+                await FinishAsync(); return;
+            }
             if (_config.Snapshot) _snapshot = CaptureOverviewAsync();
             if (_config.ScrollProbe) _scrollProbe = VerifyScrollAsync();
             if (live)
@@ -268,6 +282,7 @@ public partial class App : Application
             gcCommittedBytes = gc.TotalCommittedBytes, gcFinalizationPending = gc.FinalizationPendingCount,
             allocatedBytes = GC.GetTotalAllocatedBytes(false), gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
             cpuPercent = seconds > _previousSeconds ? 100 * (cpu - _previousCpu) / (seconds - _previousSeconds) / Environment.ProcessorCount : 0,
+            replay = Replay?.Diagnostics(),
             handles = _process.HandleCount, gdi = GetGuiResources(_process.Handle, 0), user = GetGuiResources(_process.Handle, 1),
             visibilityRestores = _visibilityRestores,
             transportShape = _client.GetShapeDiagnostics(),
@@ -502,7 +517,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false, bool KeepOverviewVisible = false, int StopObservationSeconds = 0);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "", bool UseCurrentAccount = false, bool KeepOverviewVisible = false, int StopObservationSeconds = 0, string ReplaySource = "", int ReplayWindowSeconds = 600, string[]? ReplayImageSources = null);
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
@@ -528,7 +543,7 @@ internal sealed class SoakClient : ILiveRoomClient
     public event EventHandler<string>? StatusChanged;
     public bool IsRunning => _live?.IsRunning ?? _running;
     public Task StartAsync(int roomId, CookieOptions cookies, CancellationToken cancellationToken = default)
-    { if (_live is not null) return _live.StartAsync(roomId, _useCurrentAccount ? cookies : new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, "本地模拟（无网络）"); return Task.CompletedTask; }
+    { if (_live is not null) return _live.StartAsync(roomId, _useCurrentAccount ? cookies : new(), cancellationToken); _running = true; StatusChanged?.Invoke(this, App.Replay is null ? "本地模拟（无网络）" : "已连接"); return Task.CompletedTask; }
     public Task StopAsync() { if (_live is not null) return _live.StopAsync(); _running = false; StatusChanged?.Invoke(this, "已断开连接"); return Task.CompletedTask; }
     public void Emit(LiveEvent value) { if (_live is null && IsRunning) Receive(value); }
     private void Receive(LiveEvent value)

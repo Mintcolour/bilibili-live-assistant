@@ -90,6 +90,9 @@ internal sealed class BiliAvatarResolver : IDisposable
                 if (_disposed) return "";
                 if (_cache.TryGetValue(uid, out var cached) && cached.Until > DateTimeOffset.UtcNow)
                 { Touch(cached); _hits++; return cached.Url; }
+#if MEMORY_SOAK
+                if (App.Replay is not null) return ""; // Offline replay never fills gaps with network lookups.
+#endif
                 if (_cooldown > DateTimeOffset.UtcNow) return "";
                 if (_pending.TryGetValue(uid, out pending) && pending.Cancellation.IsCancellationRequested) pending = null;
                 else if (pending is null && _pending.Count < PendingLimit)

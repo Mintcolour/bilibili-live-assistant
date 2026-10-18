@@ -119,7 +119,11 @@ internal sealed class DashboardRankPanel : Grid, IDisposable
         try
         {
             var cookies = _vm.DashboardCookies;
-            var result = await _service.FetchAsync(profile.RoomId, profile.Uid, kind, nextPage, cookies, request.Token);
+            var result =
+#if MEMORY_SOAK
+                App.Replay is { } replay ? replay.RankPage(nextPage) :
+#endif
+                await _service.FetchAsync(profile.RoomId, profile.Uid, kind, nextPage, cookies, request.Token);
             var firstPage = !append ? result : null;
             var fetched = result.Members.ToList();
             // Refresh only the pages the user has already loaded, in sequence.

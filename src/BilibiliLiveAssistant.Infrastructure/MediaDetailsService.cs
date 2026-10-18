@@ -10,7 +10,7 @@ namespace BilibiliLiveAssistant.Infrastructure;
 public sealed class MediaDetailsService : IDisposable
 {
     private readonly object _gate = new();
-    private readonly HttpClient _http = new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
+    private readonly HttpClient _http;
     private readonly SemaphoreSlim _requests = new(2, 2);
     private readonly Dictionary<string, Pending> _inflight = new();
     private readonly Dictionary<string, Cached> _cache = new();
@@ -29,8 +29,10 @@ public sealed class MediaDetailsService : IDisposable
         public bool Completed;
         public int Generation;
     }
-    public MediaDetailsService()
+    public MediaDetailsService() : this(null) { }
+    public MediaDetailsService(HttpMessageHandler? handler)
     {
+        _http = new(handler ?? new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 BilibiliLiveAssistant/1.0");
     }
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);

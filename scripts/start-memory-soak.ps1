@@ -7,6 +7,9 @@ param(
     [ValidateSet('unique','shared','none','avatars','emotes')][string]$Images = 'unique',
     [string]$BinarySource = '',
     [string]$AppearanceSettingsPath = '',
+    [string]$ReplaySource = '',
+    [ValidateCount(0,7)][string[]]$ReplayImageSources = @(),
+    [ValidateRange(30,3600)][int]$ReplayWindowSeconds = 600,
     [switch]$UseCurrentAccount,
     [switch]$KeepOverviewVisible,
     [ValidateRange(0,600)][int]$StopObservationSeconds = 0,
@@ -31,7 +34,8 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($UseCurrentAccount -and $LiveRoom -le 0) { throw '当前账号仅允许用于明确指定的真实房间观察' }
 if ($KeepOverviewVisible -and $View -notin @('both','dashboard')) { throw '保持概览可见仅适用于概览显示场景' }
-if ($StopObservationSeconds -gt 0 -and $LiveRoom -le 0) { throw '停止后观察目前仅适用于真实房间' }
+if ($StopObservationSeconds -gt 0 -and $LiveRoom -le 0 -and $ReplaySource.Length -eq 0) { throw '停止后观察仅适用于真实房间或隔离存档回放' }
+if ($ReplaySource.Length -gt 0 -and ($LiveRoom -gt 0 -or $UseCurrentAccount -or $View -eq 'pipeline')) { throw '本机回放不能同时连接直播、读取账号或使用纯管线模式' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $sourceDirectory = Join-Path $repository 'tests/BilibiliLiveAssistant.StressHarness/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64'
 if ($BinarySource.Length -gt 0) { $sourceDirectory = (Resolve-Path -LiteralPath $BinarySource).Path }
@@ -40,7 +44,7 @@ $binaryDirectory = Join-Path $repository "artifacts/memory-soak/bin-$Name"
 if ((Test-Path -LiteralPath $runDirectory) -or (Test-Path -LiteralPath $binaryDirectory)) { throw '测试目录已存在，请使用新的 Name，避免覆盖证据' }
 if (!(Test-Path -LiteralPath (Join-Path $sourceDirectory 'StressApp.exe'))) { throw '请先编译 Release x64 压力程序' }
 $buildManifestPath = Join-Path $sourceDirectory 'soak-build.json'
-if ($LiveRoom -gt 0 -and !(Test-Path -LiteralPath $buildManifestPath)) {
+if (($LiveRoom -gt 0 -or $ReplaySource.Length -gt 0) -and !(Test-Path -LiteralPath $buildManifestPath)) {
     throw '真实房间观察需要带 soak-build.json 的已核对发布构建。请先运行 build-memory-soak.ps1，再用 -BinarySource 指定其输出目录。'
 }
 if (Test-Path -LiteralPath $buildManifestPath) {
@@ -59,6 +63,8 @@ Get-ChildItem -LiteralPath $sourceDirectory -Force | Copy-Item -Destination $bin
 [ordered]@{ Output=$runDirectory; Name=$Name; Seconds=$Seconds; Rate=$Rate; Users=$Users; WarmupSeconds=10; View=$View; Snapshot=$Snapshot.IsPresent; Images=$Images; AttachImages=!$NoImageBinding.IsPresent; CreateSources=!$NoImageSources.IsPresent; DrawingDecode=$DrawingDecoder.IsPresent; ScrollProbe=$ScrollProbe.IsPresent; LiveRoom=$LiveRoom; BaselineSeconds=$BaselineSeconds; EntryAvatars=!$NoEntryAvatars.IsPresent; FixturePort=$FixturePort; FixtureCount=$FixtureCount; Pattern=$Pattern; StartupOnly=$StartupOnly.IsPresent; LifecycleProbe=$LifecycleProbe.IsPresent; AnimateEmotes=$AnimateEmotes.IsPresent } |
     ForEach-Object { $_.InteractionProbe = $InteractionProbe.IsPresent; $_.TradeProbe = $TradeProbe.IsPresent; $_.PlaybackProbe = $PlaybackProbe.IsPresent;
         $_.AppearanceSettingsPath = if ($AppearanceSettingsPath.Length -gt 0) { (Resolve-Path -LiteralPath $AppearanceSettingsPath).Path } else { '' };
+        $_.ReplaySource = if ($ReplaySource.Length -gt 0) { (Resolve-Path -LiteralPath $ReplaySource).Path } else { '' }; $_.ReplayWindowSeconds = $ReplayWindowSeconds;
+        $_.ReplayImageSources = @($ReplayImageSources | ForEach-Object { (Resolve-Path -LiteralPath $_).Path });
         $_.KeepOverviewVisible = $KeepOverviewVisible.IsPresent; $_.StopObservationSeconds = $StopObservationSeconds; $_.UseCurrentAccount = $UseCurrentAccount.IsPresent; $_ } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binaryDirectory 'soak-config.json') -Encoding utf8
 $binary = Join-Path $binaryDirectory 'StressApp.exe'
 # Explorer avoids inheriting the Codex/terminal package identity. Never launch

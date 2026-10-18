@@ -72,7 +72,12 @@ public sealed partial class LiveAssistantViewModel : ObservableObject, IAsyncDis
     public LiveEventHistory Events { get; } = new();
     public DashboardHistory Dashboard { get; } = new();
     public DanmakuCardBoard CardBoard { get; } = new();
-    internal MediaDetailsService Media { get; } = new();
+    internal MediaDetailsService Media { get; } =
+#if MEMORY_SOAK
+        new(App.Replay is null ? null : new OfflineReplayMedia());
+#else
+        new();
+#endif
     internal BiliImageCache Images { get; }
     internal UiImageSourceService UiImages => Images.Sources;
     private readonly ProcessResourceBudget _resourceBudget;
