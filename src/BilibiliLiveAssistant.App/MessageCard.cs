@@ -31,6 +31,7 @@ internal sealed class MessageCard : Grid, IDisposable
     private RichTextBlock? _reusableCompactHeader;
     private BiliImageView? _reusableFullEmote;
     private Viewbox? _reusableFullEmoteHost;
+    private ReusableEntryVisual? _reusableEntry;
     private bool _entryReuse, _scReuse;
     private MessageActions? _actions;
     private TextBlock? _legacyStatus;
@@ -153,6 +154,18 @@ internal sealed class MessageCard : Grid, IDisposable
     private Border BuildInteraction(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, DashboardSettings style)
     {
         var message = record.Event;
+        if (IsReusableEntry(message))
+        {
+            _entryReuse = true;
+            Margin = new(0, 0, 0, Math.Min(style.MessageSpacing, 5));
+            _reusableEntry = new(style, (url, fallback, width, height, avatar, fill, uid) =>
+            {
+                var image = new BiliImageView(vm.Images, url, fallback, width, height, false, animations, _ownedVisible, avatar, fill, uid);
+                _images.Add(image); return image;
+            });
+            _reusableEntry.Update(message);
+            return _reusableEntry.Root;
+        }
         var follow = LiveInteractions.IsFollow(message);
         var like = LiveInteractions.IsLike(message);
         var appearance = message.Appearance;
@@ -182,15 +195,6 @@ internal sealed class MessageCard : Grid, IDisposable
             LineHeight = style.FontSize * 1.25 + Math.Min(style.LineSpacing, 4),
         };
         var paragraph = new Paragraph { Margin = new(0) };
-        var reusableEntry = IsReusableEntry(message);
-        if (reusableEntry)
-        {
-            _entryReuse = true; _reusableParagraph = paragraph;
-            _reusableText = new(paragraph, style,
-                (emote, fallback) => CreateEmote(emote, fallback, false, style, vm, animations, _ownedVisible), entry: true);
-            _reusableText.Update(message);
-        }
-        if (!reusableEntry)
         {
             if (follow) AddBadge(paragraph, LiveInteractions.FollowLabel(message), "#AD3E6C", style.BadgeSize);
             if (like) AddBadge(paragraph, "点赞", "#A75432", style.BadgeSize);
@@ -275,7 +279,6 @@ internal sealed class MessageCard : Grid, IDisposable
             Background = follow ? Brush("#AD3E6C", 0.16) : null };
         DashboardUi.Describe(border, $"{message.Username} · {message.OccurredAt:yyyy-MM-dd HH:mm:ss}" +
             (appearance?.InteractionHint is { Length: > 0 } hint ? $" · {hint}" : ""));
-        if (reusableEntry) _reusableBorder = border;
         return border;
     }
 
@@ -366,10 +369,7 @@ internal sealed class MessageCard : Grid, IDisposable
         border.BorderBrush = Brush(tier.Accent); border.BorderThickness = new(4, 1, 1, 1);
     }
 
-    private static bool IsReusableEntry(LiveEvent message) => LiveInteractions.IsEntry(message) && message.Username.Length > 0
-        && !LiveInteractions.IsFollow(message) && message.Appearance?.EntryEffect is null
-        && string.IsNullOrEmpty(message.Appearance?.AvatarFrameUrl) && string.IsNullOrEmpty(message.Appearance?.InteractionIconUrl)
-        && string.IsNullOrEmpty(message.Appearance?.InteractionLabel) && string.IsNullOrEmpty(message.Appearance?.InteractionHint);
+    private static bool IsReusableEntry(LiveEvent message) => LiveInteractions.IsEntry(message) && message.Username.Length > 0;
     internal static bool IsReusable(DashboardRecord record, DashboardSettings style, bool important) =>
         IsReusableEntry(record.Event) || (style.CompactMessages
         && record.Event.Type is (LiveEventType.Danmaku or LiveEventType.Gift or LiveEventType.Guard or LiveEventType.SuperChat)
@@ -377,9 +377,9 @@ internal sealed class MessageCard : Grid, IDisposable
         && (record.Event.Type != LiveEventType.SuperChat || record.Event.Appearance?.FullEmote is null));
     internal bool RetireForReuse()
     {
-        if (_disposed || _reusableParagraph is null || _images.Count > 8) return false;
+        if (_disposed || (_reusableParagraph is null && _reusableEntry is null) || _images.Count > 8) return false;
         Deactivate(); _visible = static () => false; _actions?.ClearBinding();
-        _reusableText!.ClearText(); RecordId = Guid.Empty;
+        _reusableText?.ClearText(); _reusableEntry?.Clear(); RecordId = Guid.Empty;
         _reusableBody?.ClearText();
         AutomationProperties.SetName(this, "");
         foreach (var image in _images) image.Rebind("", "", 0);
@@ -387,7 +387,7 @@ internal sealed class MessageCard : Grid, IDisposable
     }
     internal bool TryRebind(DashboardRecord record, LiveAssistantViewModel vm, MessageAnimationClock animations, Func<bool> visible, bool important)
     {
-        if (_disposed || _reusableParagraph is null || _important != important || !IsReusable(record, vm.Settings.Dashboard, important)
+        if (_disposed || (_reusableParagraph is null && _reusableEntry is null) || _important != important || !IsReusable(record, vm.Settings.Dashboard, important)
             || _entryReuse != IsReusableEntry(record.Event)
             || _scReuse != (record.Event.Type == LiveEventType.SuperChat)
             || !MatchesStyle(vm.Settings.Dashboard) || MediaStyle != vm.Settings.MediaPreview) return false;
@@ -396,6 +396,7 @@ internal sealed class MessageCard : Grid, IDisposable
         _actions?.Bind(record);
         var message = record.Event; var style = vm.Settings.Dashboard;
         UpdateAutomationText(message);
+        if (_reusableEntry is not null) { _reusableEntry.Update(message); return true; }
         foreach (var image in _images) if (image.IsAvatar) image.Rebind(message.Appearance?.AvatarUrl ?? "", message.Username, AvatarUid(message));
         _reusableText!.Update(message);
         if (_reusableCompactBody is not null) UpdateFullEmote(message, style, vm, animations);
@@ -581,6 +582,7 @@ internal sealed class MessageCard : Grid, IDisposable
         _visible = static () => false;
         _reusableParagraph?.Inlines.Clear(); _reusableParagraph = null; _reusableBorder = null; _reusableText = null; _reusableBody = null;
         _reusableCompactBody = null; _reusableCompactHeader = null; _reusableFullEmote = null; _reusableFullEmoteHost = null;
+        _reusableEntry = null;
         foreach (var image in _images) image.Dispose(); _images.Clear();
         _media?.Dispose(); _media = null;
         _actions?.Dispose(); _actions = null;
