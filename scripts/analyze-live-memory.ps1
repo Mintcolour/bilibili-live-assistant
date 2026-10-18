@@ -34,6 +34,11 @@ function Summarize-Window([object[]]$Rows) {
         privateCommitEndMiB = [math]::Round($last.privateBytes / 1MB, 2)
         privateCommitSlopeMiBPerMinute = if ($denominator -gt 0) { [math]::Round(60 * $commitNumerator / $denominator / 1MB, 4) } else { $null }
         managedEndMiB = [math]::Round($last.managedBytes / 1MB, 2)
+        managedStartMiB = [math]::Round($first.managedBytes / 1MB, 2)
+        allocatedMiBPerMinute = if ($duration -gt 0 -and $null -ne $first.allocatedBytes -and $null -ne $last.allocatedBytes) {
+            [math]::Round(60 * ($last.allocatedBytes - $first.allocatedBytes) / $duration / 1MB, 2)
+        } else { $null }
+        gen2Collections = if ($null -ne $first.gen2 -and $null -ne $last.gen2) { $last.gen2 - $first.gen2 } else { $null }
         gcCommittedEndMiB = if ($null -ne $last.gcCommittedBytes) { [math]::Round($last.gcCommittedBytes / 1MB, 2) } else { $null }
         finalizersPendingEnd = $last.gcFinalizationPending
         receivedEvents = $last.ui.received - $first.ui.received
@@ -45,6 +50,16 @@ function Summarize-Window([object[]]$Rows) {
             $last.ui.window.dashboard.danmaku.movedCards - $first.ui.window.dashboard.danmaku.movedCards
         } else { $null }
         decodedImages = $last.ui.imageResources.decodeCount - $first.ui.imageResources.decodeCount
+        createdDisplaySources = if ($null -ne $last.ui.imageResources.created -and $null -ne $first.ui.imageResources.created) {
+            $last.ui.imageResources.created - $first.ui.imageResources.created
+        } else { $null }
+        releasedDisplaySources = if ($null -ne $last.ui.imageResources.released -and $null -ne $first.ui.imageResources.released) {
+            $last.ui.imageResources.released - $first.ui.imageResources.released
+        } else { $null }
+        displaySourcesEnd = $last.ui.imageResources.nativeSources
+        displaySourceEstimateEndMiB = if ($null -ne $last.ui.imageResources.nativePixelBytesEstimate) {
+            [math]::Round($last.ui.imageResources.nativePixelBytesEstimate / 1MB, 3)
+        } else { $null }
         cachedPixelEndMiB = [math]::Round($last.ui.images.staticPixelBytes / 1MB, 2)
         pixelBudgetEndMiB = if ($null -ne $last.ui.images.memoryBudgetBytes) {
             [math]::Round($last.ui.images.memoryBudgetBytes / 1MB, 2)
@@ -144,6 +159,10 @@ $results = foreach ($directory in $Path) {
             nativeSourcesEnd = $end.ui.imageResources.nativeSources
             nativeSourceEstimateEndMiB = [math]::Round($end.ui.imageResources.nativePixelBytesEstimate / 1MB, 3)
             uiImageLeasesEnd = $end.ui.uiImages.leases
+            idleDisplaySourcesEnd = $end.ui.uiImages.idleSources
+            cachedPixelEndMiB = if ($null -ne $end.ui.images.staticPixelBytes) {
+                [math]::Round($end.ui.images.staticPixelBytes / 1MB, 3)
+            } else { $null }
             pendingUploadsEnd = $end.ui.imageResources.pendingUploads
             activeUploadsEnd = $end.ui.imageResources.activeUploads
             pendingImageRequestsEnd = $end.ui.images.inflight
@@ -175,6 +194,7 @@ $results = foreach ($directory in $Path) {
         overviewCardsRebound = $last.ui.window.dashboard.danmaku.reboundCards
         visibilityRestores = $last.visibilityRestores
         asyncOperationOwnership = $last.ui.imageResources.experimentalAsyncOwnership
+        experimentalWic = $last.ui.imageResources.experimentalWic
         windows = $windows
         visibilityWindows = $visibilityWindows
         tailWindows = $tailWindows
