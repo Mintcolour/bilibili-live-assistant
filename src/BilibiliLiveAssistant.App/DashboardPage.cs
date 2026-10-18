@@ -764,7 +764,12 @@ internal sealed class DashboardList : Grid, IDisposable
             if (owner.ContentTemplateRoot is ContentPresenter host && ReferenceEquals(host.Content, card)) host.Content = null;
             _containerCards.Remove(owner);
         }
-        if (_active && _cardPool.Count < 16 && card.RetireForReuse()) _cardPool.Push(card);
+        // Removing the final records can recycle containers after the pool was
+        // cleared at the start of Sync. Do not refill it with old-room visuals,
+        // or keep controls whose style can no longer be reused.
+        if (_active && _visibleRecords.Count > 0 && _cardPool.Count < 16
+            && card.MatchesStyle(_vm.Settings.Dashboard) && card.MediaStyle == _vm.Settings.MediaPreview
+            && card.RetireForReuse()) _cardPool.Push(card);
         else card.Dispose();
     }
     private void ClearCardPool() { while (_cardPool.TryPop(out var card)) card.Dispose(); }
