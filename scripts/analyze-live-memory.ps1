@@ -94,6 +94,8 @@ $results = foreach ($directory in $Path) {
     $samples = @($records | Where-Object kind -eq sample)
     $interferenceFile = Join-Path $root 'diagnostic-interference.json'
     $interference = Test-Path -LiteralPath $interferenceFile
+    $variantFile = Join-Path $root 'diagnostic-variant.json'
+    $variant = if (Test-Path -LiteralPath $variantFile) { Get-Content -LiteralPath $variantFile -Raw | ConvertFrom-Json } else { $null }
     $diagnosticFromSeconds = $null
     if ($interference) {
         $marker = Get-Content -LiteralPath $interferenceFile -Raw | ConvertFrom-Json
@@ -179,6 +181,7 @@ $results = foreach ($directory in $Path) {
         isolatedHistory = $true; inheritedAppearance = ![string]::IsNullOrEmpty($header.config.AppearanceSettingsPath)
         observedSeconds = $duration; requiredSeconds = $RequiredSeconds; coverageComplete = $coverage
         diagnosticInterference = $interference; diagnosticFromSeconds = $diagnosticFromSeconds
+        diagnosticVariant = $variant
         environmentObservations = if (Test-Path -LiteralPath (Join-Path $root 'environment-observations.json')) {
             Get-Content -LiteralPath (Join-Path $root 'environment-observations.json') -Raw | ConvertFrom-Json
         } else { $null }
