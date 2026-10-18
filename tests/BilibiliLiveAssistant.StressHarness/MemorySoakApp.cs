@@ -62,6 +62,18 @@ public partial class App : Application
             var settings = new AppSettings { RoomId = live ? _config.LiveRoom : 900000001, AnonymousReading = true,
                 History = new() { Directory = Path.Combine(_config.Output, "history") },
                 Dashboard = new() { RankPanelCollapsed = true, ShowEntryAvatars = _config.EntryAvatars, AnimateEmotes = _config.AnimateEmotes, ShowAvatars = _config.Images is not ("none" or "emotes") } };
+            if (!string.IsNullOrEmpty(_config.AppearanceSettingsPath))
+            {
+                // Copy only appearance and display preferences. Do not construct
+                // JsonSettingsStore (which can migrate credentials), copy account
+                // configuration, share user history or enable a second OBS server.
+                var appearance = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_config.AppearanceSettingsPath),
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new();
+                settings = settings with { Dashboard = appearance.Dashboard, Display = appearance.Display,
+                    Compact = appearance.Compact with { ObsEnabled = false }, HotPhrases = appearance.HotPhrases,
+                    PriceDurations = appearance.PriceDurations, Cards = appearance.Cards,
+                    MediaPreview = appearance.MediaPreview, TradeViews = appearance.TradeViews };
+            }
             HttpMessageHandler? handler = live ? null : _config.FixturePort > 0 ? new LoopbackFixtureImages(_config.FixturePort, _config.FixtureCount) : new FixtureImages();
             var images = new BiliImageCache(handler, Path.Combine(_config.Output, "images"));
             ViewModel = new(settings, new SoakStore(), _client, live ? new BiliLiveInfoService() : new SoakInfo(), images);
@@ -462,7 +474,7 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 }
-internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false);
+internal sealed record SoakConfig(string Output, string Name = "baseline", int Seconds = 180, int Rate = 50, int Users = 20000, int WarmupSeconds = 10, string View = "both", bool Snapshot = false, string Images = "unique", bool AttachImages = true, bool CreateSources = true, bool DrawingDecode = false, bool ScrollProbe = false, int LiveRoom = 0, int BaselineSeconds = 60, bool EntryAvatars = true, int FixturePort = 0, int FixtureCount = 11, string Pattern = "steady", bool StartupOnly = false, bool LifecycleProbe = false, bool AnimateEmotes = false, bool InteractionProbe = false, bool TradeProbe = false, bool PlaybackProbe = false, string AppearanceSettingsPath = "");
 internal sealed class SoakStore : ISettingsStore
 {
     public string Path => "isolated-memory-only";
