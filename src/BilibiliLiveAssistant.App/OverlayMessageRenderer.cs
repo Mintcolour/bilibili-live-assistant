@@ -137,7 +137,8 @@ internal static class OverlayMessageRenderer
     }
 
     public static Bitmap Render(LiveEvent value, OverlayRegionSettings region, DashboardSettings style, BiliImageCache cache,
-        int width = 0, int maxHeight = 128, bool card = false, bool background = true, bool inlineHeader = false)
+        int width = 0, int maxHeight = 128, bool card = false, bool background = true, bool inlineHeader = false,
+        ISet<string>? renderedImages = null)
     {
         using var timing = PerformanceCounters.Measure(2);
         var imageStyle = style;
@@ -321,7 +322,12 @@ internal static class OverlayMessageRenderer
             if (images.TryGetValue(url, out var found)) return found;
             images[url] = null;
             if (cache.TryGetStaticFrame(url, ImageDecodeLimit(value, url, imageStyle, region), ImageRole(value, url)) is not { } frame) return null;
-            try { return images[url] = frame.CreateDrawingBitmap(); }
+            try
+            {
+                var bitmap = frame.CreateDrawingBitmap();
+                renderedImages?.Add(url);
+                return images[url] = bitmap;
+            }
             catch (ArgumentException) { return null; }
         }
         Bitmap MakeGiftIcon(bool guard)

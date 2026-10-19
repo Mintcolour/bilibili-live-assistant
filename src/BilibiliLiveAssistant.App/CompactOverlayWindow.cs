@@ -12,17 +12,20 @@ namespace BilibiliLiveAssistant.App;
 // Native alpha surface; only the visible rows own sprites and image consumers.
 internal sealed class CompactOverlayWindow : Forms.Form
 {
-    private sealed class Row(long id, LiveEvent value, Bitmap bitmap, int width, int maxHeight, bool card) : IDisposable
+    private sealed class Row(long id, LiveEvent value, Bitmap bitmap, int width, int maxHeight, bool card, HashSet<string> renderedImages) : IDisposable
     {
         public long Id = id;
         public LiveEvent Source = value, Value = value;
         public Bitmap Image = bitmap;
         public int Width = width, MaxHeight = maxHeight;
         public bool Card = card, RefreshQueued;
+        // URLs only: the row bitmap already owns the displayed pixels. Do not
+        // retain image assets, or reload an image merely evicted from the cache.
+        public HashSet<string> RenderedImages = renderedImages;
         public Rectangle Bounds;
         public CompactRowMotion Motion = new();
         public CancellationTokenSource Cancellation = new();
-        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); }
+        public void Dispose() { Cancellation.Cancel(); Cancellation.Dispose(); Image.Dispose(); RenderedImages.Clear(); }
     }
     private readonly LiveAssistantViewModel _vm;
     private readonly OverlayFrameClock _frames;
@@ -43,6 +46,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private Point _statusLocation;
     private double _statusStarted;
     private bool _statusVisible, _listMoving, _hotMoving;
+    private long _bitmapCreates, _imageRefreshes, _paintedImageSkips, _failedImageLoads;
     private Forms.Form? _detail;
     private LiveEvent? _detailValue;
     private readonly Forms.ToolStripMenuItem _viewMessage = new("查看这条消息…");
@@ -55,7 +59,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private bool Interactive => _reading || Editing;
     internal object GetDiagnostics() => new { visible = Visible, editing = Editing, reading = _reading, rows = _rows.Count,
         bitmapBytes = _rows.Values.Sum(row => (long)row.Image.Width * row.Image.Height * 4) + (_statusStrip?.Bytes ?? 0) + _hotSprite.Bytes, readingOlder = _anchor is not null,
-        animationActive = _frames.IsRunning(OnAnimationFrame), leavingRows = _rows.Values.Count(row => row.Motion.Leaving) };
+        animationActive = _frames.IsRunning(OnAnimationFrame), leavingRows = _rows.Values.Count(row => row.Motion.Leaving),
+        bitmapCreates = _bitmapCreates, imageRefreshes = _imageRefreshes, paintedImageSkips = _paintedImageSkips, failedImageLoads = _failedImageLoads };
     private CompactTimeline Timeline => Editing ? _samples : _vm.CompactOverlay.Timeline;
     public CompactOverlayWindow(LiveAssistantViewModel vm, OverlayFrameClock frames)
     {
@@ -346,18 +351,21 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         var width = Math.Max(120, ClientSize.Width - 12);
         if (_rows.TryGetValue(key, out var row) && ReferenceEquals(row.Source, value) && row.Width == width && row.MaxHeight == maxHeight && row.Card == card) return row;
-        var bitmap = CreateBitmap(value, width, maxHeight, card, key > 0);
+        var renderedImages = new HashSet<string>(StringComparer.Ordinal);
+        var bitmap = CreateBitmap(value, width, maxHeight, card, key > 0, renderedImages);
         var motion = row?.Motion;
         if (row is not null) { row.Dispose(); _rows.Remove(key); }
-        row = new(key, value, bitmap, width, maxHeight, card);
+        row = new(key, value, bitmap, width, maxHeight, card, renderedImages);
         if (motion is not null) row.Motion = motion;
         _rows.Add(key, row);
         if (!Editing && !value.Extra.ContainsKey("room_bulletin")) _ = LoadImagesAsync(row); return row;
     }
-    private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline)
+    private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline, HashSet<string> renderedImages)
     {
         var region = ObsOverlayProjection.Region(EffectiveSettings, value);
-        return OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false, inlineHeader: inline);
+        var bitmap = OverlayMessageRenderer.Render(value, region, _vm.Settings.Dashboard, _vm.Images, width, height, card, background: false, inlineHeader: inline, renderedImages: renderedImages);
+        _bitmapCreates++;
+        return bitmap;
     }
     private void DrawRow(Graphics graphics, Row row) => graphics.DrawImageUnscaled(row.Image, row.Bounds.Location);
     private async Task LoadImagesAsync(Row row)
@@ -372,9 +380,14 @@ internal sealed class CompactOverlayWindow : Forms.Form
             foreach (var url in OverlayMessageRenderer.ImageUrls(row.Value, _vm.Settings.Dashboard).Distinct().Take(16))
             {
                 if (!Current()) return;
+                // Inspect what this bitmap actually rendered, not the cache's
+                // current state: another consumer may fill/evict it meanwhile.
+                if (row.RenderedImages.Contains(url)) { _paintedImageSkips++; continue; }
                 var role = OverlayMessageRenderer.ImageRole(row.Value, url);
-                await _vm.Images.GetStaticForViewAsync(url, token, OverlayMessageRenderer.ImageDecodeLimit(row.Value, url, _vm.Settings.Dashboard, region), role);
+                var asset = await _vm.Images.GetStaticForViewAsync(url, token, OverlayMessageRenderer.ImageDecodeLimit(row.Value, url, _vm.Settings.Dashboard, region), role);
                 if (!Current()) return;
+                if (asset is null) { _failedImageLoads++; continue; }
+                if (row.RenderedImages.Contains(url)) { _paintedImageSkips++; continue; }
                 if (!row.RefreshQueued)
                 {
                     row.RefreshQueued = true;
@@ -383,8 +396,10 @@ internal sealed class CompactOverlayWindow : Forms.Form
                         row.RefreshQueued = false; if (!Current()) return;
                         try
                         {
-                            var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0);
-                            row.Image.Dispose(); row.Image = replacement; RequestRender();
+                            var renderedImages = new HashSet<string>(StringComparer.Ordinal);
+                            var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0, renderedImages);
+                            row.Image.Dispose(); row.Image = replacement; row.RenderedImages = renderedImages;
+                            _imageRefreshes++; RequestRender();
                         }
                         catch (Exception ex) when (ex is not OutOfMemoryException) { ReportRenderError(ex); }
                     }));
