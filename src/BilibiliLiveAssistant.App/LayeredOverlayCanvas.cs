@@ -56,15 +56,21 @@ internal sealed class LayeredOverlayCanvas : IDisposable
         catch { Dispose(); throw; }
     }
 
-    public void Present(nint window, Point location, double opacity, Rectangle dirty)
+    public void Present(nint window, Point location, double opacity, Rectangle dirty, Size? presentSize = null)
     {
         Graphics.Flush(System.Drawing.Drawing2D.FlushIntention.Sync);
         var destination = new NativePoint { X = location.X, Y = location.Y };
         var source = new NativePoint();
-        var size = new NativeSize { Width = Width, Height = Height };
+        // A transient window resize presents the existing pixels stretched until
+        // the size settles. Reallocating a full-window DIB on every WM_SIZE would
+        // churn megabytes of unmanaged memory per dragged pixel.
+        var stretched = presentSize is { } target && (target.Width != Width || target.Height != Height);
+        var present = presentSize.GetValueOrDefault(new Size(Width, Height));
+        var size = stretched ? new NativeSize { Width = present.Width, Height = present.Height } : new NativeSize { Width = Width, Height = Height };
         var blend = new BlendFunction { SourceConstantAlpha = (byte)Math.Clamp(Math.Round(opacity * 255), 0, 255), AlphaFormat = 1 };
-        if (!_presented) dirty = new Rectangle(0, 0, Width, Height);
+        if (!_presented || stretched) dirty = new Rectangle(0, 0, present.Width, present.Height);
         Marshal.StructureToPtr(destination, _destination, false);
+        Marshal.StructureToPtr(size, _size, false);
         Marshal.StructureToPtr(blend, _blend, false);
         Marshal.StructureToPtr(new NativeRect { Left = dirty.Left, Top = dirty.Top, Right = dirty.Right, Bottom = dirty.Bottom }, _dirty, false);
         var update = new UpdateInfo

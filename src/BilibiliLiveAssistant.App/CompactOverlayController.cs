@@ -76,6 +76,7 @@ internal sealed class CompactOverlayController : IAsyncDisposable
         _configuration = current;
         if (restart) ConfigureServer();
         _server?.PublishTheme(current.ObsTheme);
+        Timeline.Advance(DateTimeOffset.UtcNow, _vm.Settings);
         Publish(); Schedule();
     }
     private void ConfigureServer()

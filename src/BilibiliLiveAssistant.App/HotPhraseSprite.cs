@@ -32,14 +32,20 @@ internal sealed class HotPhraseSprite(BiliImageCache cache, Action invalidate) :
     internal static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
     internal bool Moving => _chips.Values.Any(c => c.Motion.Running(Now));
     internal bool HasContent => _chips.Count > 0;
+    // Keep only the rows actually used, including chips finishing their exit animation.
+    internal int OccupiedHeight => _chips.Count == 0 ? 0
+        : Math.Min(_size.Height, _chips.Values.Max(chip => chip.Layout.Bounds.Bottom) + 4);
     internal long Bytes => _chips.Values.Sum(c => c.Image is { } b ? (long)b.Width * b.Height * 4 : 0);
     internal void Update(IReadOnlyList<HotPhrase> source, HotPhraseSettings style, Size size, int maxRows, string family)
     {
+        // A collapsed dock is not drawn, so retire finished chips before the cached-layout return.
+        var now = Now;
+        foreach (var key in _chips.Where(pair => pair.Value.Motion.Leaving && !pair.Value.Motion.Running(now)).Select(pair => pair.Key).ToArray()) Remove(key);
         if (ReferenceEquals(_source, source) && _style == style && _size == size && _family == family && _maxRows == maxRows) return;
         var restyle = _style != style || _family != family; var animate = style.AnimationEnabled && _ready && !restyle;
         _source = source; _style = style; _size = size; _family = family; _maxRows = maxRows;
         var layouts = HotBubbleLayouts.Create(source, style, size.Width, size.Height, maxRows, family);
-        var keep = new HashSet<string>(); var now = Now; var seconds = animate ? style.AnimationDurationMs / 1000d : 0;
+        var keep = new HashSet<string>(); var seconds = animate ? style.AnimationDurationMs / 1000d : 0;
         foreach (var layout in layouts)
         {
             var key = HotBubbleLayouts.Key(layout.Phrase); keep.Add(key);

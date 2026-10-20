@@ -15,6 +15,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         _lines = new("固定 SC 正文行数", 6, 1, 12), _follow = new("每条关注停留", 5, 1, 300, " 秒");
     private readonly SettingColor _color = new("背景颜色");
     private readonly ToggleSwitch _listAnimation = new() { Header = "混合列表出入动画" };
+    private readonly CheckBox _entryInList = new() { Content = "进房提示加入混合消息列表" };
     private readonly SettingSlider _animationDuration = new("动画过渡时长", 200, 100, 500, " 毫秒");
     private readonly CheckBox[] _sections = new[] { "人数与高能榜", "SC 固定强调区", "礼物／上舰固定强调区", "混合消息列表", "进房提示", "关注提示" }.Select(s => new CheckBox { Content = s }).ToArray();
     private readonly PriceTiersEditor _sc = new("SC · 金额下限（元）／停留（秒）", 10, 50), _gift = new("礼物 · 合并总金额下限／停留（秒）", 3, 30);
@@ -35,7 +36,10 @@ internal sealed class CompactSettingsEditor : StackPanel
         var obs = new StackPanel { Spacing = 10, Children = { _obs, _address, copy,
             new TextBlock { Text = "保存启用后复制地址。在 OBS 添加“浏览器”源，将宽高设为下方数值。桌面隐藏或切回普通模式不影响 OBS。", TextWrapping = TextWrapping.Wrap, Opacity = 0.65, FontSize = 12 }, _width, _height, _port } };
         var style = new StackPanel { Spacing = 10, Children = { _font, _emote, _opacity, _background, _color } };
-        var sections = new StackPanel { Spacing = 8 }; foreach (var section in _sections) sections.Children.Add(section); sections.Children.Add(_lines); sections.Children.Add(_follow);
+        var sections = new StackPanel { Spacing = 8 }; foreach (var section in _sections) sections.Children.Add(section);
+        sections.Children.Add(_entryInList);
+        sections.Children.Add(new TextBlock { Text = "默认关闭，进房消息不挤占混合列表；底部进房提示由“进房提示”单独控制。桌面与 OBS 共用。", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.65 });
+        sections.Children.Add(_lines); sections.Children.Add(_follow);
         var prices = new StackPanel { Spacing = 12, Children = { _sc, _gift, _guardUnknown } };
         Children.Add(new Expander { Header = "OBS 网页源", Content = obs, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch });
         var themeExpander = new Expander { Header = "OBS 网页样式 · 模板与 CSS", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -78,6 +82,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         _background.Value = compact.BackgroundOpacity * 100; _color.Text = compact.BackgroundColor;
         var values = new[] { compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow };
         for (var i = 0; i < values.Length; i++) _sections[i].IsChecked = values[i];
+        _entryInList.IsChecked = compact.ShowEntryInList;
         _lines.Value = compact.SuperChatLines; _follow.Value = compact.FollowSeconds;
         _listAnimation.IsOn = compact.ListAnimationEnabled; _animationDuration.Value = compact.ListAnimationDurationMs;
         _sc.Load(prices.SuperChat); _gift.Load(prices.Gift); _guardUnknown.Value = prices.UnknownGuardSeconds;
@@ -88,7 +93,7 @@ internal sealed class CompactSettingsEditor : StackPanel
         FontSize = (int)_font.Value, EmoteSize = (int)_emote.Value, Opacity = _opacity.Value / 100, BackgroundOpacity = _background.Value / 100,
         BackgroundColor = _color.Text, ShowStatus = _sections[0].IsChecked == true, ShowSuperChat = _sections[1].IsChecked == true,
         ShowGift = _sections[2].IsChecked == true, ShowList = _sections[3].IsChecked == true, ShowEntry = _sections[4].IsChecked == true, ShowFollow = _sections[5].IsChecked == true,
-        SuperChatLines = (int)_lines.Value, FollowSeconds = _follow.Value,
+        ShowEntryInList = _entryInList.IsChecked == true, SuperChatLines = (int)_lines.Value, FollowSeconds = _follow.Value,
         ListAnimationEnabled = _listAnimation.IsOn, ListAnimationDurationMs = (int)_animationDuration.Value, ObsTheme = _theme?.Read() ?? _current.ObsTheme }).Normalize();
     public OverlayPriceDurations ReadPrices() => new OverlayPriceDurations { SuperChat = _sc.Read(), Gift = _gift.Read(), UnknownGuardSeconds = _guardUnknown.Value }.Normalize();
     public void Validate() { _sc.Validate(); _gift.Validate(); _theme?.Validate(); }

@@ -151,6 +151,16 @@ internal sealed class UiImageSourceService : IDisposable
     private void TrimIdle()
     {
         if (_disposed) { ClearIdle(); return; }
+        // Common case: a lease release leaves the idle set inside both budgets.
+        // Scan once and return before sorting, instead of sorting every release.
+        long estimated = 0; var idleCount = 0; var stale = false;
+        foreach (var pair in _sources)
+        {
+            if (pair.Value.Leases != 0 || _pending.ContainsKey(pair.Key)) continue;
+            idleCount++; estimated += pair.Value.Value.Bytes;
+            if (pair.Key.Generation != _generation) stale = true;
+        }
+        if (!stale && idleCount <= _idleItemLimit && estimated <= _idleByteLimit) return;
         // A completed factory's waiters have not yet received their leases.
         // This runs for every borrow completion/release. Reuse one bounded sort
         // buffer instead of allocating a dictionary-sized LINQ array each time.

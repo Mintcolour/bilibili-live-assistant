@@ -34,6 +34,11 @@ public abstract class OverlaySurface : Forms.Form
     private Task? _inlineSaveTask;
     private int _slider = -1;
     private readonly Forms.Timer _inlinePreviewTimer = new() { Interval = 60 };
+    // Interactive resizes arrive as a burst of WM_SIZE. Present the old canvas
+    // stretched until the final size is known, instead of reallocating a
+    // full-window DIB for every intermediate size.
+    private readonly Forms.Timer _resizeSettle = new() { Interval = 120 };
+    private bool _resizeSettled = true;
     private readonly OverlayEditorPreview _samplePreview = new();
     private OverlayFrameClock? _editorClock;
     private readonly Action<Rectangle> _invalidateSample;
@@ -68,6 +73,7 @@ public abstract class OverlaySurface : Forms.Form
         ApplySurfaceSettings();
         _wasEditing = Editing;
         _inlinePreviewTimer.Tick += (_, _) => { _inlinePreviewTimer.Stop(); ApplyInlinePreview(); };
+        _resizeSettle.Tick += (_, _) => { _resizeSettle.Stop(); _resizeSettled = true; RequestRender(); };
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -209,6 +215,7 @@ public abstract class OverlaySurface : Forms.Form
     {
         base.OnResize(e);
         _sampleDirty = true;
+        _resizeSettled = false; _resizeSettle.Stop(); _resizeSettle.Start();
         RequestRender();
     }
 
@@ -239,6 +246,12 @@ public abstract class OverlaySurface : Forms.Form
             if (dirty.IsEmpty) return;
             if (_canvas is null || _canvas.Width != ClientSize.Width || _canvas.Height != ClientSize.Height)
             {
+                if (_canvas is not null && !_resizeSettled)
+                {
+                    // Mid-drag: stretch the existing pixels to the new window size.
+                    using (PerformanceCounters.Measure(9)) _canvas.Present(Handle, Location, Editing ? 1 : RegionSettings.Opacity, ClientRectangle, ClientSize);
+                    return;
+                }
                 _canvas?.Dispose(); _canvas = null;
                 _canvas = new LayeredOverlayCanvas(ClientSize.Width, ClientSize.Height);
                 dirty = ClientRectangle;
@@ -561,6 +574,8 @@ public abstract class OverlaySurface : Forms.Form
     protected override async void OnResizeEnd(EventArgs e)
     {
         base.OnResizeEnd(e);
+        // Reallocate the canvas at the final size immediately after the drag.
+        _resizeSettle.Stop(); _resizeSettled = true; RequestRender();
         if (!Editing || IsDisposed) return;
         try
         {
@@ -571,7 +586,7 @@ public abstract class OverlaySurface : Forms.Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _editorClock?.Stop(OnEditorFrame); ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
+        if (disposing) { _editorClock?.Stop(OnEditorFrame); ViewModel.PropertyChanged -= OnSettingsChanged; _inlinePreviewTimer.Dispose(); _resizeSettle.Dispose(); _samplePreview.Dispose(); _quickEditor?.Dispose(); _quickEditor = null; _editorMenu?.Dispose(); _editorMenu = null; _canvas?.Dispose(); _canvas = null; }
         base.Dispose(disposing);
     }
 

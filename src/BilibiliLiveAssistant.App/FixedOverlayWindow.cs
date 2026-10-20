@@ -250,6 +250,7 @@ internal sealed class FixedOverlayWindow : OverlaySurface
         if (sprite.ImagesLoading) return;
         sprite.ImagesLoading = true;
         var imageGeneration = sprite.ImageGeneration;
+        var loaded = 0;
         try
         {
             var cancellation = sprite.Cancellation.Token;
@@ -267,12 +268,14 @@ internal sealed class FixedOverlayWindow : OverlaySurface
             {
                 if (await ViewModel.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url), OverlayMessageRenderer.ImageRole(sprite.Event, url)) is null
                     || cancellation.IsCancellationRequested || _cleaned || !Visible || !_sprites.Contains(sprite)) return;
-                QueueImageRefresh(sprite);
+                Interlocked.Increment(ref loaded);
             }
             int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(sprite.Event, url, _style, RegionSettings);
         }
         catch (OperationCanceledException) { }
         finally { if (imageGeneration == sprite.ImageGeneration) sprite.ImagesLoading = false; }
+        // One repaint for the whole batch instead of one per loaded image.
+        if (loaded > 0) QueueImageRefresh(sprite);
     }
 
     private void QueueImageRefresh(Sprite sprite)

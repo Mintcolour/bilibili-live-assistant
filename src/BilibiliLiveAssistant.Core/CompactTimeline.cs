@@ -27,6 +27,7 @@ public sealed class CompactTimeline
 
     public void AddBatch(IReadOnlyList<LiveEvent> batch, DateTimeOffset now, AppSettings settings)
     {
+        ApplyListFilter(settings.Compact);
         ExpireQueues(now);
         foreach (var value in batch)
         {
@@ -38,8 +39,11 @@ public sealed class CompactTimeline
             if (value.Type == LiveEventType.Gift && merge > 0 && _gifts.Find(p => now < p.Ready && GiftAggregation.CanMerge(p.Message.Value, value)) is { } match)
             { match.Message.Value = GiftAggregation.Combine(match.Message.Value, value); continue; }
             var message = new CompactMessage(++_sequence, value, now);
-            if (_rows.Count == 100) _rows.RemoveAt(0);
-            _rows.Add(message);
+            if (settings.Compact.ShowEntryInList || !LiveInteractions.IsEntry(value))
+            {
+                if (_rows.Count == 100) _rows.RemoveAt(0);
+                _rows.Add(message);
+            }
             if (value.Type == LiveEventType.Gift) Add(_gifts, message, now.AddSeconds(merge), 64, true);
             else if (value.Type == LiveEventType.Guard) Add(_guards, message, now, 64, false);
             else if (value.Type == LiveEventType.SuperChat) Add(_sc, message, now, 64, false);
@@ -57,6 +61,8 @@ public sealed class CompactTimeline
         queue.Add(new(message, ready));
     }
     private void Omit() { Omitted++; Dropped?.Invoke(1); }
+    private bool ApplyListFilter(CompactOverlaySettings settings) => !settings.ShowEntryInList
+        && _rows.RemoveAll(row => LiveInteractions.IsEntry(row.Value)) > 0;
     private bool ExpireQueues(DateTimeOffset now)
     {
         var changed = false;
@@ -67,7 +73,9 @@ public sealed class CompactTimeline
     }
     public bool Advance(DateTimeOffset now, AppSettings settings)
     {
+        // Applying a filter also removes already displayed entries without clearing other messages.
         var changed = ExpireQueues(now);
+        if (ApplyListFilter(settings.Compact)) changed = true;
         CompactMessage? Next(CompactMessage? current, List<Pending>[] queues, double fallback, ref DateTimeOffset nextAt, double interval, bool trade)
         {
             if (current?.Expires > now) return current;

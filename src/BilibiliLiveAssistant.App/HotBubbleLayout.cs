@@ -14,7 +14,7 @@ internal static class HotBubbleLayouts
         int width, int height, int maxRows, string family)
     {
         var result = new List<HotBubbleLayout>(5);
-        if (!style.Enabled || width < 80 || height < RowHeight(style)) return result;
+        if (!style.Enabled || items.Count == 0 || width < 80 || height < RowHeight(style)) return result;
         using var bitmap = new Bitmap(1, 1); using var g = Graphics.FromImage(bitmap);
         using var font = OverlayTextRenderer.CreateFont(family, style.FontSize);
         var rowHeight = RowHeight(style); var rows = Math.Min(maxRows, height / rowHeight); var x = 0; var row = 0;

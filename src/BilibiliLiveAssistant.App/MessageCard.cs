@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Foundation;
 
 namespace BilibiliLiveAssistant.App;
 
@@ -873,12 +874,13 @@ internal sealed class MessageAnimationClock : IDisposable
 {
     private readonly List<BiliImageView> _views = new();
     private readonly DispatcherQueueTimer _timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
+    private readonly TypedEventHandler<DispatcherQueueTimer, object> _tick;
     private readonly Func<bool> _visible;
     private bool _disposed;
     internal MessageAnimationClock(Func<bool> visible)
     {
         _visible = visible; _timer.Interval = TimeSpan.FromMilliseconds(100);
-        _timer.Tick += (_, _) =>
+        _tick = (_, _) =>
         {
             if (!_visible() || _views.Count == 0) { Suspend(); return; }
             var played = 0; var now = DateTimeOffset.UtcNow;
@@ -887,10 +889,11 @@ internal sealed class MessageAnimationClock : IDisposable
                 else view.PauseAnimation();
             if (played == 0) _timer.Stop();
         };
+        _timer.Tick += _tick;
     }
     internal void Add(BiliImageView view) { if (_disposed) return; if (!_views.Contains(view)) _views.Add(view); Wake(); }
     internal void Remove(BiliImageView view) { _views.Remove(view); view.PauseAnimation(); if (_views.Count == 0) _timer.Stop(); }
     internal void Wake() { if (!_disposed && _visible() && _views.Count > 0) _timer.Start(); }
     internal void Suspend() { _timer.Stop(); foreach (var view in _views) view.PauseAnimation(); }
-    public void Dispose() { _disposed = true; Suspend(); _views.Clear(); }
+    public void Dispose() { _disposed = true; Suspend(); _timer.Tick -= _tick; _views.Clear(); }
 }

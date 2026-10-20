@@ -39,6 +39,7 @@ internal sealed class CompactQuickEditor : Forms.Form
             ("人数／高能榜", s => s.ShowStatus, (s,v) => s with { ShowStatus = v }), ("SC 固定区", s => s.ShowSuperChat, (s,v) => s with { ShowSuperChat = v }),
             ("礼物／上舰固定区", s => s.ShowGift, (s,v) => s with { ShowGift = v }), ("混合列表", s => s.ShowList, (s,v) => s with { ShowList = v }),
             ("进房", s => s.ShowEntry, (s,v) => s with { ShowEntry = v }), ("关注", s => s.ShowFollow, (s,v) => s with { ShowFollow = v }),
+            ("进房提示加入混合消息列表", s => s.ShowEntryInList, (s,v) => s with { ShowEntryInList = v }),
             ("混合列表出入动画", s => s.ListAnimationEnabled, (s,v) => s with { ListAnimationEnabled = v }),
         })
         { var check = new Forms.CheckBox { Text = title, Checked = read(draft), AutoSize = true }; check.CheckedChanged += (_, _) => { draft = write(draft, check.Checked); Refresh(); }; panel.Controls.Add(check); }

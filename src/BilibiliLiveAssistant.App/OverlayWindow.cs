@@ -285,6 +285,7 @@ public sealed class OverlayWindow : OverlaySurface
         var urls = OverlayMessageRenderer.ImageUrls(item.Event, _vm.Settings.Dashboard).Distinct().Take(16)
             .Where(url => _vm.Images.TryGetStaticFrame(url, DecodeLimit(url), OverlayMessageRenderer.ImageRole(item.Event, url)) is null).ToArray();
         var cancellation = item.Cancellation.Token;
+        var loaded = 0;
         try { await Task.WhenAll(urls.Select(LoadOneAsync).Append(LoadAvatarAsync())); }
         catch (OperationCanceledException) { return; }
         async Task LoadAvatarAsync()
@@ -298,9 +299,11 @@ public sealed class OverlayWindow : OverlaySurface
         {
             if (await _vm.Images.GetStaticForViewAsync(url, cancellation, DecodeLimit(url), OverlayMessageRenderer.ImageRole(item.Event, url)) is null
                 || _cleaned || !Visible || !_items.Contains(item)) return;
-            QueueImageRefresh(item);
+            Interlocked.Increment(ref loaded);
         }
         int DecodeLimit(string url) => OverlayMessageRenderer.ImageDecodeLimit(item.Event, url, _vm.Settings.Dashboard, RegionSettings);
+        // One repaint for the whole batch instead of one per loaded image.
+        if (loaded > 0) QueueImageRefresh(item);
     }
 
     private void QueueImageRefresh(OverlayItem item)

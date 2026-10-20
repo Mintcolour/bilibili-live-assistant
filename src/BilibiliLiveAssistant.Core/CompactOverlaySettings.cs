@@ -58,6 +58,7 @@ public sealed record CompactOverlaySettings
     public bool ListAnimationEnabled { get; init; } = true;
     public int ListAnimationDurationMs { get; init; } = 200;
     public bool ShowEntry { get; init; } = true;
+    public bool ShowEntryInList { get; init; }
     public bool ShowFollow { get; init; } = true;
     public int SuperChatLines { get; init; } = 6;
     public double FollowSeconds { get; init; } = 5;

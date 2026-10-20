@@ -222,6 +222,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
     }
     private async Task LoadImagesAsync(int slot, CardView view)
     {
+        var loaded = 0;
         try
         {
             var token = view.Cancellation.Token;
@@ -235,7 +236,7 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                     if (ViewModel.Images.TryGetStaticFrame(url, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is not null) continue;
                     if (await ViewModel.Images.GetStaticForViewAsync(url, token, limit, OverlayMessageRenderer.ImageRole(view.Value, url)) is null) continue;
                     if (!Current(slot, view)) return;
-                    QueueImageRefresh(slot, view);
+                    Interlocked.Increment(ref loaded);
                 }
             }
             async Task LoadAvatarAsync()
@@ -246,11 +247,13 @@ internal sealed class StationaryOverlayWindow : OverlaySurface
                 var limit = OverlayMessageRenderer.ImageDecodeLimit(view.Value, enriched.Appearance!.AvatarUrl, Style, RegionSettings);
                 await ViewModel.Images.GetStaticForViewAsync(enriched.Appearance.AvatarUrl, token, limit, BiliImageRole.Avatar);
                 if (!Current(slot, view)) return;
-                QueueImageRefresh(slot, view);
+                Interlocked.Increment(ref loaded);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return; }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        // Repaint this card once for the whole batch instead of once per image.
+        if (loaded > 0) QueueImageRefresh(slot, view);
     }
     private void Release(int slot) { if (_views.Remove(slot, out var view)) view.Dispose(); }
     private void ClearViews() { foreach (var key in _views.Keys.ToArray()) Release(key); }

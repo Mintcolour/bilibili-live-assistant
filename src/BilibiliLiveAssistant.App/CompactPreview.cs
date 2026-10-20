@@ -167,8 +167,10 @@ internal sealed class CompactPreview : StackPanel, IDisposable
             if (c.ShowList && listHeight >= 40)
             {
                 var samples = SampleMessages();
-                foreach (var value in new[] { samples[2] with { Content = "上一条弹幕从顶部离开。" }, samples[1],
-                    samples[0] with { Content = "列表里的 SC 也会平滑上移。" }, samples[2] with { Content = "新弹幕从底部滑入，欢迎来到直播间！" } })
+                var listSamples = new List<LiveEvent> { samples[2] with { Content = "上一条弹幕从顶部离开。" }, samples[1],
+                    samples[0] with { Content = "列表里的 SC 也会平滑上移。" }, samples[2] with { Content = "新弹幕从底部滑入，欢迎来到直播间！" } };
+                if (c.ShowEntryInList) listSamples.Insert(1, samples[3]);
+                foreach (var value in listSamples)
                 {
                     token.ThrowIfCancellationRequested();
                     using var row = OverlayMessageRenderer.Render(value, ObsOverlayProjection.Region(settings, value), settings.Dashboard,

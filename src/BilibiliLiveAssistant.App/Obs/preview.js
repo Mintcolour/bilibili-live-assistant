@@ -14,14 +14,14 @@
     sample(4,'Gift','星星 × 3',{giftName:'星星',quantity:3,price:'¥15',amountMilliYuan:15000,priceTier:3}),
     sample(5,'Guard','开通舰长',{price:'¥198',amountMilliYuan:198000,priceTier:5}),
     sample(6,'Danmaku','长消息换行示例：调整字体、表情、气泡内边距后，可以在这里观察排版。This is an example message with mixed text. 中文与 English 一起显示。'),
-    sample(7,'Follow','关注了主播'),sample(8,'Like','为直播间点赞')];
+    sample(7,'Follow','关注了主播'),sample(8,'Like','为直播间点赞'),sample(9,'Enter','进入直播间')];
   function snapshot() {
     const s = base.style || {};
     const decorate = m => ({...m,avatar:s.showAvatars === false ? '' : m.avatar,medal:s.showMedals === false ? '' : m.medal,guard:s.showIdentity === false ? '' : m.guard});
     const hotPhrases=[{key:'sample-a',text:'好好好[开心]',count:37,segments:[{text:'好好好'},{text:'[开心]',image:'sample-emote.svg',width:64,height:64}]},
         {key:'sample-b',text:'[开心]',count:12,segments:[{text:'[开心]',image:'sample-emote.svg',width:64,height:64}]},
         {key:'sample-c',text:'谢谢陪伴',count:9},{key:'sample-d',text:'晚上见',count:6},{key:'sample-e',text:'欢迎回来',count:3}];
-    return {...base,roomId:0,now:Date.now(),rows:rows.map(decorate),hotPhrases:hotPhase ? hotPhrases.reverse().slice(1) : hotPhrases,
+    return {...base,roomId:0,now:Date.now(),rows:rows.filter(m => base.config.showEntryInList || m.type !== 'Enter').map(decorate),hotPhrases:hotPhase ? hotPhrases.reverse().slice(1) : hotPhrases,
       sc:decorate(sample(100,'SuperChat','固定 SC 示例：感谢陪伴！这是一段用于检查正文行数、字号和换行的长文字。'.repeat(5),{price:'¥100',amountMilliYuan:100000,priceTier:3})),
       gift:decorate(sample(101,'Gift','星星 × 3',{giftName:'星星',quantity:3,price:'¥15',amountMilliYuan:15000,priceTier:3})),
       entry:decorate(sample(102,'Enter','进入直播间',{avatar:s.showEntryAvatars === false ? '' : 'sample-avatar.svg'})),

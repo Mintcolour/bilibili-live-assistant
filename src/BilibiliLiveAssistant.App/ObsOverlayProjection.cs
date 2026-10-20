@@ -93,7 +93,7 @@ internal sealed class ObsOverlayProjection
     internal static object Configuration(CompactOverlaySettings compact) => new
     {
         compact.FontSize, compact.EmoteSize, compact.Opacity, compact.BackgroundColor, compact.BackgroundOpacity,
-        compact.SuperChatLines, compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow,
+        compact.SuperChatLines, compact.ShowStatus, compact.ShowSuperChat, compact.ShowGift, compact.ShowList, compact.ShowEntry, compact.ShowFollow, compact.ShowEntryInList,
         compact.ListAnimationEnabled, compact.ListAnimationDurationMs,
     };
     internal static object Style(AppSettings settings)

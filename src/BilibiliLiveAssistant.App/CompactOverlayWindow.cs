@@ -34,6 +34,10 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private readonly Dictionary<long, Row> _rows = new();
     private readonly Dictionary<LiveEventType, int> _cardHeights = new();
     private LayeredOverlayCanvas? _canvas;
+    // Interactive resizes arrive as a burst; stretch the existing canvas until
+    // the final size instead of reallocating a DIB per intermediate size.
+    private readonly Forms.Timer _resizeSettle = new() { Interval = 120 };
+    private bool _resizeSettled = true;
     private bool _renderQueued, _disposed, _loadingBounds, _reading, _clickThrough = true, _errorReported, _styleEditorOpen;
     private long? _anchor;
     private Rectangle _listBounds;
@@ -65,6 +69,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     public CompactOverlayWindow(LiveAssistantViewModel vm, OverlayFrameClock frames)
     {
         _vm = vm; _frames = frames; _hotSprite = new(vm.Images, RequestRender); Text = "B站直播助手 · 紧凑面板"; FormBorderStyle = Forms.FormBorderStyle.None;
+        _resizeSettle.Tick += (_, _) => { _resizeSettle.Stop(); _resizeSettled = true; RequestRender(); };
         StartPosition = Forms.FormStartPosition.Manual; AutoScaleMode = Forms.AutoScaleMode.None;
         ShowInTaskbar = false; TopMost = true; MinimumSize = new(240, 320);
         _viewMessage.Click += (_, _) => ShowMessageDetails(); _menu.Items.Add(_viewMessage);
@@ -156,6 +161,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         base.OnResize(e);
         if (_frames is not null) { _frames.Stop(OnAnimationFrame); _listReady = false; }
+        _resizeSettled = false; _resizeSettle.Stop(); _resizeSettle.Start();
         RequestRender();
     }
     protected override void OnHandleDestroyed(EventArgs e)
@@ -185,6 +191,8 @@ internal sealed class CompactOverlayWindow : Forms.Form
         if (_disposed || !Visible || ClientSize.Width < 1 || ClientSize.Height < 1) return;
         try
         {
+            if (_canvas is not null && (_canvas.Width != ClientSize.Width || _canvas.Height != ClientSize.Height) && !_resizeSettled)
+            { _canvas.Present(Handle, Location, EffectiveSettings.Compact.Opacity, ClientRectangle, ClientSize); return; }
             if (_canvas?.Width != ClientSize.Width || _canvas.Height != ClientSize.Height) { _canvas?.Dispose(); _canvas = new(ClientSize.Width, ClientSize.Height); }
             var g = _canvas.Graphics; g.ResetClip(); g.CompositingMode = CompositingMode.SourceCopy; g.Clear(Color.Transparent); g.CompositingMode = CompositingMode.SourceOver;
             var config = EffectiveSettings.Compact; var timeline = Timeline; var keep = new HashSet<long>();
@@ -244,11 +252,17 @@ internal sealed class CompactOverlayWindow : Forms.Form
             if (config.ShowList && OverlayRegions.Enabled(_vm.Settings.Display, OverlayRegionKind.Danmaku))
             {
                 var hotStyle = _vm.Settings.HotPhrases;
-                var hotHeight = hotStyle.Enabled && (Editing || _vm.HotPhrases.Count > 0 || _hotSprite.HasContent)
-                    ? Math.Min(HotBubbleLayouts.RowHeight(hotStyle) * 2, Math.Max(0, bottom - top - 100)) : 0;
+                var hotMaxHeight = Math.Min(HotBubbleLayouts.RowHeight(hotStyle) * 2, Math.Max(0, bottom - top - 100));
                 _hotSprite.Update(Editing ? HotPhraseSamples.Items : _vm.HotPhrases, hotStyle,
-                    new(Math.Max(1, ClientSize.Width - 12), hotHeight), 2, _vm.Settings.Dashboard.FontFamily);
-                if (hotHeight > 0) { bottom -= hotHeight; _hotSprite.Draw(g, new(6, bottom), hotStyle.Opacity); bottom -= 4; }
+                    new(Math.Max(1, ClientSize.Width - 12), hotMaxHeight), 2, _vm.Settings.Dashboard.FontFamily);
+                var hotHeight = _hotSprite.OccupiedHeight;
+                if (hotHeight > 0)
+                {
+                    bottom -= hotHeight;
+                    var saved = g.Save(); g.SetClip(new Rectangle(6, bottom, Math.Max(1, ClientSize.Width - 12), hotHeight));
+                    _hotSprite.Draw(g, new(6, bottom), hotStyle.Opacity); g.Restore(saved);
+                    bottom -= 4;
+                }
             }
             else _hotSprite.Dispose();
             var nextBounds = new Rectangle(6, top, Math.Max(1, ClientSize.Width - 12), Math.Max(0, bottom - top));
@@ -299,6 +313,9 @@ internal sealed class CompactOverlayWindow : Forms.Form
     {
         if (_disposed || !Visible) { _frames.Stop(OnAnimationFrame); return; }
         if (_renderQueued) return;
+        // A resize invalidates the canvas dimensions mid-flight; let the
+        // ordinary render path stretch or rebuild before touching Graphics.
+        if (_canvas is null || _canvas.Width != ClientSize.Width || _canvas.Height != ClientSize.Height) { _frames.Stop(OnAnimationFrame); RequestRender(); return; }
         if (_hotMoving || _listMoving && _anchor is null) { Render(); return; }
         if (!_statusVisible || _statusStrip?.Moving != true || _canvas is null) { _frames.Stop(OnAnimationFrame); return; }
         try
@@ -350,7 +367,14 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private Row GetRow(long key, LiveEvent value, int maxHeight, bool card)
     {
         var width = Math.Max(120, ClientSize.Width - 12);
-        if (_rows.TryGetValue(key, out var row) && ReferenceEquals(row.Source, value) && row.Width == width && row.MaxHeight == maxHeight && row.Card == card) return row;
+        if (_rows.TryGetValue(key, out var row) && ReferenceEquals(row.Source, value) && row.Width == width && row.Card == card && CanReuseAtHeight(row, maxHeight))
+        {
+            // The rendered height below the old cap proves the layout never hit
+            // it, so a changed cap cannot alter this row. Growing the cap does
+            // not invalidate a sprite that already fit; shrinking it can.
+            row.MaxHeight = Math.Max(row.MaxHeight, maxHeight);
+            return row;
+        }
         var renderedImages = new HashSet<string>(StringComparer.Ordinal);
         var bitmap = CreateBitmap(value, width, maxHeight, card, key > 0, renderedImages);
         var motion = row?.Motion;
@@ -360,6 +384,12 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _rows.Add(key, row);
         if (!Editing && !value.Extra.ContainsKey("room_bulletin")) _ = LoadImagesAsync(row); return row;
     }
+    // A row whose rendered height equals the cap may have been clamped or
+    // ellipsized; only rows that fit strictly inside both caps keep their
+    // pixels. Growing the cap is always safe, shrinking it is not.
+    private static bool CanReuseAtHeight(Row row, int maxHeight)
+        => row.MaxHeight == maxHeight || (row.Image.Height < maxHeight && row.Image.Height < row.MaxHeight);
+
     private Bitmap CreateBitmap(LiveEvent value, int width, int height, bool card, bool inline, HashSet<string> renderedImages)
     {
         var region = ObsOverlayProjection.Region(EffectiveSettings, value);
@@ -371,6 +401,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
     private async Task LoadImagesAsync(Row row)
     {
         bool Current() => !_disposed && Visible && !row.Motion.Leaving && _rows.GetValueOrDefault(row.Id) == row;
+        var loaded = 0;
         try
         {
             var token = row.Cancellation.Token;
@@ -382,31 +413,36 @@ internal sealed class CompactOverlayWindow : Forms.Form
                 if (!Current()) return;
                 // Inspect what this bitmap actually rendered, not the cache's
                 // current state: another consumer may fill/evict it meanwhile.
-                if (row.RenderedImages.Contains(url)) { _paintedImageSkips++; continue; }
+                if (row.RenderedImages.Contains(url)) { Interlocked.Increment(ref _paintedImageSkips); continue; }
                 var role = OverlayMessageRenderer.ImageRole(row.Value, url);
                 var asset = await _vm.Images.GetStaticForViewAsync(url, token, OverlayMessageRenderer.ImageDecodeLimit(row.Value, url, _vm.Settings.Dashboard, region), role);
                 if (!Current()) return;
-                if (asset is null) { _failedImageLoads++; continue; }
-                if (row.RenderedImages.Contains(url)) { _paintedImageSkips++; continue; }
-                if (!row.RefreshQueued)
-                {
-                    row.RefreshQueued = true;
-                    BeginInvoke((Action)(() =>
-                    {
-                        row.RefreshQueued = false; if (!Current()) return;
-                        try
-                        {
-                            var renderedImages = new HashSet<string>(StringComparer.Ordinal);
-                            var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0, renderedImages);
-                            row.Image.Dispose(); row.Image = replacement; row.RenderedImages = renderedImages;
-                            _imageRefreshes++; RequestRender();
-                        }
-                        catch (Exception ex) when (ex is not OutOfMemoryException) { ReportRenderError(ex); }
-                    }));
-                }
+                if (asset is null) { Interlocked.Increment(ref _failedImageLoads); continue; }
+                if (row.RenderedImages.Contains(url)) { Interlocked.Increment(ref _paintedImageSkips); continue; }
+                Interlocked.Increment(ref loaded);
             }
         }
+        catch (OperationCanceledException) { return; }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        if (loaded == 0) return;
+        // Repaint the whole row once for this batch instead of once per image.
+        row.RefreshQueued = true;
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                row.RefreshQueued = false; if (!Current()) return;
+                try
+                {
+                    var renderedImages = new HashSet<string>(StringComparer.Ordinal);
+                    var replacement = CreateBitmap(row.Value, row.Width, row.MaxHeight, row.Card, row.Id > 0, renderedImages);
+                    row.Image.Dispose(); row.Image = replacement; row.RenderedImages = renderedImages;
+                    Interlocked.Increment(ref _imageRefreshes); RequestRender();
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException) { ReportRenderError(ex); }
+            }));
+        }
+        catch (InvalidOperationException) { row.RefreshQueued = false; }
     }
     protected override void OnMouseWheel(Forms.MouseEventArgs e)
     {
@@ -453,7 +489,9 @@ internal sealed class CompactOverlayWindow : Forms.Form
             using var editor = new CompactQuickEditor(_vm, value =>
             {
                 if (_disposed) return;
-                _preview = value; _cardHeights.Clear(); ReleaseRows(); RequestRender();
+                var entryFilterChanged = EffectiveSettings.Compact.ShowEntryInList != (value ?? _vm.Settings.Compact).ShowEntryInList;
+                _preview = value; if (entryFilterChanged) MakeSamples();
+                _cardHeights.Clear(); ReleaseRows(); RequestRender();
             }, () =>
             {
                 if (_disposed || !Editing) return;
@@ -484,7 +522,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         _samples.Clear(); if (!Editing) return;
         var now = DateTimeOffset.UtcNow;
         var values = CompactExamples.Messages();
-        _samples.AddBatch(values, now, _vm.Settings with { Display = OverlayRegions.With(_vm.Settings.Display, OverlayRegionKind.Gift,
+        _samples.AddBatch(values, now, EffectiveSettings with { Display = OverlayRegions.With(_vm.Settings.Display, OverlayRegionKind.Gift,
             OverlayRegions.Get(_vm.Settings.Display, OverlayRegionKind.Gift) with { MergeSeconds = 0 }) });
     }
     private void ReleaseRows()
@@ -500,7 +538,7 @@ internal sealed class CompactOverlayWindow : Forms.Form
         {
             _disposed = true; _vm.CompactOverlay.SetDesktopVisible(false);
             _vm.CompactOverlay.Changed -= RequestRender; _vm.RoomHistoryReset -= Reset; _vm.PropertyChanged -= SettingsChanged;
-            _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; _menu.Dispose(); _fadeAttributes.Dispose();
+            _detail?.Close(); ReleaseRows(); _canvas?.Dispose(); _canvas = null; _menu.Dispose(); _fadeAttributes.Dispose(); _resizeSettle.Dispose();
         }
         base.Dispose(disposing);
     }
